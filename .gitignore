@@ -1,0 +1,19 @@
+# Local secrets / environment files
+.env
+.env.*
+!.env.example
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*~
+
+# Downloaded runner archives/checksums if copied here manually
+*.tar.gz
+*.sha256
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/

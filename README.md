@@ -1,26 +1,28 @@
 # github-runner-tools
 
-`github-runner-tools` 是一组用于管理 GitHub repository-level self-hosted runner 的轻量脚本。它适合这样的场景：你有一台长期在线的 Linux 主机，希望让多个 GitHub 仓库使用自己的计算资源运行 GitHub Actions，而不是为每个仓库重复手工下载、注册和维护 runner。
+[中文说明](README.zh-CN.md)
 
-这个项目不会替代 GitHub Actions，也不会修改你的应用代码或自动部署项目。GitHub 仍然负责任务触发、workflow 调度、状态和日志；本项目只负责把 GitHub 官方 self-hosted runner 更方便地安装、注册和管理在你自己的主机上。
+`github-runner-tools` is a small set of scripts for managing GitHub repository-level self-hosted runners. It is designed for a simple setup: you have one always-on Linux host and want several GitHub repositories to use your own compute resources for GitHub Actions, without repeating the same manual runner installation and registration steps for every repository.
 
-当前主要面向 Debian 12 / 13、Linux x86_64 和 systemd 环境。实际使用中，一台主机可以运行多个彼此独立的 repository-level runner。
+This project does not replace GitHub Actions, modify your application code, or deploy your application. GitHub still handles workflow triggers, scheduling, status, and logs. This project only makes it easier to install, register, and manage the official GitHub self-hosted runner on your own machine.
 
-## 为什么需要它
+The current setup is mainly intended for Debian 12 / 13, Linux x86_64, and systemd. One host can run multiple independent repository-level runners.
 
-GitHub Actions 本身已经可以使用 GitHub-hosted runner 执行测试、构建和其他自动任务。对于偶尔运行的小项目，这种方式非常方便。但当多个私有仓库需要频繁运行测试、Docker build 或 integration test 时，GitHub-hosted runner 会受到套餐额度、费用和运行环境控制等因素影响。
+## Why this exists
 
-Self-hosted runner 可以把真正执行任务的计算资源换成自己的服务器、NAS、mini PC、虚拟机或 VPS，同时继续使用 GitHub Actions 原有的 workflow、日志和状态系统。
+GitHub Actions can already run tests, builds, and other automated jobs on GitHub-hosted runners. That is convenient for small or occasional workloads. But when several private repositories run tests, Docker builds, or integration tests frequently, GitHub-hosted runners may become less attractive because of usage limits, cost, and limited control over the execution environment.
 
-如果 GitHub 仓库都属于个人账号，而不是同一个 Organization，每个仓库通常需要分别注册 repository-level runner。官方注册流程并不复杂，但每增加一个仓库，都需要重复下载 runner、解压、执行 `config.sh`、设置名称和 labels、安装 systemd service、启动并检查状态。
+A self-hosted runner lets you move the actual compute work to your own server, NAS, mini PC, virtual machine, or VPS while keeping the existing GitHub Actions workflow, logs, and status reporting.
 
-`github-runner-tools` 把这些重复步骤整理成几个脚本，让“为一个仓库增加 runner”变成一次标准化操作。
+If your repositories belong to a personal GitHub account rather than one Organization, each repository normally needs its own repository-level runner registration. The official process is not difficult, but every new repository repeats the same work: download the runner, extract it, run `config.sh`, choose a runner name and labels, install a systemd service, start it, and verify its status.
 
-## 快速开始
+`github-runner-tools` turns those repeated steps into a standard, reusable process.
 
-### 1. 准备主机
+## Quick start
 
-至少需要一台 Linux x86_64 主机，并安装以下基础工具：
+### 1. Prepare the host
+
+You need at least one Linux x86_64 host with the following basic tools:
 
 ```bash
 sudo apt update
@@ -32,13 +34,13 @@ sudo apt install -y \
   coreutils
 ```
 
-建议使用普通用户运行 runner，不要直接用 `root` 注册。例如可以创建一个专门的用户：
+Run the runner as a normal user rather than registering it directly as `root`. A dedicated user such as the following works well:
 
 ```text
 actions
 ```
 
-如果项目的 CI 需要 Docker，应先单独安装 Docker Engine 和 Docker Compose，并确认当前用户可以正常使用：
+If your CI jobs use Docker, install Docker Engine and Docker Compose separately and verify that the current user can use them:
 
 ```bash
 docker version
@@ -46,9 +48,9 @@ docker compose version
 docker run --rm hello-world
 ```
 
-如果把普通用户加入了 `docker` group，需要退出当前登录会话后重新登录，新的权限才会生效。
+If you add the normal user to the `docker` group, sign out and sign back in before testing again so the new group membership takes effect.
 
-### 2. 获取本项目
+### 2. Clone this repository
 
 ```bash
 cd ~
@@ -56,22 +58,22 @@ git clone https://github.com/ernestyu/github-runner-tools.git
 cd github-runner-tools
 ```
 
-以后更新：
+To update it later:
 
 ```bash
 cd ~/github-runner-tools
 git pull
 ```
 
-脚本可以直接通过 `bash` 执行，不依赖 executable bit：
+The scripts can be run through `bash`, so they do not depend on the executable bit being preserved:
 
 ```bash
 bash scripts/status-runners.sh
 ```
 
-### 3. 在 GitHub 生成 registration token
+### 3. Generate a registration token on GitHub
 
-进入你准备接入 self-hosted runner 的目标仓库：
+Open the target repository that you want to connect to a self-hosted runner:
 
 ```text
 Settings
@@ -80,57 +82,57 @@ Settings
 → New self-hosted runner
 ```
 
-选择：
+Choose:
 
 ```text
 Linux
 x64
 ```
 
-GitHub 会显示一条包含临时 registration token 的 `config.sh` 命令。只需要复制其中的 token，不要把它写进脚本，也不要提交到 Git。
+GitHub will show a `config.sh` command containing a temporary registration token. Copy only the token. Do not save it in a script or commit it to Git.
 
-### 4. 注册 runner
+### 4. Register the runner
 
-回到 Linux 主机，在本项目目录运行：
+Back on the Linux host, run:
 
 ```bash
 cd ~/github-runner-tools
 bash scripts/register-runner.sh OWNER/REPO
 ```
 
-例如：
+For example:
 
 ```bash
 bash scripts/register-runner.sh yourname/project-a
 ```
 
-脚本会提示：
+The script will prompt:
 
 ```text
 Paste GitHub registration token:
 ```
 
-粘贴刚才生成的临时 token 并回车。输入内容不会显示在终端。
+Paste the temporary token and press Enter. The token will not be echoed in the terminal.
 
-注册成功后，脚本会自动安装并启动对应的 systemd service，并输出 runner 状态以及建议使用的 workflow label。
+After a successful registration, the script installs and starts the corresponding systemd service, then prints the runner status and the recommended workflow label.
 
-## 它会创建什么
+## What it creates
 
-`github-runner-tools` 只是管理脚本仓库。真正的 GitHub Actions runner 不会安装在这个项目目录里面。
+`github-runner-tools` is only the management repository. The actual GitHub Actions runners are not installed inside this project directory.
 
-假设工具仓库位于：
+If the tools repository is located at:
 
 ```text
 /home/actions/github-runner-tools
 ```
 
-那么默认的 runner 基础目录就是：
+the default runner base directory is:
 
 ```text
 /home/actions
 ```
 
-如果依次为两个仓库注册 runner，目录可能类似：
+After registering runners for two repositories, the layout may look like this:
 
 ```text
 /home/actions/
@@ -139,15 +141,15 @@ Paste GitHub registration token:
 └── actions-runner-project-b/
 ```
 
-脚本根据自身实际路径计算安装位置，所以无论你从哪个当前工作目录调用：
+The script resolves its install location from its own path. That means you can call it from any working directory:
 
 ```bash
 bash ~/github-runner-tools/scripts/register-runner.sh yourname/project-a
 ```
 
-runner 仍然会安装到 `github-runner-tools` 的同级目录，而不是放进工具仓库内部。
+and the runner will still be installed next to `github-runner-tools`, not inside it.
 
-默认命名规则是：
+The default naming scheme is:
 
 ```text
 repository:   yourname/project-a
@@ -156,96 +158,94 @@ runner name:  unraid-ci-project-a
 labels:       unraid-ci,project-a
 ```
 
-GitHub 还会自动增加 `self-hosted`、`Linux` 和 `X64` 等系统 labels。
+GitHub also adds system labels such as `self-hosted`, `Linux`, and `X64`.
 
-注册脚本会自动完成以下工作：检查必要命令、读取最新版 GitHub Actions Runner release、下载并解压 runner、在可用时校验 SHA-256 digest、安装官方依赖、注册 repository runner、创建 systemd service、启动服务并输出最终状态。
+The registration script automatically checks required commands, reads the latest GitHub Actions Runner release, downloads and extracts it, verifies the SHA-256 digest when available, installs the official dependencies, registers the repository runner, creates a systemd service, starts it, and prints the final status.
 
-## Workflow、状态和日常管理
+## Workflow, status, and daily management
 
-注册完成以后，目标仓库原本如果使用：
+After registration, if the target repository currently uses:
 
 ```yaml
 runs-on: ubuntu-latest
 ```
 
-可以改成使用仓库自己的 label，例如：
+you can switch it to the repository-specific label, for example:
 
 ```yaml
 runs-on: [self-hosted, Linux, X64, project-a]
 ```
 
-这样 GitHub Actions 会等待带有对应 label 的 self-hosted runner 来领取 job。
+GitHub Actions will then wait for a matching self-hosted runner to pick up the job.
 
-查看当前主机上的所有 runner：
+To check all runners on the current host:
 
 ```bash
 cd ~/github-runner-tools
 bash scripts/status-runners.sh
 ```
 
-也可以直接查看 systemd：
+You can also inspect systemd directly:
 
 ```bash
 systemctl --type=service | grep actions.runner
 ```
 
-查看 runner listener：
+To view runner listener processes:
 
 ```bash
 ps aux | grep Runner.Listener | grep -v grep
 ```
 
-查看日志：
+To inspect logs:
 
 ```bash
 sudo journalctl -u 'actions.runner*' --since today
 ```
 
-实时跟踪日志：
+To follow logs in real time:
 
 ```bash
 sudo journalctl -u 'actions.runner*' -f
 ```
 
-runner 安装为 systemd service 后，主机重启时应自动恢复。重启后可以再次运行：
+Because each runner is installed as a systemd service, it should start again automatically after the host reboots. After a reboot, you can verify the runners with:
 
 ```bash
 bash ~/github-runner-tools/scripts/status-runners.sh
 ```
 
-确认各 runner 处于正常状态。
+### Remove a runner
 
-### 删除一个 runner
-
-先进入目标 GitHub 仓库的：
+Open the target repository on GitHub and go to:
 
 ```text
 Settings
 → Actions
 → Runners
-→ 选择对应 runner
+→ Select the runner
 → Remove
 ```
 
-GitHub 会提供 removal token。然后在主机运行：
+GitHub will provide a removal token. Then run:
 
 ```bash
 cd ~/github-runner-tools
 bash scripts/remove-runner.sh OWNER/REPO
 ```
 
-脚本会要求粘贴 removal token，并在再次确认后停止和卸载 systemd service、从 GitHub 注销 runner，并删除对应的本地 runner 目录。
+The script will ask for the removal token. After confirmation, it stops and removes the systemd service, unregisters the runner from GitHub, and deletes the corresponding local runner directory.
 
-### 自定义安装目录、名称和 labels
+### Customize the install directory, runner name, or labels
 
-默认情况下，runner 会安装在 `github-runner-tools` 所在目录的父目录。如果需要改到其他位置，可以设置：
+By default, runners are installed in the parent directory of `github-runner-tools`. To use a different base directory:
 
 ```bash
 RUNNER_BASE_DIR=/srv/github-runners \
   bash scripts/register-runner.sh yourname/project-a
 ```
 
-也可以覆盖 runner name 和 labels：
+You can also override the runner name and labels:
 
 ```bash
 RUNNER_NAME=my-runner \
@@ -253,26 +253,26 @@ RUNNER_LABELS=self-ci,project-a,docker \
   bash scripts/register-runner.sh yourname/project-a
 ```
 
-一个 repository runner 一次只能执行一个 job，但同一台主机上的多个 runner 可以同时执行不同 job。因此，如果多个项目同时进行 Docker build、数据库启动或大型测试，它们会竞争同一台主机的 CPU、内存和磁盘。是否需要限制并发，应根据实际负载决定。
+A repository runner can execute one job at a time, but multiple runners on the same host can run different jobs concurrently. If several repositories perform Docker builds, start databases, or run large test suites at the same time, they will compete for the same CPU, memory, and disk resources. Whether you need to limit concurrency depends on the actual workload.
 
-## 安全与限制
+## Security and limitations
 
-Self-hosted runner 会执行 GitHub workflow 中定义的命令，因此应该把 runner 主机当成真正的代码执行环境，而不是普通的只读客户端。建议把 CI 主机与生产环境隔离，并只给它完成测试所需要的权限。
+A self-hosted runner executes commands defined by GitHub workflows, so the runner host should be treated as a real code-execution environment rather than a read-only client. Keep the CI host separated from production when possible, and give it only the permissions needed for testing.
 
-不要把以下内容提交到本项目或普通 CI 配置中：
+Do not commit the following into this repository or ordinary CI configuration:
 
 ```text
 GitHub registration token
 GitHub removal token
 Personal Access Token
 SSH private key
-生产 API key
-生产数据库密码
-其他长期 secrets
+production API keys
+production database passwords
+other long-lived secrets
 ```
 
-如果 CI 主机运行在 NAS、家庭服务器或其他正式宿主机旁边，不建议把宿主机的 Docker socket、生产数据目录或其他高权限接口直接暴露给 runner。尤其不要仅为了方便而把宿主机的 `/var/run/docker.sock` 挂进 CI 环境。
+If the CI host runs next to a NAS, home server, or production host, avoid exposing the host Docker socket, production data directories, or other high-privilege interfaces directly to the runner. In particular, do not mount the host `/var/run/docker.sock` into the CI environment just for convenience.
 
-这个项目当前只负责 repository-level self-hosted runner 的安装和管理。它不会自动创建或修改 GitHub Actions workflow，不会自动运行应用部署，也不会把 CI 测试环境转换成生产环境。
+This project currently handles installation and management of repository-level self-hosted runners. It does not create or modify GitHub Actions workflows automatically, deploy applications, or turn the CI test environment into a production environment.
 
-当前主要在 Debian 13、Linux x86_64、systemd 环境下使用；设计上也兼容 Debian 12。其他 Linux 发行版、ARM 架构、非 systemd 环境以及 organization-level runner 尚未作为当前版本的主要目标。
+The current setup is mainly used on Debian 13 with Linux x86_64 and systemd, and is also designed to work with Debian 12. Other Linux distributions, ARM systems, non-systemd environments, and organization-level runners are not primary targets of the current version.

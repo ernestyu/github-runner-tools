@@ -1,60 +1,26 @@
 # github-runner-tools
 
-用于在一台 Debian CI 主机上快速注册和管理多个 GitHub repository-level self-hosted runner。
+`github-runner-tools` 是一组用于管理 GitHub repository-level self-hosted runner 的轻量脚本。它适合这样的场景：你有一台长期在线的 Linux 主机，希望让多个 GitHub 仓库使用自己的计算资源运行 GitHub Actions，而不是为每个仓库重复手工下载、注册和维护 runner。
 
-当前设计适合这种结构：
+这个项目不会替代 GitHub Actions，也不会修改你的应用代码或自动部署项目。GitHub 仍然负责任务触发、workflow 调度、状态和日志；本项目只负责把 GitHub 官方 self-hosted runner 更方便地安装、注册和管理在你自己的主机上。
 
-```text
-/home/actions/
-├── github-runner-tools/
-├── actions-runner-cycleedge/
-├── actions-runner-alphapulse/
-└── actions-runner-其他仓库/
-```
+当前主要面向 Debian 12 / 13、Linux x86_64 和 systemd 环境。实际使用中，一台主机可以运行多个彼此独立的 repository-level runner。
 
-`github-runner-tools` 只是管理脚本仓库。真正的 GitHub Actions runner **不会安装在这个仓库里面**，而是默认安装到它的同级目录。
+## 为什么需要它
 
-因此即使你在：
+GitHub Actions 本身已经可以使用 GitHub-hosted runner 执行测试、构建和其他自动任务。对于偶尔运行的小项目，这种方式非常方便。但当多个私有仓库需要频繁运行测试、Docker build 或 integration test 时，GitHub-hosted runner 会受到套餐额度、费用和运行环境控制等因素影响。
 
-```text
-/home/actions/github-runner-tools
-```
+Self-hosted runner 可以把真正执行任务的计算资源换成自己的服务器、NAS、mini PC、虚拟机或 VPS，同时继续使用 GitHub Actions 原有的 workflow、日志和状态系统。
 
-中运行：
+如果 GitHub 仓库都属于个人账号，而不是同一个 Organization，每个仓库通常需要分别注册 repository-level runner。官方注册流程并不复杂，但每增加一个仓库，都需要重复下载 runner、解压、执行 `config.sh`、设置名称和 labels、安装 systemd service、启动并检查状态。
 
-```bash
-bash scripts/register-runner.sh ernestyu/CycleEdge
-```
+`github-runner-tools` 把这些重复步骤整理成几个脚本，让“为一个仓库增加 runner”变成一次标准化操作。
 
-脚本创建的 runner 目录仍然是：
+## 快速开始
 
-```text
-/home/actions/actions-runner-cycleedge
-```
+### 1. 准备主机
 
-脚本不依赖你运行命令时的当前目录，而是根据脚本自己的实际路径计算安装位置。
-
-## 适用环境
-
-当前主要用于：
-
-- Debian 13 / Debian 12
-- Linux x64
-- GitHub repository-level self-hosted runner
-- Docker Engine / Docker Compose 已在主机安装
-- 一个 Debian VM 为多个私有 GitHub 仓库提供独立 runner
-
-建议使用普通用户运行，例如：
-
-```text
-actions
-```
-
-不要直接以 `root` 用户运行 runner 注册脚本。
-
-## 主机前置条件
-
-至少需要：
+至少需要一台 Linux x86_64 主机，并安装以下基础工具：
 
 ```bash
 sudo apt update
@@ -66,7 +32,13 @@ sudo apt install -y \
   coreutils
 ```
 
-如果 CI 需要 Docker，还应提前确认：
+建议使用普通用户运行 runner，不要直接用 `root` 注册。例如可以创建一个专门的用户：
+
+```text
+actions
+```
+
+如果项目的 CI 需要 Docker，应先单独安装 Docker Engine 和 Docker Compose，并确认当前用户可以正常使用：
 
 ```bash
 docker version
@@ -74,38 +46,32 @@ docker compose version
 docker run --rm hello-world
 ```
 
-当前登录用户应能够直接使用 Docker，而不需要 `sudo docker ...`。
+如果把普通用户加入了 `docker` group，需要退出当前登录会话后重新登录，新的权限才会生效。
 
-## 获取本工具仓库
-
-这是私有仓库，因此 Debian 主机需要已经具备访问 GitHub 私有仓库的认证方式。
-
-如果已经配置 GitHub SSH key：
+### 2. 获取本项目
 
 ```bash
 cd ~
-git clone git@github.com:ernestyu/github-runner-tools.git
+git clone https://github.com/ernestyu/github-runner-tools.git
 cd github-runner-tools
 ```
 
-以后更新工具：
+以后更新：
 
 ```bash
 cd ~/github-runner-tools
 git pull
 ```
 
-脚本可以直接用 `bash` 执行，因此不依赖 Git 是否保留 executable bit：
+脚本可以直接通过 `bash` 执行，不依赖 executable bit：
 
 ```bash
 bash scripts/status-runners.sh
 ```
 
-## 注册一个 repository runner
+### 3. 在 GitHub 生成 registration token
 
-### 1. 在 GitHub 生成临时 registration token
-
-进入目标仓库：
+进入你准备接入 self-hosted runner 的目标仓库：
 
 ```text
 Settings
@@ -121,23 +87,21 @@ Linux
 x64
 ```
 
-GitHub 页面会显示类似：
+GitHub 会显示一条包含临时 registration token 的 `config.sh` 命令。只需要复制其中的 token，不要把它写进脚本，也不要提交到 Git。
 
-```bash
-./config.sh --url https://github.com/OWNER/REPO --token XXXXX
-```
+### 4. 注册 runner
 
-你只需要复制其中的临时 `token`。
-
-**不要把 token 写进本仓库，也不要提交到 Git。**
-
-### 2. 注册 CycleEdge
-
-在 Debian 上：
+回到 Linux 主机，在本项目目录运行：
 
 ```bash
 cd ~/github-runner-tools
-bash scripts/register-runner.sh ernestyu/CycleEdge
+bash scripts/register-runner.sh OWNER/REPO
+```
+
+例如：
+
+```bash
+bash scripts/register-runner.sh yourname/project-a
 ```
 
 脚本会提示：
@@ -146,125 +110,73 @@ bash scripts/register-runner.sh ernestyu/CycleEdge
 Paste GitHub registration token:
 ```
 
-粘贴刚才从 GitHub 页面取得的 token，然后回车。输入不会显示在终端。
+粘贴刚才生成的临时 token 并回车。输入内容不会显示在终端。
 
-默认结果：
+注册成功后，脚本会自动安装并启动对应的 systemd service，并输出 runner 状态以及建议使用的 workflow label。
 
-```text
-Runner directory: /home/actions/actions-runner-cycleedge
-Runner name:      unraid-ci-cycleedge
-Custom labels:    unraid-ci,cycleedge
-```
+## 它会创建什么
 
-### 3. 注册 AlphaPulse
+`github-runner-tools` 只是管理脚本仓库。真正的 GitHub Actions runner 不会安装在这个项目目录里面。
 
-先进入：
+假设工具仓库位于：
 
 ```text
-https://github.com/ernestyu/alphapulse
-→ Settings
-→ Actions
-→ Runners
-→ New self-hosted runner
-→ Linux / x64
+/home/actions/github-runner-tools
 ```
 
-生成新的、属于 AlphaPulse 的临时 token，然后：
+那么默认的 runner 基础目录就是：
+
+```text
+/home/actions
+```
+
+如果依次为两个仓库注册 runner，目录可能类似：
+
+```text
+/home/actions/
+├── github-runner-tools/
+├── actions-runner-project-a/
+└── actions-runner-project-b/
+```
+
+脚本根据自身实际路径计算安装位置，所以无论你从哪个当前工作目录调用：
 
 ```bash
-cd ~/github-runner-tools
-bash scripts/register-runner.sh ernestyu/alphapulse
+bash ~/github-runner-tools/scripts/register-runner.sh yourname/project-a
 ```
 
-默认结果：
+runner 仍然会安装到 `github-runner-tools` 的同级目录，而不是放进工具仓库内部。
+
+默认命名规则是：
 
 ```text
-Runner directory: /home/actions/actions-runner-alphapulse
-Runner name:      unraid-ci-alphapulse
-Custom labels:    unraid-ci,alphapulse
+repository:   yourname/project-a
+runner dir:   actions-runner-project-a
+runner name:  unraid-ci-project-a
+labels:       unraid-ci,project-a
 ```
 
-每一个 GitHub repository 都需要自己的 registration token；token 不能跨 repository 共用。
+GitHub 还会自动增加 `self-hosted`、`Linux` 和 `X64` 等系统 labels。
 
-## register-runner.sh 会做什么
+注册脚本会自动完成以下工作：检查必要命令、读取最新版 GitHub Actions Runner release、下载并解压 runner、在可用时校验 SHA-256 digest、安装官方依赖、注册 repository runner、创建 systemd service、启动服务并输出最终状态。
 
-脚本自动完成：
+## Workflow、状态和日常管理
 
-```text
-1. 检查运行用户和必要命令
-2. 根据脚本位置确定 runner 基础目录
-3. 从 GitHub actions/runner 官方 release 获取最新版 Linux x64 runner
-4. 下载 runner
-5. 如果 GitHub release metadata 提供 SHA-256 digest，则自动校验
-6. 解压 runner
-7. 执行官方 installdependencies.sh
-8. 注册到指定 repository
-9. 创建独立 systemd service
-10. 启动 service
-11. 输出 runner 状态和后续 workflow 标签
-```
-
-脚本不会把 runner 安装进 `github-runner-tools` 子目录。
-
-## 自定义 runner 基础目录
-
-默认 runner 基础目录是 `github-runner-tools` 所在目录的父目录。
-
-例如：
-
-```text
-工具仓库：/home/actions/github-runner-tools
-默认基础目录：/home/actions
-```
-
-如果以后希望改到其他位置，可以显式指定：
-
-```bash
-RUNNER_BASE_DIR=/srv/github-runners \
-  bash scripts/register-runner.sh ernestyu/CycleEdge
-```
-
-此时目录会变成：
-
-```text
-/srv/github-runners/actions-runner-cycleedge
-```
-
-## 自定义 runner 名字或 labels
-
-通常不需要修改默认值。
-
-如确有需要：
-
-```bash
-RUNNER_NAME=my-cycleedge-runner \
-RUNNER_LABELS=unraid-ci,cycleedge,docker \
-  bash scripts/register-runner.sh ernestyu/CycleEdge
-```
-
-GitHub 自带的标签（例如 `self-hosted`、`Linux`、`X64`）由 GitHub runner 自动加入。
-
-## Workflow 使用方法
-
-CycleEdge 推荐：
+注册完成以后，目标仓库原本如果使用：
 
 ```yaml
-runs-on: [self-hosted, Linux, X64, cycleedge]
+runs-on: ubuntu-latest
 ```
 
-AlphaPulse 推荐：
+可以改成使用仓库自己的 label，例如：
 
 ```yaml
-runs-on: [self-hosted, Linux, X64, alphapulse]
+runs-on: [self-hosted, Linux, X64, project-a]
 ```
 
-这样每个 repository 只会领取属于自己的 runner。
+这样 GitHub Actions 会等待带有对应 label 的 self-hosted runner 来领取 job。
 
-也可以使用共同标签 `unraid-ci`，但当前一个 repository 一个 runner，没有必要只依赖共同标签。
-
-## 查看所有 runner 状态
-
-运行：
+查看当前主机上的所有 runner：
 
 ```bash
 cd ~/github-runner-tools
@@ -283,29 +195,29 @@ systemctl --type=service | grep actions.runner
 ps aux | grep Runner.Listener | grep -v grep
 ```
 
-## 查看日志
-
-先查看 service 名：
-
-```bash
-systemctl --type=service | grep actions.runner
-```
-
-然后例如：
+查看日志：
 
 ```bash
 sudo journalctl -u 'actions.runner*' --since today
 ```
 
-实时查看：
+实时跟踪日志：
 
 ```bash
 sudo journalctl -u 'actions.runner*' -f
 ```
 
-## 删除一个 runner
+runner 安装为 systemd service 后，主机重启时应自动恢复。重启后可以再次运行：
 
-先在 GitHub 目标仓库中进入：
+```bash
+bash ~/github-runner-tools/scripts/status-runners.sh
+```
+
+确认各 runner 处于正常状态。
+
+### 删除一个 runner
+
+先进入目标 GitHub 仓库的：
 
 ```text
 Settings
@@ -315,91 +227,52 @@ Settings
 → Remove
 ```
 
-GitHub 会提供用于删除配置的临时 token。
-
-然后在 Debian：
+GitHub 会提供 removal token。然后在主机运行：
 
 ```bash
 cd ~/github-runner-tools
-bash scripts/remove-runner.sh ernestyu/CycleEdge
+bash scripts/remove-runner.sh OWNER/REPO
 ```
 
-脚本会要求粘贴 removal token，并在确认后：
+脚本会要求粘贴 removal token，并在再次确认后停止和卸载 systemd service、从 GitHub 注销 runner，并删除对应的本地 runner 目录。
 
-```text
-停止 systemd service
-卸载 systemd service
-从 GitHub 注销 runner
-删除本地 actions-runner-* 目录
-```
+### 自定义安装目录、名称和 labels
 
-删除操作会再次要求确认。
-
-## Debian 重启后的检查
-
-runner 通过 systemd 运行，所以 Debian 重启后应自动恢复。
+默认情况下，runner 会安装在 `github-runner-tools` 所在目录的父目录。如果需要改到其他位置，可以设置：
 
 ```bash
-sudo reboot
+RUNNER_BASE_DIR=/srv/github-runners \
+  bash scripts/register-runner.sh yourname/project-a
 ```
 
-重新登录后：
+也可以覆盖 runner name 和 labels：
 
 ```bash
-cd ~/github-runner-tools
-bash scripts/status-runners.sh
+RUNNER_NAME=my-runner \
+RUNNER_LABELS=self-ci,project-a,docker \
+  bash scripts/register-runner.sh yourname/project-a
 ```
 
-GitHub 对应仓库的：
+一个 repository runner 一次只能执行一个 job，但同一台主机上的多个 runner 可以同时执行不同 job。因此，如果多个项目同时进行 Docker build、数据库启动或大型测试，它们会竞争同一台主机的 CPU、内存和磁盘。是否需要限制并发，应根据实际负载决定。
 
-```text
-Settings → Actions → Runners
-```
+## 安全与限制
 
-也应该显示 runner 为 `Idle` 或 `Active`。
+Self-hosted runner 会执行 GitHub workflow 中定义的命令，因此应该把 runner 主机当成真正的代码执行环境，而不是普通的只读客户端。建议把 CI 主机与生产环境隔离，并只给它完成测试所需要的权限。
 
-## 并发注意事项
-
-一个 repository runner 一次执行一个 job。
-
-如果同一台 Debian VM 注册了：
-
-```text
-CycleEdge runner
-AlphaPulse runner
-ScholarPulse runner
-```
-
-GitHub 可以让它们同时执行 job。
-
-对于当前约 4 vCPU / 6 GB RAM 的 CI VM，如果两个项目同时进行 Docker build、PostgreSQL 和 Python integration tests，可能出现明显资源压力。
-
-先保持现有配置即可。如果实际发生内存不足或严重变慢，再增加 VM 内存、CPU，或进一步限制并发。
-
-## 安全说明
-
-不要向本仓库提交：
+不要把以下内容提交到本项目或普通 CI 配置中：
 
 ```text
 GitHub registration token
 GitHub removal token
-GitHub personal access token
+Personal Access Token
 SSH private key
-生产环境 API key
-数据库密码
-Cloudflare token
+生产 API key
+生产数据库密码
+其他长期 secrets
 ```
 
-GitHub self-hosted workflow 可以在 Debian CI VM 内执行代码，因此应继续保持 CI VM 与 Unraid host 隔离。
+如果 CI 主机运行在 NAS、家庭服务器或其他正式宿主机旁边，不建议把宿主机的 Docker socket、生产数据目录或其他高权限接口直接暴露给 runner。尤其不要仅为了方便而把宿主机的 `/var/run/docker.sock` 挂进 CI 环境。
 
-不要把以下内容暴露给 runner：
+这个项目当前只负责 repository-level self-hosted runner 的安装和管理。它不会自动创建或修改 GitHub Actions workflow，不会自动运行应用部署，也不会把 CI 测试环境转换成生产环境。
 
-```text
-/mnt/user/appdata
-/mnt/user/system
-/mnt/user/domains
-Unraid host /var/run/docker.sock
-生产环境 secrets
-```
-
-本工具仓库只负责管理 Debian VM 内的 GitHub runner，不负责把 Unraid host 权限交给 CI。
+当前主要在 Debian 13、Linux x86_64、systemd 环境下使用；设计上也兼容 Debian 12。其他 Linux 发行版、ARM 架构、非 systemd 环境以及 organization-level runner 尚未作为当前版本的主要目标。

@@ -95,4 +95,31 @@ fi
   uninstall_service_safely >/dev/null
 ) || fail "successful service uninstall was rejected"
 
+# Missing .service is UNKNOWN, not ABSENT. Removal must stop rather than
+# assuming that no systemd unit exists.
+if (
+  export PATH="$TMP/mockbin:$PATH"
+  export MOCK_LOAD_STATE=not-found
+  export MOCK_UNINSTALL_RC=0
+  RUNNER_TOOLS_LIB_ONLY=1 source "$ROOT/scripts/remove-runner.sh"
+  cd "$TMP/runner"
+  rm -f -- .service
+  uninstall_service_safely >/dev/null 2>&1
+); then
+  fail "missing .service was incorrectly treated as an absent service"
+fi
+
+# Empty .service is also UNKNOWN.
+if (
+  export PATH="$TMP/mockbin:$PATH"
+  export MOCK_LOAD_STATE=not-found
+  export MOCK_UNINSTALL_RC=0
+  RUNNER_TOOLS_LIB_ONLY=1 source "$ROOT/scripts/remove-runner.sh"
+  cd "$TMP/runner"
+  : > .service
+  uninstall_service_safely >/dev/null 2>&1
+); then
+  fail "empty .service was incorrectly treated as an absent service"
+fi
+
 echo "PASS: path and removal recovery tests"

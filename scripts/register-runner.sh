@@ -84,6 +84,12 @@ resolve_home() {
   printf '%s' "$home"
 }
 
+canonicalize_existing_dir() {
+  local dir="$1"
+  [[ -d "$dir" ]] || return 1
+  (cd -- "$dir" && pwd -P)
+}
+
 normalize_runner_version() {
   local raw="${1#v}"
   [[ "$raw" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
@@ -152,7 +158,7 @@ REQUESTED_RUNNER_VERSION="${CLI_RUNNER_VERSION:-${RUNNER_VERSION:-}}"
 
 if [[ "$RUNNER_BASE_DIR" != "$USER_HOME" ]]; then [[ -d "$RUNNER_BASE_DIR" ]] || die "Custom RUNNER_BASE_DIR must already exist: $RUNNER_BASE_DIR"; fi
 [[ -d "$RUNNER_BASE_DIR" && -x "$RUNNER_BASE_DIR" && -r "$RUNNER_BASE_DIR" && -w "$RUNNER_BASE_DIR" ]] || die "RUNNER_BASE_DIR must be traversable, readable, and writable by $RUNNER_USER: $RUNNER_BASE_DIR"
-RUNNER_BASE_DIR="$(cd -- "$RUNNER_BASE_DIR" && pwd -P)"
+RUNNER_BASE_DIR="$(canonicalize_existing_dir "$RUNNER_BASE_DIR")" || die "Could not canonicalize RUNNER_BASE_DIR: $RUNNER_BASE_DIR"
 RUNNER_DIR="$RUNNER_BASE_DIR/actions-runner-$LOCAL_ID"
 
 if [[ -n "$REQUESTED_RUNNER_VERSION" ]]; then

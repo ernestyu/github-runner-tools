@@ -149,6 +149,18 @@ The historical `unraid-ci` label should not remain the public default because Un
 
 This naming decision should be finalized before the first stable public release.
 
+### 3.4 Remote runner-name collisions
+
+The current implementation passes `--replace` to GitHub's `config.sh`. That behavior is not acceptable as the public default.
+
+For v1, registration must not pass `--replace` by default.
+
+If GitHub already has a runner with the same runner name, registration should fail and leave the existing remote runner untouched rather than silently replacing it.
+
+A future explicit recovery or replacement option may be added, but it must be opt-in and clearly named.
+
+This rule keeps remote behavior consistent with the local conservative policy: the bootstrap must not silently replace an existing runner merely because the local directory is absent.
+
 ### 3.3 Legacy naming compatibility
 
 Existing configured runners that use the old repo-only naming scheme must not be renamed, moved, overwritten, or deleted automatically.
@@ -162,12 +174,50 @@ unraid-ci-project-a
 
 New registrations use the new owner+repo identity.
 
-Management scripts such as `remove-runner.sh` must either:
+Management scripts such as `remove-runner.sh` must prefer the new owner+repo path.
 
-1. detect the new path first and fall back to the legacy repo-only path when the new path is absent; or
-2. provide an explicit migration/selection mechanism.
+A legacy repo-only path must never be accepted solely because its directory name matches the requested repository name. The old naming scheme discarded owner information, so a directory such as:
 
-If both a new-path runner and a legacy-path runner are present for the same requested repository, the tool must stop and require explicit user choice. It must not guess.
+```text
+actions-runner-project-a
+```
+
+could represent either:
+
+```text
+example/project-a
+another/project-a
+```
+
+Before a management command treats a legacy path as belonging to the requested `OWNER/REPO`, it must inspect the configured runner metadata, normally `.runner`, and verify that the configured GitHub repository URL matches the requested repository after canonical normalization.
+
+Expected behavior:
+
+```text
+new path exists
+→ use the new path
+
+new path absent
++ legacy path exists
++ metadata matches requested OWNER/REPO
+→ legacy path may be used
+
+new path absent
++ legacy path exists
++ metadata points to another OWNER/REPO
+→ reject
+
+new path absent
++ legacy path exists
++ metadata is missing or cannot establish repository identity
+→ ambiguous; stop and require explicit user action
+```
+
+Metadata field names may vary by runner version. The implementation may inspect fields such as `.gitHubUrl` or `.serverUrl`, but it must validate the resulting URL semantically rather than trusting the directory name.
+
+If both a new-path runner and a verified legacy-path runner are present for the same requested repository, the tool must stop and require explicit user choice. It must not guess.
+
+Automatic migration or renaming of legacy runner directories remains out of scope for v1.
 
 ## 4. Preflight validation
 
@@ -388,7 +438,25 @@ or an equivalent explicit CLI option such as:
 
 If no runner version is supplied, the script may resolve `actions/runner/releases/latest`.
 
-If a runner version is supplied, the script must download that exact official version for the detected architecture.
+If a runner version is supplied, both of these external forms should be accepted:
+
+```text
+2.328.0
+v2.328.0
+```
+
+The input must be normalized internally to:
+
+```text
+VERSION=2.328.0
+TAG=v2.328.0
+```
+
+The normalized version must match a strict release-version pattern before it is used in any GitHub API request, asset name, or URL. User input must never be concatenated directly into a download URL without validation.
+
+For a pinned runner version, the script should query the specific GitHub release/tag directly, for example the release identified by `v2.328.0`, rather than fetching `latest` and then trying to reconcile it with the requested version.
+
+If the requested release or architecture-specific asset does not exist, fail clearly without falling back to `latest`.
 
 Documentation must state:
 
@@ -561,10 +629,31 @@ Requirements:
 
 - default base-directory resolution must match `register-runner.sh`;
 - new owner+repo local identities must be recognized;
-- legacy repo-only directories must remain manageable;
+- legacy repo-only directories must remain manageable only after repository identity is verified from runner metadata;
+- a legacy repo-only path must not be accepted solely because its directory name matches the requested repo name;
 - no management script may silently delete a legacy runner because a new naming scheme exists;
 - token input in removal flows should use `/dev/tty` when stdin may be occupied or redirected;
 - token cleanup should follow the same EXIT-trap rule.
+
+### 13.1 Safe service removal
+
+`remove-runner.sh` must not silently ignore failure to uninstall the systemd service and then delete the runner directory.
+
+Stopping the service may tolerate a narrowly defined "already stopped/not running" state, but service-uninstall failure is different: if the systemd service cannot be removed successfully, local runner-directory deletion must stop.
+
+The safe default order is:
+
+```text
+identify and verify runner
+→ stop service
+→ uninstall service
+→ remove GitHub runner registration
+→ delete local runner directory
+```
+
+If service uninstall fails, the command must stop before local directory deletion and explain the recovery action.
+
+A future explicit force/recovery mode may allow an administrator to continue after inspecting the failed service cleanup, but v1 must not hide the failure with `|| true` and proceed to `rm -rf`.
 
 ## 14. Security boundaries
 
@@ -582,7 +671,9 @@ The bootstrap must not:
 - auto-delete ambiguous pre-existing runner directories;
 - accept cross-user provisioning in v1;
 - print or persist registration tokens;
-- silently install an architecture different from the detected host.
+- silently install an architecture different from the detected host;
+- silently replace an existing remote GitHub runner with the same name;
+- construct runner download URLs from unvalidated version input.
 
 ## 15. Scope and non-goals
 
@@ -665,25 +756,32 @@ The improvement is implementation-ready only when the following behaviors are co
 16. `example/project-a` and `another/project-a` produce different local runner directories.
 17. New registrations use owner+repo-derived local identity.
 18. Existing repo-only configured runners are not renamed, overwritten, or deleted automatically.
-19. Management scripts can identify legacy repo-only runners when the new path is absent.
-20. If both legacy and new runner paths exist for one repository request, management stops rather than guessing.
-21. A valid token completes GitHub registration and starts the systemd service.
-22. An invalid or expired token does not produce a false-success state.
-23. An invalid token entered through `curl | bash` does not consume script stdin or corrupt script parsing.
-24. A failed registration created by the current invocation can be cleaned safely without touching pre-existing directories.
-25. A pre-existing non-empty directory without `.runner` is never deleted automatically.
-26. A configured runner containing `.runner` is never overwritten automatically.
-27. A custom `RUNNER_BASE_DIR` that is not accessible and writable by the current user is rejected.
-28. The bootstrap does not run `sudo chown` or equivalent ownership changes on arbitrary custom base directories.
-29. Repository and owner names are converted to deterministic safe local identifiers.
-30. Registration tokens are not echoed, stored, or recommended as command-line arguments.
-31. An EXIT cleanup trap removes temporary files and unsets the token on success and failure paths.
-32. Docker is not required for runner bootstrap.
-33. `RUNNER_BASE_DIR`, `RUNNER_NAME`, and `RUNNER_LABELS` continue to work.
-34. `RUNNER_VERSION` or `--runner-version` installs the requested official GitHub Runner version.
-35. A pinned bootstrap URL with no runner-version override is documented as pinning bootstrap logic only, not the runner binary.
-36. Final output reports the actual installed runner version, runner directory, settings URL, and recommended `runs-on` selector.
-37. English and Chinese README files match the implemented behavior.
+19. A legacy repo-only path is not accepted solely because its repository-name component matches the requested repository.
+20. Management scripts only accept a legacy repo-only runner after metadata verifies the requested OWNER/REPO.
+21. A legacy runner whose metadata points to another owner/repository is never removed for the requested repository.
+22. A legacy runner with missing or unparseable repository identity is treated as ambiguous and is not removed automatically.
+23. If both legacy and new runner paths exist for one repository request, management stops rather than guessing.
+24. A valid token completes GitHub registration and starts the systemd service.
+25. An invalid or expired token does not produce a false-success state.
+26. An invalid token entered through `curl | bash` does not consume script stdin or corrupt script parsing.
+27. A failed registration created by the current invocation can be cleaned safely without touching pre-existing directories.
+28. A pre-existing non-empty directory without `.runner` is never deleted automatically.
+29. A configured runner containing `.runner` is never overwritten automatically.
+30. A custom `RUNNER_BASE_DIR` that is not accessible and writable by the current user is rejected.
+31. The bootstrap does not run `sudo chown` or equivalent ownership changes on arbitrary custom base directories.
+32. Repository and owner names are converted to deterministic safe local identifiers.
+33. Registration tokens are not echoed, stored, or recommended as command-line arguments.
+34. An EXIT cleanup trap removes temporary files and unsets the token on success and failure paths.
+35. Docker is not required for runner bootstrap.
+36. `RUNNER_BASE_DIR`, `RUNNER_NAME`, and `RUNNER_LABELS` continue to work.
+37. `RUNNER_VERSION` or `--runner-version` accepts both `2.328.0` and `v2.328.0`, normalizes them to one internal VERSION/TAG representation, and rejects malformed version strings.
+38. A pinned runner version queries and installs that exact official GitHub release rather than resolving `latest`.
+39. A missing pinned release or missing architecture asset fails without falling back to `latest`.
+40. An existing remote GitHub runner with the same runner name is not silently replaced; default registration does not use `--replace`.
+41. A failed systemd service uninstall prevents local runner-directory deletion unless an explicit recovery/force path is used.
+42. A pinned bootstrap URL with no runner-version override is documented as pinning bootstrap logic only, not the runner binary.
+43. Final output reports the actual installed runner version, runner directory, settings URL, and recommended `runs-on` selector.
+44. English and Chinese README files match the implemented behavior.
 
 ## 18. Recommended implementation order
 
@@ -694,16 +792,17 @@ The improvement is implementation-ready only when the following behaviors are co
 5. Add root, sudo, systemd, TTY, base-directory, and required-command preflight checks.
 6. Change interactive token reads to `/dev/tty` and add unified EXIT cleanup.
 7. Add architecture detection.
-8. Separate bootstrap version semantics from GitHub Runner binary version selection and implement runner-version pinning.
+8. Separate bootstrap version semantics from GitHub Runner binary version selection, normalize/validate runner-version input, and query pinned release tags directly.
 9. Refactor directory-state handling for configured, empty, incomplete, and newly-created paths.
-10. Adopt owner+repo naming for new registrations.
-11. Add legacy repo-only discovery to removal/status management.
-12. Make clone mode, standalone-file mode, and stdin mode use the same registration logic.
-13. Add tests for user/home detection, TTY behavior, naming collisions, custom base-directory permissions, architecture selection, version pinning, and incomplete-install handling.
-14. Manually validate on the existing Debian host.
-15. Validate with a second non-`actions` username if possible.
-16. Validate ARM64 before documenting it as supported.
-17. Update English and Chinese README files.
-18. Tag the first release intended for pinned one-line installation.
+10. Adopt owner+repo naming for new registrations and remove default `--replace` behavior.
+11. Add metadata-verified legacy repo-only discovery to removal/status management.
+12. Make runner removal stop on systemd uninstall failure before local directory deletion.
+13. Make clone mode, standalone-file mode, and stdin mode use the same registration logic.
+14. Add tests for user/home detection, TTY behavior, naming collisions, remote-name collisions, legacy metadata verification, custom base-directory permissions, architecture selection, version pinning, service-uninstall failure, and incomplete-install handling.
+15. Manually validate on the existing Debian host.
+16. Validate with a second non-`actions` username if possible.
+17. Validate ARM64 before documenting it as supported.
+18. Update English and Chinese README files.
+19. Tag the first release intended for pinned one-line installation.
 
 The priority remains conservative behavior over convenience. A one-line bootstrap is useful only if its ownership model, token input, path selection, version semantics, and failure cleanup are all explicit and predictable.

@@ -88,36 +88,71 @@ read_tty_line() {
   printf '%s' "$value"
 }
 
-runner_service_absent() {
+runner_service_state() {
   local service_name load_state
-  [[ -f .service ]] || return 0
+
+  if [[ ! -f .service ]]; then
+    printf '%s' "unknown"
+    return 0
+  fi
+
   service_name="$(tr -d '\r\n' < .service)"
-  [[ -n "$service_name" ]] || return 1
+  if [[ -z "$service_name" ]]; then
+    printf '%s' "unknown"
+    return 0
+  fi
+
   load_state="$(systemctl show "$service_name" -p LoadState --value 2>/dev/null || true)"
-  [[ "$load_state" == "not-found" ]]
+  case "$load_state" in
+    not-found) printf '%s' "absent" ;;
+    "")        printf '%s' "unknown" ;;
+    *)         printf '%s' "present" ;;
+  esac
 }
 
 uninstall_service_safely() {
-  if runner_service_absent; then
-    echo "==> Systemd service is already absent; continuing."
-    return 0
-  fi
+  local state
+
+  state="$(runner_service_state)"
+  case "$state" in
+    absent)
+      echo "==> Systemd service is already absent; continuing."
+      return 0
+      ;;
+    unknown)
+      die "Cannot determine systemd service state because .service is missing, empty, or unreadable by systemctl. Local runner directory will not be deleted."
+      ;;
+    present) ;;
+    *)
+      die "Unexpected systemd service state: $state"
+      ;;
+  esac
 
   if sudo ./svc.sh uninstall; then
     return 0
   fi
 
-  if runner_service_absent; then
-    echo "WARNING: svc.sh uninstall returned non-zero, but the systemd service is absent; continuing." >&2
-    return 0
-  fi
-
-  die "Systemd service uninstall failed and the service still appears to exist. Local runner directory will not be deleted."
+  state="$(runner_service_state)"
+  case "$state" in
+    absent)
+      echo "WARNING: svc.sh uninstall returned non-zero, but the systemd service is now absent; continuing." >&2
+      return 0
+      ;;
+    unknown)
+      die "svc.sh uninstall failed and the resulting systemd service state is unknown. Local runner directory will not be deleted."
+      ;;
+    present)
+      die "Systemd service uninstall failed and the service still appears to exist. Local runner directory will not be deleted."
+      ;;
+    *)
+      die "Unexpected systemd service state after uninstall attempt: $state"
+      ;;
+  esac
 }
 
 main() {
 if [[ ${EUID} -eq 0 ]]; then die "Do not run this script as root. Run it as the runner owner."; fi
-for cmd in jq sudo id awk tr sed sha256sum cut find; do require_command "$cmd"; done
+for cmd in jq sudo id awk tr sed sha256sum cut find systemctl; do require_command "$cmd"; done
 
 CLI_BASE_DIR=""; POSITIONAL=()
 while [[ $# -gt 0 ]]; do

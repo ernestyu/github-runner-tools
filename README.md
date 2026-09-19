@@ -173,10 +173,11 @@ Configured runners containing `.runner` are never removed by that option.
 
 ## Tests
 
-Pure helper tests currently cover deterministic naming, owner collision avoidance, long-name hashing, and runner-version normalization:
+The repository includes pure helper tests plus failure-path tests for relative base-directory canonicalization and retry-safe systemd removal:
 
 ```bash
 bash tests/test-pure.sh
+bash tests/test-failure-paths.sh
 ```
 
 These tests do not replace real-host validation. Registration, systemd service behavior, TTY input, GitHub token handling, and ARM64 still need environment-specific testing.

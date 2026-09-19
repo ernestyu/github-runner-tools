@@ -127,9 +127,42 @@ ExampleOrg/Project-A
 → exampleorg--project-a
 ```
 
-The exact separator may change during implementation, but the chosen encoding must be deterministic and must distinguish repositories with the same name under different owners.
+The separator is fixed for v1 as a double hyphen:
 
-If the implementation cannot guarantee uniqueness from the textual encoding alone, it should append a short deterministic hash derived from the normalized `OWNER/REPO`.
+```text
+<safe-owner>--<safe-repo>
+```
+
+To keep directory names, runner names, and generated systemd service names bounded, v1 defines:
+
+```text
+MAX_LOCAL_ID_LENGTH=64
+HASH_LENGTH=8
+```
+
+The identity algorithm is deterministic:
+
+1. Normalize OWNER and REPO to lowercase for the hash input.
+2. Sanitize OWNER and REPO independently for filesystem/name use.
+3. Build `<safe-owner>--<safe-repo>`.
+4. If the result is at most 64 characters, use it directly.
+5. If it exceeds 64 characters, append an 8-character lowercase hexadecimal SHA-256 prefix and truncate the owner/repo components so the final identity remains at most 64 characters.
+
+The long-name form is:
+
+```text
+<truncated-safe-owner>--<truncated-safe-repo>--<8-char-hash>
+```
+
+The hash input is the normalized lowercase textual repository identity:
+
+```text
+<lowercase-owner>/<lowercase-repo>
+```
+
+The truncation algorithm must preserve at least one character from both the owner and repository components. It should divide the available non-hash space as evenly as practical, giving unused space from a short component to the longer component.
+
+The same OWNER/REPO input must always produce the same local identity. Different owners with the same repository name must produce different identities.
 
 ### 3.2 New default paths and names
 
@@ -148,18 +181,6 @@ Repository-specific workflow labels do not need to include the owner because a r
 The historical `unraid-ci` label should not remain the public default because Unraid is not a requirement of this project. A generic shared label such as `local-ci` is preferred for new installations.
 
 This naming decision should be finalized before the first stable public release.
-
-### 3.4 Remote runner-name collisions
-
-The current implementation passes `--replace` to GitHub's `config.sh`. That behavior is not acceptable as the public default.
-
-For v1, registration must not pass `--replace` by default.
-
-If GitHub already has a runner with the same runner name, registration should fail and leave the existing remote runner untouched rather than silently replacing it.
-
-A future explicit recovery or replacement option may be added, but it must be opt-in and clearly named.
-
-This rule keeps remote behavior consistent with the local conservative policy: the bootstrap must not silently replace an existing runner merely because the local directory is absent.
 
 ### 3.3 Legacy naming compatibility
 
@@ -218,6 +239,18 @@ Metadata field names may vary by runner version. The implementation may inspect 
 If both a new-path runner and a verified legacy-path runner are present for the same requested repository, the tool must stop and require explicit user choice. It must not guess.
 
 Automatic migration or renaming of legacy runner directories remains out of scope for v1.
+
+### 3.4 Remote runner-name collisions
+
+The current implementation passes `--replace` to GitHub's `config.sh`. That behavior is not acceptable as the public default.
+
+For v1, registration must not pass `--replace` by default.
+
+If GitHub already has a runner with the same runner name, registration should fail and leave the existing remote runner untouched rather than silently replacing it.
+
+A future explicit recovery or replacement option may be added, but it must be opt-in and clearly named.
+
+This rule keeps remote behavior consistent with the local conservative policy: the bootstrap must not silently replace an existing runner merely because the local directory is absent.
 
 ## 4. Preflight validation
 
@@ -781,11 +814,12 @@ The improvement is implementation-ready only when the following behaviors are co
 41. A failed systemd service uninstall prevents local runner-directory deletion unless an explicit recovery/force path is used.
 42. A pinned bootstrap URL with no runner-version override is documented as pinning bootstrap logic only, not the runner binary.
 43. Final output reports the actual installed runner version, runner directory, settings URL, and recommended `runs-on` selector.
-44. English and Chinese README files match the implemented behavior.
+44. Local identities never exceed 64 characters; overlong OWNER/REPO values are truncated deterministically and include the defined 8-character hash suffix.
+45. English and Chinese README files match the implemented behavior.
 
 ## 18. Recommended implementation order
 
-1. Introduce shared deterministic OWNER/REPO parsing and local-identity functions.
+1. Introduce shared deterministic OWNER/REPO parsing and the fixed 64-character local-identity/truncation/hash algorithm.
 2. Change the default base directory to the current execution user's real home.
 3. Remove clone-path dependence from registration.
 4. Define current-user-only runner ownership and remove cross-user behavior.

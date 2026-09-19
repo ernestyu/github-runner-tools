@@ -82,6 +82,34 @@ read_tty_line() {
   printf '%s' "$value"
 }
 
+runner_service_absent() {
+  local service_name load_state
+  [[ -f .service ]] || return 0
+  service_name="$(tr -d '\r\n' < .service)"
+  [[ -n "$service_name" ]] || return 1
+  load_state="$(systemctl show "$service_name" -p LoadState --value 2>/dev/null || true)"
+  [[ "$load_state" == "not-found" ]]
+}
+
+uninstall_service_safely() {
+  if runner_service_absent; then
+    echo "==> Systemd service is already absent; continuing."
+    return 0
+  fi
+
+  if sudo ./svc.sh uninstall; then
+    return 0
+  fi
+
+  if runner_service_absent; then
+    echo "WARNING: svc.sh uninstall returned non-zero, but the systemd service is absent; continuing." >&2
+    return 0
+  fi
+
+  die "Systemd service uninstall failed and the service still appears to exist. Local runner directory will not be deleted."
+}
+
+main() {
 if [[ ${EUID} -eq 0 ]]; then die "Do not run this script as root. Run it as the runner owner."; fi
 for cmd in jq sudo id awk tr sed sha256sum cut find; do require_command "$cmd"; done
 
@@ -105,6 +133,7 @@ LOCAL_ID="$(make_local_id "$OWNER" "$REPO_NAME")" || die "Could not derive local
 RUNNER_USER="$(id -un)"; USER_HOME="$(resolve_home "$RUNNER_USER")" || die "Could not resolve home for $RUNNER_USER"
 RUNNER_BASE_DIR="${CLI_BASE_DIR:-${RUNNER_BASE_DIR:-$USER_HOME}}"
 [[ -d "$RUNNER_BASE_DIR" && -x "$RUNNER_BASE_DIR" && -r "$RUNNER_BASE_DIR" && -w "$RUNNER_BASE_DIR" ]] || die "RUNNER_BASE_DIR is not accessible and writable: $RUNNER_BASE_DIR"
+RUNNER_BASE_DIR="$(cd -- "$RUNNER_BASE_DIR" && pwd -P)"
 
 NEW_DIR="$RUNNER_BASE_DIR/actions-runner-$LOCAL_ID"
 LEGACY_DIR="$RUNNER_BASE_DIR/actions-runner-$SAFE_REPO"
@@ -162,7 +191,7 @@ if ! sudo ./svc.sh stop; then
 fi
 
 echo "==> Uninstalling service..."
-sudo ./svc.sh uninstall || die "Systemd service uninstall failed. Local runner directory will not be deleted."
+uninstall_service_safely
 
 echo "==> Removing runner registration from GitHub..."
 ./config.sh remove --token "$TOKEN"
@@ -180,3 +209,10 @@ Runner removed successfully.
 Repository: https://github.com/$REPO
 Deleted:    $RUNNER_DIR
 DONE
+
+
+}
+
+if [[ "${RUNNER_TOOLS_LIB_ONLY:-0}" != "1" ]]; then
+  main "$@"
+fi

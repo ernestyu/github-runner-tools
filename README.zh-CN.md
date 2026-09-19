@@ -171,10 +171,11 @@ bash scripts/register-runner.sh --clean-incomplete OWNER/REPO
 
 ## 测试
 
-目前的纯函数测试覆盖本地身份生成、不同 owner 的同名 repo 防碰撞、超长名称 hash，以及 runner version 规范化：
+目前包含纯函数测试，以及针对相对 base directory 和 systemd 删除重试路径的 failure-path 测试：
 
 ```bash
 bash tests/test-pure.sh
+bash tests/test-failure-paths.sh
 ```
 
 这些测试不能替代真实主机验证。runner 注册、systemd service、TTY 输入、GitHub token 以及 ARM64 仍需要在相应环境中进行实际测试。

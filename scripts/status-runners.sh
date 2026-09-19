@@ -10,11 +10,17 @@ resolve_home() {
   printf '%s' "$home"
 }
 
+canonicalize_existing_dir() {
+  local dir="$1"
+  [[ -d "$dir" ]] || return 1
+  (cd -- "$dir" && pwd -P)
+}
+
 RUNNER_USER="$(id -un)"
 USER_HOME="$(resolve_home "$RUNNER_USER")" || die "Could not resolve home for $RUNNER_USER"
 RUNNER_BASE_DIR="${RUNNER_BASE_DIR:-$USER_HOME}"
 [[ -d "$RUNNER_BASE_DIR" ]] || die "Runner base directory does not exist: $RUNNER_BASE_DIR"
-RUNNER_BASE_DIR="$(cd -- "$RUNNER_BASE_DIR" && pwd -P)"
+RUNNER_BASE_DIR="$(canonicalize_existing_dir "$RUNNER_BASE_DIR")" || die "Could not canonicalize RUNNER_BASE_DIR: $RUNNER_BASE_DIR"
 
 printf 'Runner user : %s\n' "$RUNNER_USER"
 printf 'Runner base : %s\n\n' "$RUNNER_BASE_DIR"

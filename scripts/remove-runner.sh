@@ -115,16 +115,22 @@ if [[ -d "$NEW_DIR" ]]; then
   RUNNER_DIR="$NEW_DIR"; MODE="new"
 fi
 if [[ -d "$LEGACY_DIR" ]]; then
-  [[ -f "$LEGACY_DIR/.runner" ]] || die "Legacy runner candidate is ambiguous because .runner metadata is missing: $LEGACY_DIR"
-  META_URL="$(metadata_repo_url "$LEGACY_DIR/.runner")"
-  [[ -n "$META_URL" ]] || die "Legacy runner candidate is ambiguous because repository metadata cannot be verified: $LEGACY_DIR"
+  if [[ -f "$LEGACY_DIR/.runner" ]]; then
+    META_URL="$(metadata_repo_url "$LEGACY_DIR/.runner")"
+  else
+    META_URL=""
+  fi
   EXPECTED_URL="https://github.com/$REPO"
-  if [[ "$(normalize_repo_url "$META_URL")" == "$(normalize_repo_url "$EXPECTED_URL")" ]]; then
+
+  if [[ -n "$META_URL" && "$(normalize_repo_url "$META_URL")" == "$(normalize_repo_url "$EXPECTED_URL")" ]]; then
     if [[ -n "$RUNNER_DIR" && "$RUNNER_DIR" != "$LEGACY_DIR" ]]; then
       die "Both new and verified legacy runner directories exist. Refusing to guess which one to remove."
     fi
     RUNNER_DIR="$LEGACY_DIR"; MODE="legacy"
   elif [[ -z "$RUNNER_DIR" ]]; then
+    if [[ -z "$META_URL" ]]; then
+      die "Legacy runner candidate is ambiguous because repository metadata cannot be verified: $LEGACY_DIR"
+    fi
     die "Legacy runner directory belongs to a different repository: $META_URL"
   fi
 fi

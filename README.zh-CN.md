@@ -2,78 +2,24 @@
 
 # github-runner-tools
 
-`github-runner-tools` 是一组用于管理 GitHub repository-level self-hosted runner 的轻量脚本。它适合这样的场景：你有一台长期在线的 Linux 主机，希望让多个 GitHub 仓库使用自己的计算资源运行 GitHub Actions，而不是为每个仓库重复手工下载、注册和维护 runner。
+`github-runner-tools` 是一组用于在 Linux 主机上注册和管理 GitHub repository-level self-hosted runner 的轻量脚本。GitHub Actions 仍然负责任务触发、调度、状态和日志，真正的计算则放到你自己的服务器、NAS、mini PC、虚拟机或 VPS 上完成。
 
-这个项目不会替代 GitHub Actions，也不会修改你的应用代码或自动部署项目。GitHub 仍然负责任务触发、workflow 调度、状态和日志；本项目只负责把 GitHub 官方 self-hosted runner 更方便地安装、注册和管理在你自己的主机上。
+这个项目不会替代 GitHub Actions，也不会修改应用代码或自动部署应用。它解决的是一个更窄的问题：让多个仓库使用官方 GitHub Actions Runner 时，安装、注册和日常管理更简单，也更保守安全。
 
-当前主要面向 Debian 12 / 13、Linux x86_64 和 systemd 环境。实际使用中，一台主机可以运行多个彼此独立的 repository-level runner。
-
-## 为什么需要它
-
-GitHub Actions 本身已经可以使用 GitHub-hosted runner 执行测试、构建和其他自动任务。对于偶尔运行的小项目，这种方式非常方便。但当多个私有仓库需要频繁运行测试、Docker build 或 integration test 时，GitHub-hosted runner 会受到套餐额度、费用和运行环境控制等因素影响。
-
-Self-hosted runner 可以把真正执行任务的计算资源换成自己的服务器、NAS、mini PC、虚拟机或 VPS，同时继续使用 GitHub Actions 原有的 workflow、日志和状态系统。
-
-如果 GitHub 仓库都属于个人账号，而不是同一个 Organization，每个仓库通常需要分别注册 repository-level runner。官方注册流程并不复杂，但每增加一个仓库，都需要重复下载 runner、解压、执行 `config.sh`、设置名称和 labels、安装 systemd service、启动并检查状态。
-
-`github-runner-tools` 把这些重复步骤整理成几个脚本，让“为一个仓库增加 runner”变成一次标准化操作。
+当前主要面向 Debian 12/13 和 systemd。x86_64 是主要测试架构。脚本已经包含 ARM64 的下载与识别逻辑，但在真实 ARM64 主机完成验证之前，不把它作为已经验证的平台。
 
 ## 快速开始
 
-### 1. 准备主机
+请使用最终应该拥有 runner 的普通 Linux 用户执行脚本，不要直接用 root。默认安装位置是这个用户真实的 home 目录。
 
-至少需要一台 Linux x86_64 主机，并安装以下基础工具：
+先安装基础工具：
 
 ```bash
 sudo apt update
-sudo apt install -y \
-  ca-certificates \
-  curl \
-  jq \
-  tar \
-  coreutils
+sudo apt install -y ca-certificates curl jq tar coreutils
 ```
 
-建议使用普通用户运行 runner，不要直接用 `root` 注册。例如可以创建一个专门的用户：
-
-```text
-actions
-```
-
-如果项目的 CI 需要 Docker，应先单独安装 Docker Engine 和 Docker Compose，并确认当前用户可以正常使用：
-
-```bash
-docker version
-docker compose version
-docker run --rm hello-world
-```
-
-如果把普通用户加入了 `docker` group，需要退出当前登录会话后重新登录，新的权限才会生效。
-
-### 2. 获取本项目
-
-```bash
-cd ~
-git clone https://github.com/ernestyu/github-runner-tools.git
-cd github-runner-tools
-```
-
-以后更新：
-
-```bash
-cd ~/github-runner-tools
-git pull
-```
-
-脚本可以直接通过 `bash` 执行，不依赖 executable bit：
-
-```bash
-bash scripts/status-runners.sh
-```
-
-### 3. 在 GitHub 生成 registration token
-
-进入你准备接入 self-hosted runner 的目标仓库：
+然后进入目标 GitHub 仓库：
 
 ```text
 Settings
@@ -82,199 +28,161 @@ Settings
 → New self-hosted runner
 ```
 
-选择：
+选择 Linux 和与主机相符的架构，从 GitHub 显示的 `config.sh` 命令里复制临时 registration token。
 
-```text
-Linux
-x64
-```
+### 一行注册
 
-GitHub 会显示一条包含临时 registration token 的 `config.sh` 命令。只需要复制其中的 token，不要把它写进脚本，也不要提交到 Git。
-
-### 4. 注册 runner
-
-回到 Linux 主机，在本项目目录运行：
+在第一个正式 tag 发布之前，可以使用开发版本：
 
 ```bash
-cd ~/github-runner-tools
+curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/main/scripts/register-runner.sh \
+  | bash -s -- OWNER/REPO
+```
+
+脚本会从 `/dev/tty` 读取 registration token，而不是从标准输入读取，所以 `curl | bash` 不会和 token 输入冲突。token 输入时不会显示，也不会被脚本保存。
+
+正式发布 tag 后，更建议固定版本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/VERSION/scripts/register-runner.sh \
+  | bash -s -- OWNER/REPO
+```
+
+如果希望先检查脚本再执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/VERSION/scripts/register-runner.sh \
+  -o register-runner.sh
+
+less register-runner.sh
+bash register-runner.sh OWNER/REPO
+```
+
+### 完整管理方式
+
+如果还需要状态检查和删除工具，可以 clone 整个仓库：
+
+```bash
+cd ~
+git clone https://github.com/ernestyu/github-runner-tools.git
+cd github-runner-tools
+
 bash scripts/register-runner.sh OWNER/REPO
+bash scripts/status-runners.sh
 ```
 
-例如：
+clone 方式和一行 bootstrap 使用相同的默认规则。
+
+## 脚本会创建什么
+
+对于 `example/project-a`，默认本地身份同时包含 owner 和 repo：
+
+```text
+example--project-a
+```
+
+runner 默认安装在当前用户 home 下：
+
+```text
+~/actions-runner-example--project-a
+```
+
+默认 runner name 和自定义 labels 是：
+
+```text
+runner name: local-ci-example--project-a
+labels:      local-ci,project-a
+```
+
+本地身份包含 owner，是为了避免 `example/project-a` 与 `another/project-a` 这样的同名仓库发生目录冲突。本地身份最多 64 个字符；超长时会确定性截断，并附加 8 位 SHA-256 后缀。
+
+正式下载之前，脚本会检查当前用户、sudo、systemd、必要命令、安装目录、TTY 和 CPU 架构。随后从官方 `actions/runner` release 下载匹配架构的 runner，在 GitHub 提供 digest 时校验 SHA-256，运行官方依赖安装脚本，完成注册、systemd service 安装和启动，并输出最终状态。
+
+脚本默认**不会**传入 `--replace`。如果 GitHub 远端已经存在同名 runner，注册应该失败，而不是静默替换已有 runner。
+
+## 固定 GitHub Runner 版本
+
+默认会安装最新官方 GitHub Actions Runner。如果希望固定 runner binary 版本，可以使用：
 
 ```bash
-bash scripts/register-runner.sh yourname/project-a
+RUNNER_VERSION=2.328.0 \
+  bash scripts/register-runner.sh OWNER/REPO
 ```
 
-脚本会提示：
-
-```text
-Paste GitHub registration token:
-```
-
-粘贴刚才生成的临时 token 并回车。输入内容不会显示在终端。
-
-注册成功后，脚本会自动安装并启动对应的 systemd service，并输出 runner 状态以及建议使用的 workflow label。
-
-## 它会创建什么
-
-`github-runner-tools` 只是管理脚本仓库。真正的 GitHub Actions runner 不会安装在这个项目目录里面。
-
-假设工具仓库位于：
-
-```text
-/home/actions/github-runner-tools
-```
-
-那么默认的 runner 基础目录就是：
-
-```text
-/home/actions
-```
-
-如果依次为两个仓库注册 runner，目录可能类似：
-
-```text
-/home/actions/
-├── github-runner-tools/
-├── actions-runner-project-a/
-└── actions-runner-project-b/
-```
-
-脚本根据自身实际路径计算安装位置，所以无论你从哪个当前工作目录调用：
+或者：
 
 ```bash
-bash ~/github-runner-tools/scripts/register-runner.sh yourname/project-a
+bash scripts/register-runner.sh --runner-version v2.328.0 OWNER/REPO
 ```
 
-runner 仍然会安装到 `github-runner-tools` 的同级目录，而不是放进工具仓库内部。
+`2.328.0` 和 `v2.328.0` 两种写法都可以，脚本会统一处理。
 
-默认命名规则是：
+需要区分两种版本：固定 `github-runner-tools` 的 URL，只是固定 bootstrap 脚本逻辑；只有同时指定 `RUNNER_VERSION` 或 `--runner-version`，才会固定实际安装的 GitHub Actions Runner binary。
 
-```text
-repository:   yourname/project-a
-runner dir:   actions-runner-project-a
-runner name:  unraid-ci-project-a
-labels:       unraid-ci,project-a
-```
+## Workflow 与日常管理
 
-GitHub 还会自动增加 `self-hosted`、`Linux` 和 `X64` 等系统 labels。
-
-注册脚本会自动完成以下工作：检查必要命令、读取最新版 GitHub Actions Runner release、下载并解压 runner、在可用时校验 SHA-256 digest、安装官方依赖、注册 repository runner、创建 systemd service、启动服务并输出最终状态。
-
-## Workflow、状态和日常管理
-
-注册完成以后，目标仓库原本如果使用：
-
-```yaml
-runs-on: ubuntu-latest
-```
-
-可以改成使用仓库自己的 label，例如：
+注册成功后，可以在目标仓库 workflow 中使用 repository-specific label：
 
 ```yaml
 runs-on: [self-hosted, Linux, X64, project-a]
 ```
 
-这样 GitHub Actions 会等待带有对应 label 的 self-hosted runner 来领取 job。
+ARM64 对应的系统架构 label 是 `ARM64`。
 
-查看当前主机上的所有 runner：
+检查当前用户 home 下的 runner：
 
 ```bash
-cd ~/github-runner-tools
 bash scripts/status-runners.sh
 ```
 
-也可以直接查看 systemd：
+删除 runner：
 
 ```bash
-systemctl --type=service | grep actions.runner
-```
-
-查看 runner listener：
-
-```bash
-ps aux | grep Runner.Listener | grep -v grep
-```
-
-查看日志：
-
-```bash
-sudo journalctl -u 'actions.runner*' --since today
-```
-
-实时跟踪日志：
-
-```bash
-sudo journalctl -u 'actions.runner*' -f
-```
-
-runner 安装为 systemd service 后，主机重启时应自动恢复。重启后可以再次运行：
-
-```bash
-bash ~/github-runner-tools/scripts/status-runners.sh
-```
-
-确认各 runner 处于正常状态。
-
-### 删除一个 runner
-
-先进入目标 GitHub 仓库的：
-
-```text
-Settings
-→ Actions
-→ Runners
-→ 选择对应 runner
-→ Remove
-```
-
-GitHub 会提供 removal token。然后在主机运行：
-
-```bash
-cd ~/github-runner-tools
 bash scripts/remove-runner.sh OWNER/REPO
 ```
 
-脚本会要求粘贴 removal token，并在再次确认后停止和卸载 systemd service、从 GitHub 注销 runner，并删除对应的本地 runner 目录。
+删除工具同时兼容新版 owner+repo 目录和旧版 repo-only 目录。对于旧目录，脚本不会只根据目录名猜它属于哪个仓库，而是必须读取 `.runner` 元数据确认 OWNER/REPO。无法确认身份时会停止，不会删除。
 
-### 自定义安装目录、名称和 labels
+systemd service 卸载失败时，本地 runner 目录也不会继续被删除。旧版 runner 不会被自动改名或迁移。
 
-默认情况下，runner 会安装在 `github-runner-tools` 所在目录的父目录。如果需要改到其他位置，可以设置：
+## 自定义设置
+
+可以覆盖安装目录、runner name、labels 和 runner binary 版本：
 
 ```bash
 RUNNER_BASE_DIR=/srv/github-runners \
-  bash scripts/register-runner.sh yourname/project-a
+RUNNER_NAME=my-runner \
+RUNNER_LABELS=local-ci,project-a,docker \
+RUNNER_VERSION=2.328.0 \
+  bash scripts/register-runner.sh OWNER/REPO
 ```
 
-也可以覆盖 runner name 和 labels：
+自定义 `RUNNER_BASE_DIR` 必须已经存在，而且当前用户需要有进入、读取和写入权限。bootstrap 不会自动对任意目录执行 `sudo mkdir` 或 `sudo chown`。
+
+v1 不支持跨用户安装。执行 `config.sh` 的用户、runner 文件所有者和 systemd service 用户必须是同一个普通 Linux 用户。
+
+如果上一次失败注册留下了非空但尚未配置的目标目录，默认会停止。确认该目录确实只是失败残留后，可以显式清理：
 
 ```bash
-RUNNER_NAME=my-runner \
-RUNNER_LABELS=self-ci,project-a,docker \
-  bash scripts/register-runner.sh yourname/project-a
+bash scripts/register-runner.sh --clean-incomplete OWNER/REPO
 ```
 
-一个 repository runner 一次只能执行一个 job，但同一台主机上的多个 runner 可以同时执行不同 job。因此，如果多个项目同时进行 Docker build、数据库启动或大型测试，它们会竞争同一台主机的 CPU、内存和磁盘。是否需要限制并发，应根据实际负载决定。
+如果目录中已经存在 `.runner`，这个选项不会删除它。
+
+## 测试
+
+目前的纯函数测试覆盖本地身份生成、不同 owner 的同名 repo 防碰撞、超长名称 hash，以及 runner version 规范化：
+
+```bash
+bash tests/test-pure.sh
+```
+
+这些测试不能替代真实主机验证。runner 注册、systemd service、TTY 输入、GitHub token 以及 ARM64 仍需要在相应环境中进行实际测试。
 
 ## 安全与限制
 
-Self-hosted runner 会执行 GitHub workflow 中定义的命令，因此应该把 runner 主机当成真正的代码执行环境，而不是普通的只读客户端。建议把 CI 主机与生产环境隔离，并只给它完成测试所需要的权限。
+Self-hosted runner 会执行 repository workflow 中的命令，因此应该把 runner 主机看成真正的代码执行环境。条件允许时，应与生产环境隔离。
 
-不要把以下内容提交到本项目或普通 CI 配置中：
+不要提交 registration/removal token、PAT、SSH private key、生产 API key、数据库密码或其他长期 secrets。也不要为了方便，把宿主机 Docker socket 或无关的生产数据直接暴露给 CI。
 
-```text
-GitHub registration token
-GitHub removal token
-Personal Access Token
-SSH private key
-生产 API key
-生产数据库密码
-其他长期 secrets
-```
-
-如果 CI 主机运行在 NAS、家庭服务器或其他正式宿主机旁边，不建议把宿主机的 Docker socket、生产数据目录或其他高权限接口直接暴露给 runner。尤其不要仅为了方便而把宿主机的 `/var/run/docker.sock` 挂进 CI 环境。
-
-这个项目当前只负责 repository-level self-hosted runner 的安装和管理。它不会自动创建或修改 GitHub Actions workflow，不会自动运行应用部署，也不会把 CI 测试环境转换成生产环境。
-
-当前主要在 Debian 13、Linux x86_64、systemd 环境下使用；设计上也兼容 Debian 12。其他 Linux 发行版、ARM 架构、非 systemd 环境以及 organization-level runner 尚未作为当前版本的主要目标。
+当前项目只处理 systemd Linux 上的 repository-level runner。Organization runner group、自动扩缩容、Kubernetes、Windows、macOS、跨用户安装、自动生成 token、自动修改 workflow 和生产部署都不属于 v1 范围。

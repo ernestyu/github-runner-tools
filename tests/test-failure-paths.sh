@@ -71,6 +71,42 @@ chmod +x "$TMP/runner/svc.sh"
   uninstall_service_safely >/dev/null
 ) || fail "already-absent systemd service blocked removal retry"
 
+# Recovery branch: service is present before uninstall, svc.sh returns non-zero,
+# but the unit disappears during that failed uninstall attempt. The helper must
+# re-check state and continue.
+mkdir -p "$TMP/stateful"
+printf '%s\n' 'loaded' > "$TMP/stateful/load-state"
+cat > "$TMP/stateful/systemctl" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "$1" == "show" ]]; then
+  cat "$MOCK_STATE_FILE"
+  exit 0
+fi
+exit 0
+MOCK
+cat > "$TMP/stateful/sudo" <<'MOCK'
+#!/usr/bin/env bash
+exec "$@"
+MOCK
+cat > "$TMP/stateful/svc.sh" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "uninstall" ]]; then
+  printf '%s\n' 'not-found' > "$MOCK_STATE_FILE"
+  exit 1
+fi
+exit 0
+MOCK
+chmod +x "$TMP/stateful/systemctl" "$TMP/stateful/sudo" "$TMP/stateful/svc.sh"
+
+(
+  export PATH="$TMP/stateful:$PATH"
+  export MOCK_STATE_FILE="$TMP/stateful/load-state"
+  RUNNER_TOOLS_LIB_ONLY=1 source "$ROOT/scripts/remove-runner.sh"
+  cd "$TMP/stateful"
+  printf '%s\n' 'actions.runner.example.service' > .service
+  uninstall_service_safely >/dev/null
+) || fail "post-uninstall absent state did not allow recovery"
+
 # Genuine uninstall failure must remain fatal when the unit still exists.
 if (
   export PATH="$TMP/mockbin:$PATH"

@@ -58,6 +58,12 @@ resolve_home() {
   printf '%s' "$home"
 }
 
+canonicalize_existing_dir() {
+  local dir="$1"
+  [[ -d "$dir" ]] || return 1
+  (cd -- "$dir" && pwd -P)
+}
+
 normalize_repo_url() {
   local value="$1"
   value="${value%/}"
@@ -133,7 +139,7 @@ LOCAL_ID="$(make_local_id "$OWNER" "$REPO_NAME")" || die "Could not derive local
 RUNNER_USER="$(id -un)"; USER_HOME="$(resolve_home "$RUNNER_USER")" || die "Could not resolve home for $RUNNER_USER"
 RUNNER_BASE_DIR="${CLI_BASE_DIR:-${RUNNER_BASE_DIR:-$USER_HOME}}"
 [[ -d "$RUNNER_BASE_DIR" && -x "$RUNNER_BASE_DIR" && -r "$RUNNER_BASE_DIR" && -w "$RUNNER_BASE_DIR" ]] || die "RUNNER_BASE_DIR is not accessible and writable: $RUNNER_BASE_DIR"
-RUNNER_BASE_DIR="$(cd -- "$RUNNER_BASE_DIR" && pwd -P)"
+RUNNER_BASE_DIR="$(canonicalize_existing_dir "$RUNNER_BASE_DIR")" || die "Could not canonicalize RUNNER_BASE_DIR: $RUNNER_BASE_DIR"
 
 NEW_DIR="$RUNNER_BASE_DIR/actions-runner-$LOCAL_ID"
 LEGACY_DIR="$RUNNER_BASE_DIR/actions-runner-$SAFE_REPO"

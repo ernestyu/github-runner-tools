@@ -36,6 +36,9 @@ if [[ "${1:-}" == "--paginate" ]]; then
   exit 0
 fi
 if [[ "${1:-}" == "--method" && "${2:-}" == "DELETE" ]]; then
+  if [[ "${MOCK_DELETE_FAIL:-0}" == "1" ]]; then
+    exit 1
+  fi
   : > "$MOCK_DELETED"
   exit 0
 fi
@@ -74,6 +77,16 @@ MANIFEST="$ARCHIVE/owner/repo/456/github_artifacts/artifact_123--results/artifac
 [[ "$(jq -r '.remote_deleted' "$MANIFEST")" == "false" ]] || fail "safe default deleted remote artifact"
 [[ -f "$ARCHIVE/owner/repo/456/github_artifacts/artifact_123--results/payload/result.txt" ]] || fail "payload missing"
 [[ ! -e "$MOCK_DELETED" ]] || fail "remote deletion occurred without explicit flag"
+
+# Remote deletion failure must preserve the verified local payload and keep
+# remote_deleted=false so the operation can be retried safely.
+if MOCK_DELETE_FAIL=1 GRT_TEST_MODE=1 GITHUB_ACTIONS=false GRT_TEST_CONFIG="$TMP/archive.conf" \
+  bash "$SCRIPT" --delete-after-verified owner/repo >/dev/null 2>&1; then
+  fail "remote deletion failure was hidden"
+fi
+[[ -f "$ARCHIVE/owner/repo/456/github_artifacts/artifact_123--results/payload/result.txt" ]] || fail "remote delete failure removed local payload"
+[[ "$(jq -r '.remote_deleted' "$MANIFEST")" == "false" ]] || fail "failed remote deletion was recorded as successful"
+[[ ! -e "$MOCK_DELETED" ]] || fail "failed deletion unexpectedly marked remote artifact deleted"
 
 GRT_TEST_MODE=1 GITHUB_ACTIONS=false GRT_TEST_CONFIG="$TMP/archive.conf" bash "$SCRIPT" --delete-after-verified owner/repo >/dev/null
 [[ -e "$MOCK_DELETED" ]] || fail "explicit remote deletion was not attempted"

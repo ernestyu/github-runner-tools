@@ -25,6 +25,8 @@ LOCAL_ARCHIVE_LIB="$LIB"
 LOCAL_ARCHIVE_HOOK="$HOOK"
 LOCAL_ARCHIVE_CONFIG="$CONFIG"
 RUNNER_USER="$(id -un)"
+GRT_TEST_MODE=1
+GITHUB_ACTIONS=false
 validate_local_archive_platform || fail "valid local archive platform rejected"
 
 ENVFILE="$TMP/.env"

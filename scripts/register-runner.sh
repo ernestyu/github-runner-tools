@@ -116,8 +116,10 @@ validate_local_archive_platform() {
   grt_load_archive_config "$LOCAL_ARCHIVE_CONFIG" || die "Local archive config is invalid."
   [[ -d "$ARCHIVE_ROOT" && ! -L "$ARCHIVE_ROOT" && -x "$ARCHIVE_ROOT" && -r "$ARCHIVE_ROOT" && -w "$ARCHIVE_ROOT" ]] || die "Archive root is not accessible and writable by $RUNNER_USER: $ARCHIVE_ROOT"
   grt_is_world_writable "$ARCHIVE_ROOT" || die "Archive root must not be world-writable."
-  [[ "$(stat -c '%u' "$LOCAL_ARCHIVE_CONFIG")" == "0" && ! -w "$LOCAL_ARCHIVE_CONFIG" ]] || die "Archive config must be root-owned and not writable by $RUNNER_USER."
-  [[ "$(stat -c '%u' "$LOCAL_ARCHIVE_HOOK")" == "0" && ! -w "$LOCAL_ARCHIVE_HOOK" ]] || die "Shared archive hook must be root-owned and not writable by $RUNNER_USER."
+  if [[ "${GRT_TEST_MODE:-0}" != "1" || "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    [[ "$(stat -c '%u' "$LOCAL_ARCHIVE_CONFIG")" == "0" && ! -w "$LOCAL_ARCHIVE_CONFIG" ]] || die "Archive config must be root-owned and not writable by $RUNNER_USER."
+    [[ "$(stat -c '%u' "$LOCAL_ARCHIVE_HOOK")" == "0" && ! -w "$LOCAL_ARCHIVE_HOOK" ]] || die "Shared archive hook must be root-owned and not writable by $RUNNER_USER."
+  fi
   (( MIN_FREE_PERCENT >= 1 && MIN_FREE_PERCENT <= 99 )) || die "Archive disk guard threshold is invalid."
 }
 

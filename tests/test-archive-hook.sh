@@ -9,8 +9,6 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
 
-for cmd in jq rsync timeout; do command -v "$cmd" >/dev/null 2>&1 || { echo "SKIP: $cmd not installed"; exit 0; }; done
-
 ARCHIVE="$TMP/archive"
 WORK="$TMP/work"
 OUTSIDE="$TMP/outside"

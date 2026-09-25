@@ -165,4 +165,26 @@ if find "$ARCHIVE/owner/repo/208" -name manifest.json -type f -print -quit | gre
 fi
 [[ "$(jq -r '.failure_code' "$FM")" == "LOCAL_ARTIFACT_ARCHIVE_FAILED" ]] || fail "wrong manifest-hash failure code"
 
+# Publication/timeout race: the worker publishes a complete PASS archive and
+# then remains alive past the configured deadline. The parent must validate the
+# published state and preserve PASS rather than creating FAILED state.
+write_config 1 1
+SUMMARY="$TMP/post-publish-timeout-summary.md"
+: > "$SUMMARY"
+if ! run_hook 209 "$WORK" "$SUMMARY" GRT_TEST_DELAY_AFTER_PASS_PUBLICATION=5 >/dev/null 2>&1; then
+  fail "post-publication timeout race did not preserve PASS"
+fi
+M="$(find "$ARCHIVE/owner/repo/209/attempt_1" -name manifest.json -type f -print -quit)"
+[[ -n "$M" ]] || fail "post-publication timeout race lost PASS manifest"
+JOBDIR="$(dirname "$M")"
+[[ -d "$JOBDIR/workspace" ]] || fail "post-publication timeout race lost workspace"
+[[ -f "$JOBDIR/manifest.sha256" ]] || fail "post-publication timeout race lost manifest hash"
+( cd "$JOBDIR" && sha256sum -c manifest.sha256 >/dev/null ) || fail "post-publication timeout race left invalid manifest hash"
+[[ "$(jq -r '.archive_status' "$M")" == "PASS" ]] || fail "post-publication timeout race manifest is not PASS"
+[[ "$(jq -r '.run_id' "$M")" == "209" ]] || fail "post-publication timeout race manifest identity mismatch"
+if find "$ARCHIVE/owner/repo/209" -name manifest.failed.json -type f -print -quit | grep -q .; then
+  fail "post-publication timeout race created contradictory FAILED manifest"
+fi
+grep -q 'Archive status: PASS' "$SUMMARY" || fail "post-publication timeout race did not write PASS summary"
+
 echo "PASS: archive completed-hook failure-path tests"

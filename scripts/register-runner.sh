@@ -114,7 +114,10 @@ validate_local_archive_platform() {
   # shellcheck source=/dev/null
   source "$LOCAL_ARCHIVE_LIB"
   grt_load_archive_config "$LOCAL_ARCHIVE_CONFIG" || die "Local archive config is invalid."
-  [[ -d "$ARCHIVE_ROOT" && -x "$ARCHIVE_ROOT" && -r "$ARCHIVE_ROOT" && -w "$ARCHIVE_ROOT" ]] || die "Archive root is not accessible and writable by $RUNNER_USER: $ARCHIVE_ROOT"
+  [[ -d "$ARCHIVE_ROOT" && ! -L "$ARCHIVE_ROOT" && -x "$ARCHIVE_ROOT" && -r "$ARCHIVE_ROOT" && -w "$ARCHIVE_ROOT" ]] || die "Archive root is not accessible and writable by $RUNNER_USER: $ARCHIVE_ROOT"
+  grt_is_world_writable "$ARCHIVE_ROOT" || die "Archive root must not be world-writable."
+  [[ "$(stat -c '%u' "$LOCAL_ARCHIVE_CONFIG")" == "0" && ! -w "$LOCAL_ARCHIVE_CONFIG" ]] || die "Archive config must be root-owned and not writable by $RUNNER_USER."
+  [[ "$(stat -c '%u' "$LOCAL_ARCHIVE_HOOK")" == "0" && ! -w "$LOCAL_ARCHIVE_HOOK" ]] || die "Shared archive hook must be root-owned and not writable by $RUNNER_USER."
   (( MIN_FREE_PERCENT >= 1 && MIN_FREE_PERCENT <= 99 )) || die "Archive disk guard threshold is invalid."
 }
 
@@ -156,7 +159,7 @@ SAFE_REPO="$(sanitize_component "$REPO_NAME")" || die "Could not derive a safe r
 LOCAL_ID="$(make_local_id "$OWNER" "$REPO_NAME")" || die "Could not derive a safe local identity from: $REPO"
 (( ${#LOCAL_ID} <= MAX_LOCAL_ID_LENGTH )) || die "Internal error: local identity exceeds ${MAX_LOCAL_ID_LENGTH} characters"
 
-for cmd in bash curl tar jq sha256sum sudo uname id ps sed tr awk find mktemp cut xargs systemctl; do require_command "$cmd"; done
+for cmd in bash curl tar jq sha256sum sudo uname id ps sed tr awk find mktemp cut xargs systemctl stat grep; do require_command "$cmd"; done
 
 REQUESTED_RUNNER_USER="${RUNNER_USER:-}"
 RUNNER_USER="$(id -un)"

@@ -100,11 +100,14 @@ PY
 }
 
 delete_remote_artifact() {
-  local id="$1" manifest="$2"
+  local id="$1" manifest="$2" remaining
   gh api --method DELETE "repos/$REPOSITORY/actions/artifacts/$id"
-  if gh api "repos/$REPOSITORY/actions/artifacts/$id" >/dev/null 2>&1; then
-    die "Remote artifact $id still exists after delete request."
+
+  if ! remaining="$(gh api --paginate "repos/$REPOSITORY/actions/artifacts?per_page=100" \
+    --jq ".artifacts[] | select(.id == $id) | .id")"; then
+    die "Could not verify remote deletion for artifact $id."
   fi
+  [[ -z "$remaining" ]] || die "Remote artifact $id still exists after delete request."
 
   local tmpm
   tmpm="$(mktemp)"

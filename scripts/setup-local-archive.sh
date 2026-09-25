@@ -13,9 +13,31 @@ COPY_TIMEOUT_SECONDS="${RUNNER_ARCHIVE_COPY_TIMEOUT_SECONDS:-3600}"
 HOOK_DST="/usr/local/lib/github-runner-tools/hooks/archive-job-completed.sh"
 LIB_DST="/usr/local/lib/github-runner-tools/archive-common.sh"
 CONFIG_DST="/etc/github-runner-tools/archive.conf"
+MODE="dry-run"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  setup-local-archive.sh [--dry-run|--apply]
+
+Default: --dry-run
+
+Run as the normal Linux user that owns the self-hosted runners.
+Do not run the whole script with sudo.
+USAGE
+}
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 require_command() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) MODE="dry-run"; shift ;;
+    --apply) MODE="apply"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "Unknown argument: $1" ;;
+  esac
+done
 
 if [[ ${EUID} -eq 0 ]]; then
   die "Run setup-local-archive.sh as the normal runner owner, not with sudo. The script uses sudo only for host-level writes."
@@ -36,25 +58,25 @@ done
 
 sudo -v || die "sudo access is required."
 
+echo "Mode        : $MODE"
 echo "Runner user : $RUNNER_USER"
 echo "Runner group: $RUNNER_GROUP"
 echo "Archive root: $ARCHIVE_ROOT"
 echo "Hook path   : $HOOK_DST"
 echo "Config path : $CONFIG_DST"
+echo "Retention   : $RETENTION_DAYS days"
+echo "Disk guard  : $MIN_FREE_PERCENT% minimum free"
+echo "Copy timeout: $COPY_TIMEOUT_SECONDS seconds"
 
-if [[ ! -e "$ARCHIVE_ROOT" ]]; then
-  sudo install -d -o "$RUNNER_USER" -g "$RUNNER_GROUP" -m 0750 "$ARCHIVE_ROOT"
-else
+if [[ -e "$ARCHIVE_ROOT" ]]; then
   [[ -d "$ARCHIVE_ROOT" && ! -L "$ARCHIVE_ROOT" ]] || die "Archive root must be a real directory, not a symlink: $ARCHIVE_ROOT"
+  [[ -x "$ARCHIVE_ROOT" && -r "$ARCHIVE_ROOT" && -w "$ARCHIVE_ROOT" ]] ||     die "Existing archive root must be traversable/readable/writable by $RUNNER_USER."
+  MODE_BITS="$(stat -c '%a' "$ARCHIVE_ROOT")"
+  OTHER_DIGIT="${MODE_BITS: -1}"
+  (( (10#$OTHER_DIGIT & 2) == 0 )) || die "Archive root must not be world-writable: mode=$MODE_BITS"
+else
+  echo "Archive root: would create owner=$RUNNER_USER group=$RUNNER_GROUP mode=0750"
 fi
-
-[[ -x "$ARCHIVE_ROOT" && -r "$ARCHIVE_ROOT" && -w "$ARCHIVE_ROOT" ]] ||   die "Archive root must be traversable/readable/writable by $RUNNER_USER."
-MODE="$(stat -c '%a' "$ARCHIVE_ROOT")"
-OTHER_DIGIT="${MODE: -1}"
-(( (10#$OTHER_DIGIT & 2) == 0 )) || die "Archive root must not be world-writable: mode=$MODE"
-
-sudo install -d -o root -g root -m 0755 /usr/local/lib/github-runner-tools/hooks
-sudo install -d -o root -g root -m 0755 /etc/github-runner-tools
 
 if [[ -e "$HOOK_DST" ]] && ! grep -q '^# github-runner-tools-managed-hook$' "$HOOK_DST" 2>/dev/null; then
   die "Refusing to replace an unmanaged completed hook at $HOOK_DST"
@@ -66,6 +88,19 @@ if [[ -e "$CONFIG_DST" ]] && ! grep -q '^# managed-by=github-runner-tools$' "$CO
   die "Refusing to replace an unmanaged archive config at $CONFIG_DST"
 fi
 
+if [[ "$MODE" == "dry-run" ]]; then
+  echo
+  echo "DRY-RUN: no host files were changed."
+  echo "Run again with --apply after reviewing the configuration."
+  exit 0
+fi
+
+if [[ ! -e "$ARCHIVE_ROOT" ]]; then
+  sudo install -d -o "$RUNNER_USER" -g "$RUNNER_GROUP" -m 0750 "$ARCHIVE_ROOT"
+fi
+
+sudo install -d -o root -g root -m 0755 /usr/local/lib/github-runner-tools/hooks
+sudo install -d -o root -g root -m 0755 /etc/github-runner-tools
 sudo install -o root -g root -m 0755 "$HOOK_SRC" "$HOOK_DST"
 sudo install -o root -g root -m 0644 "$LIB_SRC" "$LIB_DST"
 

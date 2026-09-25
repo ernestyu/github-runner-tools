@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-25 20:39 (+02:00)  
 **Repository:** `ernestyu/github-runner-tools`  
-**Status:** Draft for audit  
+**Status:** Revised draft for audit  
 **Implementation state:** SPEC ONLY — no implementation is authorized by this document yet
 
 ## 1. Purpose
@@ -32,9 +32,12 @@ runner-level completed hook
         ↓
 complete workspace archived locally on Debian
         ↓
-GitHub keeps run / logs / status
+completed hook attempts final GitHub Summary
         ↓
-optional reusable summary job publishes archive metadata
+GitHub keeps run / logs / status
+
+Fallback only if live runner validation proves completed-hook Summary is unreliable:
+downstream reusable summary action
 ```
 
 The user should not need to design an archive path per repository, manually move artifacts, edit each runner's `.env` by hand, or manually correlate GitHub run IDs with local directories.
@@ -55,8 +58,8 @@ It includes:
 - safe workspace copying;
 - per-job manifests;
 - explicit archive failure semantics;
-- a reusable GitHub Action for local artifact summaries;
-- a recommended summary job template;
+- completed-hook GitHub Summary as the preferred zero-repository-configuration path, subject to live runner validation;
+- a reusable GitHub Action and downstream summary job template as the fallback path if completed-hook Summary is not reliable on the validated runner version;
 - migration of existing GitHub artifacts to local storage;
 - retention cleanup;
 - permanent keep markers;
@@ -141,15 +144,64 @@ A one-time platform setup entry point should be added during implementation, for
 scripts/setup-local-archive.sh
 ```
 
+### 6.1 Invocation and privilege model
+
+The setup command must be invoked by the same **normal Linux user that owns and runs the self-hosted runners**.
+
+Example:
+
+```text
+invoking user       = actions
+runner service user = actions
+privileged setup    = explicit sudo operations inside the script
+```
+
+The documented/default invocation must **not** be:
+
+```text
+sudo scripts/setup-local-archive.sh
+```
+
+The script must reject direct root invocation for the normal v1 setup path so it cannot accidentally infer:
+
+```text
+runner service user = root
+```
+
+Host-level writes that require privilege must be performed through explicit, narrow `sudo` commands from inside the script.
+
+Examples include:
+
+```text
+sudo mkdir/install/chown/chmod for /srv/github-actions-archive
+sudo install for /usr/local/lib/github-runner-tools/...
+sudo install for /etc/github-runner-tools/archive.conf
+```
+
+The setup script must preserve the identity of the invoking normal user and use that identity as the runner/archive service account.
+
+Cross-user setup such as:
+
+```text
+ernest invokes setup
+→ configure archive for actions
+```
+
+is out of scope for v1 unless a future specification defines the complete ownership model.
+
+### 6.2 Responsibilities
+
 Its responsibilities are limited to host-level setup:
 
-1. resolve and validate the current runner service account;
-2. create or validate the archive root;
+1. resolve and validate the invoking normal user as the runner service account;
+2. create or validate the archive root using explicit privileged operations where required;
 3. install the shared completed-hook implementation outside runner application directories;
 4. create the root-owned archive configuration;
 5. validate required tools;
 6. verify that the runner user can create files below the archive root;
-7. report resolved paths and configuration.
+7. verify that the runner user can read/execute the shared hook but cannot modify it;
+8. verify that the runner user can read the archive configuration but cannot modify it;
+9. report resolved paths, identities, permissions, and configuration.
 
 Recommended shared hook installation path:
 
@@ -164,6 +216,37 @@ Supporting host-side helper code, if needed, should live below:
 ```
 
 The shared hook must not be installed into an individual `actions-runner-*` directory.
+
+### 6.3 Minimum permission contract
+
+Exact numeric modes may be chosen during implementation, but the following ownership behavior is normative.
+
+`archive.conf`:
+
+```text
+owner: root
+runner user: readable
+runner user: not writable
+not world-writable
+```
+
+Shared hook and host-side helper code:
+
+```text
+owner: root
+runner user: readable/executable
+runner user: not writable
+not world-writable
+```
+
+`ARCHIVE_ROOT`:
+
+```text
+runner service user: traversable/readable/writable
+not world-writable
+```
+
+The setup command must prove these effective permissions before reporting success.
 
 The setup command must be idempotent.
 
@@ -235,29 +318,64 @@ A different run ID or attempt must never share a final job archive directory.
 
 ### 7.3 Job identity and matrix collision handling
 
-`GITHUB_JOB` is the logical job identifier, but it is not sufficient by itself to guarantee uniqueness for every matrix or repeated job execution.
+`GITHUB_JOB` is a logical job identifier. It is not a stable per-execution identifier and is not sufficient to distinguish matrix legs or repeated executions.
 
-Therefore the final component is named `JOB_KEY`, not simply `JOB_NAME`.
+For example, two legitimate executions can have all of the following equal:
 
-For the normal non-collision case:
+```text
+repository
+run ID
+run attempt
+GITHUB_JOB
+GITHUB_SHA
+RUNNER_NAME
+```
+
+while still representing two different matrix executions.
+
+Therefore v1 must never infer "same exact execution" from those fields alone.
+
+The final component is named `JOB_KEY`, not simply `JOB_NAME`.
+
+For the first occurrence where no target collision exists:
 
 ```text
 JOB_KEY = sanitized GITHUB_JOB
 ```
 
-If the same run/attempt already contains a completed archive with the same logical `GITHUB_JOB` but it cannot be proven to be the same hook execution, the hook must not overwrite it.
+If the run/attempt already contains an archive for that logical `GITHUB_JOB`, and the runner environment does not provide a separately validated stable per-job-execution identifier, the hook must assume the new invocation may be a different legitimate execution.
 
-The collision-safe form is:
+It must allocate a new collision-safe `JOB_KEY` and must never overwrite the existing PASS archive.
+
+Collision-safe form:
 
 ```text
 <safe-job>__<safe-runner-name>__<execution-suffix>
 ```
 
-The execution suffix must be generated locally and must be collision-resistant within the run attempt. A short random identifier or UTC timestamp plus random suffix is acceptable.
+The execution suffix must be generated locally and collision-resistant within the run attempt. A UTC timestamp plus random suffix, or an equivalent local nonce, is acceptable.
 
-The manifest must always record the original `GITHUB_JOB` and the final `JOB_KEY`.
+The manifest must always record:
 
-This rule is required so matrix jobs or repeated logical job IDs can never overwrite another job archive.
+```text
+original GITHUB_JOB
+final JOB_KEY
+any validated stable job-execution identifier, if GitHub/runner later provides one
+```
+
+If a future runner version exposes a stable per-job-execution identifier, implementation may use it only after the identifier has been documented and validated on the actual runner version.
+
+The v1 safety ordering is:
+
+```text
+no overwrite
+>
+perfect deduplication
+```
+
+Rare duplicate archives caused by a hook retry are acceptable when the implementation cannot prove that the retry is the same exact execution.
+
+Two legitimate executions with the same run, attempt, `GITHUB_JOB`, runner, and SHA must still produce independent archives.
 
 ## 8. Required hook environment
 
@@ -385,20 +503,32 @@ The hook must never overwrite a PASS archive that belongs to another execution.
 
 ## 13. Retry and idempotency rules
 
-The same completed hook may be re-entered after a runner/service retry or administrator recovery.
+The completed hook may be re-entered after a runner/service retry or administrator recovery, but v1 must not deduplicate executions using weak identity assumptions.
 
-The implementation must distinguish:
+In particular, the following fields are **not sufficient** to prove that two hook invocations are the same exact execution:
 
-- final PASS archive already present and matching the same exact execution identity;
-- partial/staged archive from the same execution;
-- archive directory belonging to another execution;
-- ambiguous existing data.
+```text
+repository
+run ID
+run attempt
+GITHUB_JOB
+GITHUB_SHA
+RUNNER_NAME
+```
 
-If an existing PASS manifest can prove that the same repository, run ID, attempt, logical job, Git SHA, and selected job identity have already been archived, the hook may return idempotent success.
+Those fields can be identical for two legitimate matrix or repeated executions.
 
-If ownership/identity is ambiguous, it must stop.
+Therefore:
 
-Stale staging data may only be removed when it is proven to belong to the exact same target job archive and not to another run/job.
+- an existing PASS archive is never overwritten merely because those fields match;
+- if no separately validated stable per-job-execution identifier is available, a colliding invocation receives a new collision-safe `JOB_KEY`;
+- the system may retain a small number of duplicate archives rather than risk merging or overwriting two legitimate executions;
+- stale staging data may only be removed when the implementation can prove it belongs to the exact staging namespace created by the same invocation or an explicitly recoverable local transaction;
+- ambiguous existing data is preserved and causes allocation of a new safe target or a fail-safe stop, never destructive reuse.
+
+Idempotent success against an existing PASS archive is allowed only when the implementation has a validated stable execution identifier that proves the invocation is the same exact GitHub job execution.
+
+If no such identifier exists in the validated runner version, v1 does not claim exact hook-level deduplication.
 
 Different repository, run ID, attempt, or job execution data must never be overwritten.
 
@@ -670,27 +800,100 @@ It must support:
 
 Default behavior should be `--dry-run` unless the user explicitly requests `--apply`.
 
-## 21. GitHub Summary timing constraint
+## 21. GitHub Summary capability and timing contract
 
-Local archive completion occurs in `ACTIONS_RUNNER_HOOK_JOB_COMPLETED`, which runs **after all normal steps in that job**.
+The completed hook runs after all normal workflow steps and before the GitHub job fully completes.
 
-Therefore a summary step inside the same artifact-producing job cannot truthfully report final archive status, final file count, or final archive size before the completed hook has run.
+A normal workflow step inside the artifact-producing job cannot know final archive status before the completed hook has finished. Therefore a same-job **workflow step** must not pre-declare:
 
-V1 must not fake `Archive status: PASS` from a same-job step.
+```text
+Archive status: PASS
+final file count
+final archive size
+```
 
-This timing constraint is part of the contract.
+However, GitHub runner hook documentation indicates that hooks can use workflow commands and environment files. Therefore this specification must not assume in advance that the completed hook is unable to write the final GitHub Job Summary.
+
+The V1 summary path is selected only after a live capability test on the actual pinned/current runner version used by the Debian host.
+
+### 21.1 Primary path: completed-hook Summary
+
+The primary zero-repository-configuration design is:
+
+```text
+business workflow steps
+→ ACTIONS_RUNNER_HOOK_JOB_COMPLETED
+→ archive workspace
+→ finalize PASS manifest
+→ completed hook writes final Summary through $GITHUB_STEP_SUMMARY
+→ job completes
+```
+
+The hook may write a PASS summary only after the local archive and PASS manifest are finalized.
+
+If archival fails:
+
+```text
+no PASS Summary
+→ hook may write Archive status: FAILED when summary output remains available
+→ emit stable LOCAL_ARTIFACT_* failure marker
+→ return non-zero
+```
+
+This primary path is preferred because it gives new repositories local archive + summary automatically after runner registration, without repository workflow changes.
+
+### 21.2 Required live capability test
+
+Before choosing the V1 summary implementation, Debian integration validation must explicitly test whether the actual runner version allows `ACTIONS_RUNNER_HOOK_JOB_COMPLETED` to append reliably to:
+
+```text
+$GITHUB_STEP_SUMMARY
+```
+
+and whether the resulting Summary appears in the GitHub UI after job completion.
+
+The test must cover both:
+
+```text
+archive PASS
+archive FAILED
+```
+
+The project must not claim zero-configuration Summary until this capability has passed live validation.
+
+### 21.3 Fallback path
+
+Only if completed-hook Summary cannot be made reliable on the validated runner version does V1 use:
+
+```text
+reusable local-artifact-summary action
++
+explicit downstream summary job
+```
+
+This fallback requires repository workflow configuration and is therefore secondary.
+
+The fallback must not be selected merely because it is easier to implement.
 
 ## 22. Reusable local artifact summary action
 
-The project should provide a reusable GitHub Action such as:
+The project should still provide a reusable GitHub Action such as:
 
 ```text
 .github/actions/local-artifact-summary/action.yml
 ```
 
-Its supported PASS-summary mode runs in a dedicated downstream summary job after the artifact-producing jobs have completed.
+Its role depends on the live capability decision:
 
-Recommended workflow shape:
+```text
+completed-hook Summary validated
+→ reusable action remains an optional/reusable capability
+
+completed-hook Summary not reliable
+→ reusable action becomes the V1 fallback summary mechanism
+```
+
+Fallback workflow shape:
 
 ```yaml
 artifact-summary:
@@ -702,9 +905,9 @@ artifact-summary:
       uses: ernestyu/github-runner-tools/.github/actions/local-artifact-summary@VERSION
 ```
 
-Because all `needs` jobs have already completed, their completed hooks have already produced manifests before the summary job begins.
+Because all `needs` jobs have completed before this downstream job starts, their completed hooks have already finalized their manifests.
 
-The summary action reads manifests for:
+The fallback action reads manifests for:
 
 ```text
 GITHUB_REPOSITORY
@@ -718,11 +921,13 @@ from the local archive root and writes to:
 $GITHUB_STEP_SUMMARY
 ```
 
-The summary job must run on a self-hosted runner on the same host/archive filesystem. Running this action on `ubuntu-latest` cannot provide local archive status and must fail clearly rather than pretending the archive is unavailable for another reason.
+The fallback summary job must run on a self-hosted runner with access to the same local archive filesystem. Running it on `ubuntu-latest` cannot provide local archive status and must fail clearly.
 
-The summary action does not upload the local data.
+The reusable action never uploads the local payload.
 
 ## 23. Summary output contract
+
+The summary content contract is the same whether written directly by the completed hook or by the fallback reusable action.
 
 A summary should be concise.
 
@@ -745,7 +950,13 @@ Local archive:
 archive://ernestyu/clawpolymarket/36169269077/
 ```
 
-If one or more required manifests for the selected run are failed or missing, the summary must not report PASS.
+For a completed-hook job-level summary, the content may naturally describe that job's archive rather than aggregate all jobs in the run.
+
+For the downstream fallback, the action may aggregate finalized manifests for the run/attempt.
+
+Neither path may report PASS before the relevant PASS manifest or manifests exist.
+
+If archival fails, the Summary must not report PASS.
 
 `archive://...` is a stable logical identifier only. V1 does not need to make it clickable or remotely accessible.
 
@@ -761,16 +972,27 @@ secret values
 private webhook URLs
 ```
 
-The summary implementation is centralized in `github-runner-tools`; repositories only reference it.
-
 ## 24. Recommended workflow template
 
-The project should ship a recommended self-hosted workflow template demonstrating:
+The recommended template must follow the summary path selected by live runner validation.
+
+If completed-hook Summary is validated, the normal V1 template needs no summary step or summary job:
+
+```text
+repository workflow
+→ normal self-hosted build/test/experiment jobs
+→ runner completed hook automatically archives and writes Summary
+```
+
+That is the preferred zero-repository-configuration behavior.
+
+If completed-hook Summary is not reliable, the template may include the downstream reusable summary job described in Section 22.
+
+In either case, the template should demonstrate:
 
 - repository-specific self-hosted runner labels;
 - normal build/test/experiment jobs;
 - no full-workspace `actions/upload-artifact` by default;
-- a downstream local-artifact summary job;
 - optional compact GitHub audit artifact where needed.
 
 This template is guidance, not an automatic repository mutation.
@@ -1165,7 +1387,7 @@ Users must therefore continue to avoid writing production secrets into CI worksp
 
 Runner registration, platform setup, migration, cleanup, and status tools must not silently edit repository workflow YAML.
 
-The reusable summary action and recommended templates are offered for future/new workflow authoring.
+The completed-hook Summary requires no repository workflow mutation when the primary path is validated. The reusable summary action and recommended template are offered as fallback/reusable capabilities.
 
 Existing repositories migrate their `actions/upload-artifact` usage deliberately.
 
@@ -1218,7 +1440,10 @@ code change
 → build/test/experiment
 → completed hook
 → complete local archive
+→ completed hook writes GitHub Summary when live validation supports it
 → GitHub logs/status remain
+
+Fallback only if completed-hook Summary is unreliable:
 → downstream reusable action writes summary
 ```
 
@@ -1278,6 +1503,8 @@ Cover:
 - existing conflicting target;
 - concurrent different jobs;
 - same logical job collision;
+- same run + attempt + GITHUB_JOB + runner + SHA across two legitimate executions produces two independent archives with no overwrite;
+- retry/collision behavior never assumes those weak fields prove exact execution identity;
 - archive root runtime workflow-env override ignored.
 
 ### 44.3 Runner integration tests
@@ -1290,6 +1517,9 @@ Cover:
 - conflicting existing hook causes safe failure;
 - runner service restart sees hook;
 - completed hook appears in GitHub `Complete runner`;
+- completed-hook access to `$GITHUB_STEP_SUMMARY` is tested on the actual runner version;
+- completed-hook PASS summary is visible in GitHub only after archive finalization, if supported;
+- completed-hook FAILED summary behavior is tested, if supported;
 - archive failure causes GitHub job failure;
 - business-step failure still runs archive hook and archives final workspace.
 
@@ -1336,23 +1566,29 @@ Cover:
 
 After automated tests pass, the implementation should be validated on the actual Debian CI host in this order:
 
-1. run platform setup in dry-run/inspection mode;
-2. activate local archive platform configuration;
-3. register a fresh test repository runner and confirm hook configuration;
-4. run a small successful job and inspect local archive + manifest;
-5. run a failing business job and confirm workspace still archives;
-6. intentionally trigger an archive failure and confirm GitHub fails in `Complete runner`;
-7. test a workspace containing an external symlink;
-8. test a run that produces a large result file;
-9. migrate one existing runner;
-10. verify existing runner still accepts jobs;
-11. verify status-runners archive-health output;
-12. run summary downstream job and confirm GitHub Summary matches manifests;
-13. run cleanup dry-run;
-14. create `.keep`, confirm cleanup skips it;
-15. migrate one existing GitHub Artifact without deleting remote;
-16. verify local migrated manifest;
-17. test remote deletion only on a disposable verified artifact.
+1. run platform setup as the normal runner owner and confirm privileged operations happen through internal `sudo`, not root invocation;
+2. confirm the runner user can write the archive root but cannot modify the root-owned config or shared hook;
+3. activate local archive platform configuration;
+4. register a fresh test repository runner and confirm hook configuration;
+5. run a small successful job and inspect local archive + manifest;
+6. during that job, test completed-hook `$GITHUB_STEP_SUMMARY` output and determine whether it appears reliably in the GitHub UI;
+7. run a failing business job and confirm workspace still archives;
+8. intentionally trigger an archive failure, confirm GitHub fails in `Complete runner`, and test FAILED Summary behavior;
+9. freeze the V1 Summary path decision:
+   - completed-hook Summary if live PASS/FAILED tests are reliable;
+   - downstream reusable action fallback only otherwise;
+10. test two legitimate executions with the same run, attempt, `GITHUB_JOB`, runner, and SHA and confirm independent archives with no overwrite;
+11. test a workspace containing an external symlink;
+12. test a run that produces a large result file;
+13. migrate one existing runner;
+14. verify existing runner still accepts jobs;
+15. verify `status-runners` archive-health output;
+16. if fallback Summary is selected, run the downstream summary job and confirm it matches finalized manifests;
+17. run cleanup dry-run;
+18. create `.keep`, confirm cleanup skips it;
+19. migrate one existing GitHub Artifact without deleting remote;
+20. verify local migrated manifest;
+21. test remote deletion only on a disposable verified artifact.
 
 No bulk migration or bulk remote deletion should happen before this sequence is audited.
 
@@ -1368,68 +1604,80 @@ The implementation is complete only when all applicable criteria below are satis
 6. Registration preserves unrelated runner `.env` entries.
 7. Registration refuses a conflicting existing completed hook.
 8. Registration fails if archive is enabled but root/hook/config is unusable.
-9. Existing runner migration requires valid runner metadata.
-10. Existing runner migration supports dry-run and explicit apply.
-11. Migration restarts and verifies the exact runner service.
-12. Archive path contains owner, repository, run ID, attempt, and job key.
-13. Repository/run/attempt/job path components are sanitized.
-14. Path traversal outside archive root is impossible.
-15. No repository name is hard-coded.
-16. Empty workspace archives successfully.
-17. Missing/unreadable workspace fails archival.
-18. Default exclusions include `.git`, `node_modules`, virtualenvs, Python bytecode cache, and pytest cache.
-19. Data/results/reports/artifacts/output/checkpoints are not excluded by default.
-20. Symlinks are never dereferenced during workspace archival.
-21. External symlink target contents never enter the archive.
-22. PASS manifest is written only after copy completion.
-23. PASS manifest uses the v1 schema identifier.
-24. Manifest contains repository, run, attempt, job, workflow, SHA, ref, runner, timestamp, path, file count, and bytes.
-25. Manifest contains a stable logical `archive://` URI.
-26. `manifest.sha256` validates finalized `manifest.json`.
-27. Full payload SHA-256 hashing is not required in v1.
-28. Different repositories can never share a final archive directory.
-29. Different run IDs can never share a final archive directory.
-30. Different attempts can never share a final archive directory.
-31. Matrix/job collisions never overwrite another completed archive.
-32. Idempotent retry never overwrites unrelated data.
-33. Archive failure emits a stable `LOCAL_ARTIFACT_*` marker.
-34. Archive failure returns non-zero.
-35. Archive failure is visible in GitHub `Complete runner`.
-36. Archive failure causes the GitHub job to fail on the validated runner version.
-37. Job business failure does not prevent the completed hook from attempting archive.
-38. Disk guard defaults to 15% free.
-39. Disk guard checks the archive filesystem.
-40. Disk guard never automatically deletes old data.
-41. Disk guard failure prevents a new copy from starting.
-42. Hook has a finite configured timeout.
-43. Timeout failure never writes a PASS manifest.
-44. Concurrent unrelated job archives can proceed without one global copy lock.
-45. A summary action exists as one shared implementation.
-46. Final PASS summary is generated only after artifact-producing jobs' completed hooks have run.
-47. Summary reads local manifests rather than assuming success.
-48. Summary does not expose secrets.
-49. `archive://` remains a logical identifier and need not be remotely accessible.
-50. Existing workflows are never silently rewritten.
-51. Full GitHub artifact upload is optional, not emulated by this project.
-52. GitHub artifact migration defaults to download + verify, without deletion.
-53. Remote artifact deletion requires explicit `--delete-after-verified`.
-54. Failed verification can never delete the remote artifact.
-55. Migrated artifact metadata preserves artifact ID, name, original size, created time, and run ID.
-56. Local remote-delete failure preserves the local migrated payload.
-57. Retention defaults to 90 days.
-58. Cleanup is separate from the completion hook.
-59. Cleanup defaults to dry-run.
-60. Cleanup deletes only whole eligible run directories.
-61. `.keep` prevents automatic cleanup.
-62. Ambiguous/incomplete runs are skipped rather than deleted.
-63. No periodic cleanup timer is enabled by default.
-64. Status output reports archive root and filesystem capacity/free percentage.
-65. Status output reports retention and disk threshold.
-66. Archive root is not world-writable.
-67. Repository workflows cannot choose arbitrary archive destinations.
-68. The implementation documents that repository code sharing the runner account can still modify local archive files; v1 is not a tamper-proof evidence store.
-69. No web UI, object store, database, or artifact server is introduced.
-70. Existing GitHub artifact bulk deletion is not performed during initial validation.
+9. Platform setup is invoked by the normal runner owner, not by running the whole setup script as root.
+10. Platform setup preserves the invoking normal user as runner service identity and uses explicit internal `sudo` only for privileged host writes.
+11. The runner user can write the archive root after setup.
+12. The runner user can read/execute but cannot modify the root-owned shared hook.
+13. The runner user can read but cannot modify the root-owned archive config.
+14. Existing runner migration requires valid runner metadata.
+15. Existing runner migration supports dry-run and explicit apply.
+16. Migration restarts and verifies the exact runner service.
+17. Archive path contains owner, repository, run ID, attempt, and job key.
+18. Repository/run/attempt/job path components are sanitized.
+19. Path traversal outside archive root is impossible.
+20. No repository name is hard-coded.
+21. Empty workspace archives successfully.
+22. Missing/unreadable workspace fails archival.
+23. Default exclusions include `.git`, `node_modules`, virtualenvs, Python bytecode cache, and pytest cache.
+24. Data/results/reports/artifacts/output/checkpoints are not excluded by default.
+25. Symlinks are never dereferenced during workspace archival.
+26. External symlink target contents never enter the archive.
+27. PASS manifest is written only after copy completion.
+28. PASS manifest uses the v1 schema identifier.
+29. Manifest contains repository, run, attempt, job, workflow, SHA, ref, runner, timestamp, path, file count, and bytes.
+30. Manifest contains a stable logical `archive://` URI.
+31. `manifest.sha256` validates finalized `manifest.json`.
+32. Full payload SHA-256 hashing is not required in v1.
+33. Different repositories can never share a final archive directory.
+34. Different run IDs can never share a final archive directory.
+35. Different attempts can never share a final archive directory.
+36. Matrix/job collisions never overwrite another completed archive.
+37. V1 never treats repository + run + attempt + GITHUB_JOB + SHA + RUNNER_NAME alone as proof of the same exact execution.
+38. Two legitimate executions with the same run, attempt, GITHUB_JOB, runner, and SHA produce independent archives with no overwrite.
+39. In the absence of a validated stable per-execution identifier, collision safety takes priority over perfect retry deduplication.
+40. Idempotent retry never overwrites unrelated data.
+41. Archive failure emits a stable `LOCAL_ARTIFACT_*` marker.
+42. Archive failure returns non-zero.
+43. Archive failure is visible in GitHub `Complete runner`.
+44. Archive failure causes the GitHub job to fail on the validated runner version.
+45. Job business failure does not prevent the completed hook from attempting archive.
+46. Disk guard defaults to 15% free.
+47. Disk guard checks the archive filesystem.
+48. Disk guard never automatically deletes old data.
+49. Disk guard failure prevents a new copy from starting.
+50. Hook has a finite configured timeout.
+51. Timeout failure never writes a PASS manifest.
+52. Concurrent unrelated job archives can proceed without one global copy lock.
+53. Completed-hook Summary capability is tested on the actual pinned/current Debian runner version before the V1 Summary path is selected.
+54. If completed-hook Summary is reliable, it is the default V1 path and requires no per-repository summary job.
+55. Completed-hook PASS Summary is written only after the PASS manifest is finalized.
+56. Archive failure never produces a PASS Summary; FAILED Summary behavior is validated where supported.
+57. If completed-hook Summary is not reliable, the reusable action + downstream summary job is used as the documented fallback.
+58. A reusable local-artifact-summary action exists as fallback/reusable capability.
+59. The fallback Summary reads finalized local manifests rather than assuming success.
+60. Summary output does not expose secrets.
+61. `archive://` remains a logical identifier and need not be remotely accessible.
+62. Existing workflows are never silently rewritten.
+63. Full GitHub artifact upload is optional, not emulated by this project.
+64. GitHub artifact migration defaults to download + verify, without deletion.
+65. Remote artifact deletion requires explicit `--delete-after-verified`.
+66. Failed verification can never delete the remote artifact.
+67. Migrated artifact metadata preserves artifact ID, name, original size, created time, and run ID.
+68. Remote-delete failure preserves the local migrated payload.
+69. Retention defaults to 90 days.
+70. Cleanup is separate from the completion hook.
+71. Cleanup defaults to dry-run.
+72. Cleanup deletes only whole eligible run directories.
+73. `.keep` prevents automatic cleanup.
+74. Ambiguous/incomplete runs are skipped rather than deleted.
+75. No periodic cleanup timer is enabled by default.
+76. Status output reports archive root and filesystem capacity/free percentage.
+77. Status output reports retention and disk threshold.
+78. Archive root is not world-writable.
+79. Repository workflows cannot choose arbitrary archive destinations.
+80. The implementation documents that repository code sharing the runner account can still modify local archive files; v1 is not a tamper-proof evidence store.
+81. No web UI, object store, database, or artifact server is introduced.
+82. Existing GitHub artifact bulk deletion is not performed during initial validation.
 
 ## 47. Implementation order after spec freeze
 
@@ -1447,14 +1695,15 @@ Recommended implementation order after approval:
 8. `register-runner.sh` integration;
 9. existing-runner migration;
 10. archive health extension in `status-runners.sh`;
-11. reusable summary action and downstream summary-job template;
-12. cleanup tool + `.keep`;
-13. GitHub artifact migration tool;
-14. automated failure-path suite;
-15. Debian single-runner validation;
-16. one existing-runner migration;
-17. audit against acceptance criteria;
-18. only then broader migration of current runners/projects.
+11. live completed-hook Summary capability validation on the Debian runner;
+12. completed-hook Summary implementation if validated, plus reusable summary action/downstream job as fallback capability;
+13. cleanup tool + `.keep`;
+14. GitHub artifact migration tool;
+15. automated failure-path suite;
+16. Debian single-runner validation;
+17. one existing-runner migration;
+18. audit against acceptance criteria;
+19. only then broader migration of current runners/projects.
 
 ## 48. SPEC-only boundary for this change
 
@@ -1488,6 +1737,7 @@ The implementation should follow the current GitHub self-hosted runner hook beha
 - hook output is shown in `Complete runner`;
 - hook paths are absolute and should live outside the runner application directory;
 - GitHub does not provide a hook timeout;
-- non-zero runner hook exit is intended to fail the job.
+- non-zero runner hook exit is intended to fail the job;
+- hooks may use workflow commands/environment files according to current runner-hook documentation, so completed-hook access to `$GITHUB_STEP_SUMMARY` must be tested rather than assumed either way.
 
-These external facts must be rechecked against the runner version used during implementation and Debian acceptance testing.
+These external facts, especially completed-hook Summary behavior, must be rechecked against the exact runner version used during implementation and Debian acceptance testing.

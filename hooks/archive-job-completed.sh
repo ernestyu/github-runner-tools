@@ -198,6 +198,14 @@ archive_copy_finalize_worker() {
   # manifest.json is deliberately the LAST authoritative success publication.
   # No required archive-finalization operation follows this atomic rename.
   mv -- "$manifest_tmp" "$JOB_DIR/manifest.json"
+
+  # Deterministic test-only delay used to exercise the timeout/publication race.
+  # It is ignored in real GitHub Actions execution.
+  if [[ "${GRT_TEST_MODE:-0}" == "1" && "${GITHUB_ACTIONS:-}" != "true" &&
+        "${GRT_TEST_DELAY_AFTER_PASS_PUBLICATION:-0}" =~ ^[0-9]+$ &&
+        "${GRT_TEST_DELAY_AFTER_PASS_PUBLICATION:-0}" -gt 0 ]]; then
+    sleep "$GRT_TEST_DELAY_AFTER_PASS_PUBLICATION"
+  fi
 }
 
 export -f archive_copy_finalize_worker
@@ -205,6 +213,44 @@ export GITHUB_WORKSPACE GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_RUN_ATTEMPT
 export GITHUB_JOB GITHUB_WORKFLOW GITHUB_SHA GITHUB_REF RUNNER_NAME
 export GRT_OWNER_PATH GRT_REPO_PATH GRT_FS_FREE_PERCENT GRT_FS_FREE_BYTES
 export JOB_KEY JOB_DIR STAGE ARCHIVE_URI
+
+validate_authoritative_pass() {
+  [[ -d "$JOB_DIR/workspace" ]] || return 1
+  [[ -f "$JOB_DIR/manifest.json" && -f "$JOB_DIR/manifest.sha256" ]] || return 1
+
+  (
+    cd -- "$JOB_DIR" || exit 1
+    sha256sum -c manifest.sha256 >/dev/null 2>&1
+  ) || return 1
+
+  jq -e \
+    --arg repository "$GITHUB_REPOSITORY" \
+    --arg run_id "$GITHUB_RUN_ID" \
+    --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+    --arg job "$GITHUB_JOB" \
+    --arg job_key "$JOB_KEY" \
+    --arg workflow "$GITHUB_WORKFLOW" \
+    --arg git_sha "$GITHUB_SHA" \
+    --arg git_ref "$GITHUB_REF" \
+    --arg runner_name "$RUNNER_NAME" \
+    --arg archive_path "$JOB_DIR" \
+    --arg archive_uri "$ARCHIVE_URI" \
+    '
+      .schema == "github-runner-tools/local-artifact-manifest/v1" and
+      .archive_status == "PASS" and
+      .repository == $repository and
+      .run_id == $run_id and
+      .run_attempt == $run_attempt and
+      .job == $job and
+      .job_key == $job_key and
+      .workflow == $workflow and
+      .git_sha == $git_sha and
+      .git_ref == $git_ref and
+      .runner_name == $runner_name and
+      .archive_path == $archive_path and
+      .archive_uri == $archive_uri
+    ' "$JOB_DIR/manifest.json" >/dev/null 2>&1
+}
 
 if timeout --signal=TERM --kill-after=30 "${COPY_TIMEOUT_SECONDS}s" \
   bash -c archive_copy_finalize_worker; then
@@ -215,12 +261,21 @@ if timeout --signal=TERM --kill-after=30 "${COPY_TIMEOUT_SECONDS}s" \
   trap - ERR
 else
   finalize_rc=$?
-  if [[ "$finalize_rc" -eq 124 || "$finalize_rc" -eq 137 ]]; then
+
+  # timeout(1) can win a race after the worker has atomically published a
+  # complete PASS archive but before that worker exits. Never convert such an
+  # already-authoritative PASS into a contradictory FAILED state.
+  if validate_authoritative_pass; then
+    STAGE=""
+    trap - ERR
+    echo "WARNING: archive worker exited $finalize_rc after authoritative PASS publication; preserving PASS state." >&2
+  elif [[ "$finalize_rc" -eq 124 || "$finalize_rc" -eq 137 ]]; then
     fail_archive "LOCAL_ARTIFACT_ARCHIVE_TIMEOUT" \
       "workspace copy/finalization exceeded ${COPY_TIMEOUT_SECONDS}s"
+  else
+    fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" \
+      "workspace copy/finalization failed with exit code $finalize_rc"
   fi
-  fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" \
-    "workspace copy/finalization failed with exit code $finalize_rc"
 fi
 
 # A PASS manifest is authoritative only after the bounded worker completed.

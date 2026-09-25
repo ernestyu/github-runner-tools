@@ -39,7 +39,9 @@ if [[ -r "$ARCHIVE_LIB" && -r "$ARCHIVE_CONFIG" ]]; then
     writable="no"; [[ -w "$ARCHIVE_ROOT" ]] && writable="yes"
     if grt_disk_stats "$ARCHIVE_ROOT"; then
       echo "  root                 : $ARCHIVE_ROOT"
+      world_writable="yes"; grt_is_world_writable "$ARCHIVE_ROOT" && world_writable="no"
       echo "  root writable        : $writable"
+      echo "  root world-writable  : $world_writable"
       echo "  filesystem total     : $GRT_FS_TOTAL_BYTES bytes"
       echo "  filesystem used      : $GRT_FS_USED_BYTES bytes"
       echo "  filesystem free      : $GRT_FS_FREE_BYTES bytes"

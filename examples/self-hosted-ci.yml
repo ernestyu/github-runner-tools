@@ -1,0 +1,28 @@
+name: Self-hosted CI with local artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: [self-hosted, Linux, X64, REPOSITORY_LABEL]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run project checks
+        run: |
+          echo "Replace this step with the repository's build/test/experiment commands."
+
+  # Fallback only:
+  # Add this job if live validation on your pinned runner version shows that
+  # ACTIONS_RUNNER_HOOK_JOB_COMPLETED cannot reliably write GITHUB_STEP_SUMMARY.
+  #
+  # artifact-summary:
+  #   if: always()
+  #   needs: [test]
+  #   runs-on: [self-hosted, Linux, X64, REPOSITORY_LABEL]
+  #   steps:
+  #     - name: Publish local artifact summary
+  #       uses: ernestyu/github-runner-tools/.github/actions/local-artifact-summary@VERSION

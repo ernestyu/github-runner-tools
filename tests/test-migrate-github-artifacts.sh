@@ -78,6 +78,15 @@ MANIFEST="$ARCHIVE/owner/repo/456/github_artifacts/artifact_123--results/artifac
 [[ -f "$ARCHIVE/owner/repo/456/github_artifacts/artifact_123--results/payload/result.txt" ]] || fail "payload missing"
 [[ ! -e "$MOCK_DELETED" ]] || fail "remote deletion occurred without explicit flag"
 
+# A stale PASS manifest with a missing payload must never authorize remote deletion.
+mv "$ARCHIVE/owner/repo/456/github_artifacts/artifact_123--results/payload" "$TMP/payload-saved"
+if GRT_TEST_MODE=1 GITHUB_ACTIONS=false GRT_TEST_CONFIG="$TMP/archive.conf" \
+  bash "$SCRIPT" --delete-after-verified owner/repo >/dev/null 2>&1; then
+  fail "missing local payload still authorized remote deletion"
+fi
+[[ ! -e "$MOCK_DELETED" ]] || fail "missing payload triggered remote deletion"
+mv "$TMP/payload-saved" "$ARCHIVE/owner/repo/456/github_artifacts/artifact_123--results/payload"
+
 # Remote deletion failure must preserve the verified local payload and keep
 # remote_deleted=false so the operation can be retried safely.
 if MOCK_DELETE_FAIL=1 GRT_TEST_MODE=1 GITHUB_ACTIONS=false GRT_TEST_CONFIG="$TMP/archive.conf" \

@@ -130,46 +130,98 @@ grt_disk_stats "$ARCHIVE_ROOT" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "
   fail_archive "LOCAL_ARTIFACT_DISK_GUARD_FAILED" "archive filesystem free space ${GRT_FS_FREE_PERCENT}% is below threshold ${MIN_FREE_PERCENT}%"
 
 FAILURE_CODE="LOCAL_ARTIFACT_ARCHIVE_FAILED"
-FAILURE_MESSAGE="workspace archive copy failed"
-STAGE="$JOB_DIR/.workspace.tmp.$$.$RANDOM"
+FAILURE_MESSAGE="workspace archive copy/finalization failed"
+STAGE="$JOB_DIR/.workspace.tmp.$.$RANDOM"
 mkdir -- "$STAGE"
 
-RSYNC_ARGS=(
-  -a
-  --safe-links
-  --exclude='.git/'
-  --exclude='node_modules/'
-  --exclude='.venv/'
-  --exclude='venv/'
-  --exclude='__pycache__/'
-  --exclude='.pytest_cache/'
-)
+ARCHIVE_URI="$(grt_archive_uri_for "$GRT_OWNER_PATH" "$GRT_REPO_PATH" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$JOB_KEY")"
 
-if timeout --signal=TERM --kill-after=30 "${COPY_TIMEOUT_SECONDS}s"   rsync "${RSYNC_ARGS[@]}" -- "$GITHUB_WORKSPACE/" "$STAGE/"; then
-  :
+archive_copy_finalize_worker() {
+  set -Eeuo pipefail
+
+  local file_count symlink_count total_bytes completed_at
+  local manifest_tmp hash_tmp
+  local rsync_args=(
+    -a
+    --safe-links
+    --exclude='.git/'
+    --exclude='node_modules/'
+    --exclude='.venv/'
+    --exclude='venv/'
+    --exclude='__pycache__/'
+    --exclude='.pytest_cache/'
+  )
+
+  rsync "${rsync_args[@]}" -- "$GITHUB_WORKSPACE/" "$STAGE/"
+  mv -- "$STAGE" "$JOB_DIR/workspace"
+
+  file_count="$(find "$JOB_DIR/workspace" -type f -printf . | wc -c | tr -d ' ')"
+  symlink_count="$(find "$JOB_DIR/workspace" -type l -printf . | wc -c | tr -d ' ')"
+  total_bytes="$(du -sb "$JOB_DIR/workspace" | awk '{print $1}')"
+  completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  manifest_tmp="$JOB_DIR/.manifest.tmp.$"
+  hash_tmp="$JOB_DIR/.manifest.sha256.tmp.$"
+
+  jq -n \
+    --arg schema "github-runner-tools/local-artifact-manifest/v1" \
+    --arg status "PASS" \
+    --arg repository "$GITHUB_REPOSITORY" \
+    --arg owner_path "$GRT_OWNER_PATH" \
+    --arg repo_path "$GRT_REPO_PATH" \
+    --arg run_id "$GITHUB_RUN_ID" \
+    --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+    --arg job "$GITHUB_JOB" \
+    --arg job_key "$JOB_KEY" \
+    --arg workflow "$GITHUB_WORKFLOW" \
+    --arg git_sha "$GITHUB_SHA" \
+    --arg git_ref "$GITHUB_REF" \
+    --arg runner_name "$RUNNER_NAME" \
+    --arg workspace_source "$GITHUB_WORKSPACE" \
+    --arg completed_at_utc "$completed_at" \
+    --arg archive_path "$JOB_DIR" \
+    --arg archive_uri "$ARCHIVE_URI" \
+    --argjson file_count "$file_count" \
+    --argjson total_bytes "$total_bytes" \
+    --argjson symlink_count "$symlink_count" \
+    --argjson disk_free_percent_before "$GRT_FS_FREE_PERCENT" \
+    --argjson disk_free_bytes_before "$GRT_FS_FREE_BYTES" \
+    '{schema:$schema,archive_status:$status,repository:$repository,owner_path:$owner_path,repo_path:$repo_path,run_id:$run_id,run_attempt:$run_attempt,job:$job,job_key:$job_key,workflow:$workflow,git_sha:$git_sha,git_ref:$git_ref,runner_name:$runner_name,workspace_source:$workspace_source,completed_at_utc:$completed_at_utc,archive_path:$archive_path,archive_uri:$archive_uri,file_count:$file_count,total_bytes:$total_bytes,symlink_count:$symlink_count,disk_free_percent_before:$disk_free_percent_before,disk_free_bytes_before:$disk_free_bytes_before,exclude_policy_version:"v1"}' \
+    > "$manifest_tmp"
+
+  # Build every success prerequisite before publishing the authoritative PASS
+  # manifest. Hash the exact manifest bytes while they are still temporary.
+  sha256sum "$manifest_tmp" | awk '{print $1"  manifest.json"}' > "$hash_tmp"
+  mv -- "$hash_tmp" "$JOB_DIR/manifest.sha256"
+
+  # manifest.json is deliberately the LAST authoritative success publication.
+  mv -- "$manifest_tmp" "$JOB_DIR/manifest.json"
+}
+
+export -f archive_copy_finalize_worker
+export GITHUB_WORKSPACE GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_RUN_ATTEMPT
+export GITHUB_JOB GITHUB_WORKFLOW GITHUB_SHA GITHUB_REF RUNNER_NAME
+export GRT_OWNER_PATH GRT_REPO_PATH GRT_FS_FREE_PERCENT GRT_FS_FREE_BYTES
+export JOB_KEY JOB_DIR STAGE ARCHIVE_URI
+
+if timeout --signal=TERM --kill-after=30 "${COPY_TIMEOUT_SECONDS}s" \
+  bash -c archive_copy_finalize_worker; then
+  STAGE=""
 else
-  copy_rc=$?
-  if [[ "$copy_rc" -eq 124 || "$copy_rc" -eq 137 ]]; then
-    fail_archive "LOCAL_ARTIFACT_ARCHIVE_TIMEOUT" "workspace archive copy exceeded ${COPY_TIMEOUT_SECONDS}s"
+  finalize_rc=$?
+  if [[ "$finalize_rc" -eq 124 || "$finalize_rc" -eq 137 ]]; then
+    fail_archive "LOCAL_ARTIFACT_ARCHIVE_TIMEOUT" \
+      "workspace copy/finalization exceeded ${COPY_TIMEOUT_SECONDS}s"
   fi
-  fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "workspace archive copy failed with exit code $copy_rc"
+  fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" \
+    "workspace copy/finalization failed with exit code $finalize_rc"
 fi
 
-FAILURE_MESSAGE="archive finalization failed"
-mv -- "$STAGE" "$JOB_DIR/workspace"
-STAGE=""
-
-FILE_COUNT="$(find "$JOB_DIR/workspace" -type f -printf . | wc -c | tr -d ' ')"
-SYMLINK_COUNT="$(find "$JOB_DIR/workspace" -type l -printf . | wc -c | tr -d ' ')"
-TOTAL_BYTES="$(du -sb "$JOB_DIR/workspace" | awk '{print $1}')"
-COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-ARCHIVE_URI="$(grt_archive_uri_for "$GRT_OWNER_PATH" "$GRT_REPO_PATH" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$JOB_KEY")"
-MANIFEST_TMP="$JOB_DIR/.manifest.tmp.$$"
-
-jq -n   --arg schema "github-runner-tools/local-artifact-manifest/v1"   --arg status "PASS"   --arg repository "$GITHUB_REPOSITORY"   --arg owner_path "$GRT_OWNER_PATH"   --arg repo_path "$GRT_REPO_PATH"   --arg run_id "$GITHUB_RUN_ID"   --arg run_attempt "$GITHUB_RUN_ATTEMPT"   --arg job "$GITHUB_JOB"   --arg job_key "$JOB_KEY"   --arg workflow "$GITHUB_WORKFLOW"   --arg git_sha "$GITHUB_SHA"   --arg git_ref "$GITHUB_REF"   --arg runner_name "$RUNNER_NAME"   --arg workspace_source "$GITHUB_WORKSPACE"   --arg completed_at_utc "$COMPLETED_AT"   --arg archive_path "$JOB_DIR"   --arg archive_uri "$ARCHIVE_URI"   --argjson file_count "$FILE_COUNT"   --argjson total_bytes "$TOTAL_BYTES"   --argjson symlink_count "$SYMLINK_COUNT"   --argjson disk_free_percent_before "$GRT_FS_FREE_PERCENT"   --argjson disk_free_bytes_before "$GRT_FS_FREE_BYTES"   '{schema:$schema,archive_status:$status,repository:$repository,owner_path:$owner_path,repo_path:$repo_path,run_id:$run_id,run_attempt:$run_attempt,job:$job,job_key:$job_key,workflow:$workflow,git_sha:$git_sha,git_ref:$git_ref,runner_name:$runner_name,workspace_source:$workspace_source,completed_at_utc:$completed_at_utc,archive_path:$archive_path,archive_uri:$archive_uri,file_count:$file_count,total_bytes:$total_bytes,symlink_count:$symlink_count,disk_free_percent_before:$disk_free_percent_before,disk_free_bytes_before:$disk_free_bytes_before,exclude_policy_version:"v1"}'   > "$MANIFEST_TMP"
-mv -- "$MANIFEST_TMP" "$JOB_DIR/manifest.json"
-sha256sum "$JOB_DIR/manifest.json" | awk '{print $1"  manifest.json"}' > "$JOB_DIR/manifest.sha256"
+# A PASS manifest is authoritative only after the bounded worker completed.
+# Failure paths above can therefore never coexist with a published PASS state.
 rm -f -- "$JOB_DIR/manifest.failed.json"
+FILE_COUNT="$(jq -er '.file_count' "$JOB_DIR/manifest.json")"
+TOTAL_BYTES="$(jq -er '.total_bytes' "$JOB_DIR/manifest.json")"
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" && -w "${GITHUB_STEP_SUMMARY:-/nonexistent}" ]]; then
   {

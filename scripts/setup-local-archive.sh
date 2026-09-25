@@ -29,7 +29,7 @@ RUNNER_GROUP="$(id -gn)"
 [[ "$MIN_FREE_PERCENT" =~ ^[0-9]+$ && "$MIN_FREE_PERCENT" -ge 1 && "$MIN_FREE_PERCENT" -le 99 ]] || die "Minimum free percentage must be 1..99."
 [[ "$COPY_TIMEOUT_SECONDS" =~ ^[0-9]+$ && "$COPY_TIMEOUT_SECONDS" -ge 1 ]] || die "Copy timeout must be a positive integer."
 
-for cmd in sudo install id stat jq rsync timeout df sha256sum grep mktemp; do
+for cmd in sudo install id stat jq rsync timeout df sha256sum grep mktemp flock; do
   require_command "$cmd"
 done
 [[ -r "$HOOK_SRC" && -r "$LIB_SRC" ]] || die "Run this script from a complete github-runner-tools checkout."

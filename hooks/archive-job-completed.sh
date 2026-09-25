@@ -87,18 +87,20 @@ grt_is_world_writable "$ARCHIVE_ROOT" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FA
 grt_parse_repository "${GITHUB_REPOSITORY:-}" || fail_archive "LOCAL_ARTIFACT_IDENTITY_INVALID" "invalid GITHUB_REPOSITORY"
 grt_validate_run_identity || fail_archive "LOCAL_ARTIFACT_IDENTITY_INVALID" "invalid run/attempt/job identity"
 
-for v in GITHUB_SHA GITHUB_REF GITHUB_WORKFLOW GITHUB_WORKSPACE RUNNER_NAME; do
+for v in GITHUB_SHA GITHUB_REF GITHUB_WORKFLOW RUNNER_NAME; do
   [[ -n "${!v:-}" ]] || fail_archive "LOCAL_ARTIFACT_IDENTITY_INVALID" "missing $v"
 done
-[[ "$GITHUB_WORKSPACE" = /* && -d "$GITHUB_WORKSPACE" && -r "$GITHUB_WORKSPACE" ]] ||   fail_archive "LOCAL_ARTIFACT_WORKSPACE_INVALID" "workspace missing, relative, or unreadable"
 
-grt_disk_stats "$ARCHIVE_ROOT" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "cannot read archive filesystem capacity"
-(( GRT_FS_FREE_PERCENT >= MIN_FREE_PERCENT )) ||   fail_archive "LOCAL_ARTIFACT_DISK_GUARD_FAILED" "archive filesystem free space ${GRT_FS_FREE_PERCENT}% is below threshold ${MIN_FREE_PERCENT}%"
-
-OWNER_ROOT="$(grt_ensure_child_dir "$ARCHIVE_ROOT" "$GRT_OWNER_PATH")" ||   fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe owner archive path"
-REPO_ROOT="$(grt_ensure_child_dir "$OWNER_ROOT" "$GRT_REPO_PATH")" ||   fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe repository archive path"
-RUN_ROOT="$(grt_ensure_child_dir "$REPO_ROOT" "$GITHUB_RUN_ID")" ||   fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe run archive path"
-ATTEMPT_ROOT="$(grt_ensure_child_dir "$RUN_ROOT" "attempt_$GITHUB_RUN_ATTEMPT")" ||   fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe attempt archive path"
+# Claim a unique, safe archive target as soon as execution identity is known.
+# This allows later workspace/disk failures to leave a failure manifest.
+OWNER_ROOT="$(grt_ensure_child_dir "$ARCHIVE_ROOT" "$GRT_OWNER_PATH")" || \
+  fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe owner archive path"
+REPO_ROOT="$(grt_ensure_child_dir "$OWNER_ROOT" "$GRT_REPO_PATH")" || \
+  fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe repository archive path"
+RUN_ROOT="$(grt_ensure_child_dir "$REPO_ROOT" "$GITHUB_RUN_ID")" || \
+  fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe run archive path"
+ATTEMPT_ROOT="$(grt_ensure_child_dir "$RUN_ROOT" "attempt_$GITHUB_RUN_ATTEMPT")" || \
+  fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe attempt archive path"
 
 JOB_KEY="$GRT_JOB_SAFE"
 JOB_DIR="$ATTEMPT_ROOT/$JOB_KEY"
@@ -114,6 +116,14 @@ if ! mkdir -- "$JOB_DIR" 2>/dev/null; then
 fi
 JOB_DIR="$(grt_canonical_dir "$JOB_DIR")" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "cannot canonicalize job archive path"
 grt_assert_beneath "$ARCHIVE_ROOT" "$JOB_DIR" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "job path escaped archive root"
+
+[[ -n "${GITHUB_WORKSPACE:-}" ]] || fail_archive "LOCAL_ARTIFACT_WORKSPACE_INVALID" "missing GITHUB_WORKSPACE"
+[[ "$GITHUB_WORKSPACE" = /* && -d "$GITHUB_WORKSPACE" && -r "$GITHUB_WORKSPACE" ]] || \
+  fail_archive "LOCAL_ARTIFACT_WORKSPACE_INVALID" "workspace missing, relative, or unreadable"
+
+grt_disk_stats "$ARCHIVE_ROOT" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "cannot read archive filesystem capacity"
+(( GRT_FS_FREE_PERCENT >= MIN_FREE_PERCENT )) || \
+  fail_archive "LOCAL_ARTIFACT_DISK_GUARD_FAILED" "archive filesystem free space ${GRT_FS_FREE_PERCENT}% is below threshold ${MIN_FREE_PERCENT}%"
 
 FAILURE_CODE="LOCAL_ARTIFACT_ARCHIVE_FAILED"
 FAILURE_MESSAGE="workspace archive copy failed"

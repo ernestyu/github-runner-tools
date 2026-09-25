@@ -20,6 +20,10 @@ assert_eq "$GRT_OWNER_PATH" "ernestyu"
 assert_eq "$GRT_REPO_PATH" "project_a"
 if grt_parse_repository "bad/repo/extra" >/dev/null 2>&1; then fail "invalid repository accepted"; fi
 
+grt_repository_from_github_url "https://github.com/Owner/Repo.git" || fail "valid GitHub repository URL rejected"
+assert_eq "$GRT_REPOSITORY" "Owner/Repo"
+if grt_repository_from_github_url "https://example.com/owner/repo" >/dev/null 2>&1; then fail "non-GitHub repository URL accepted"; fi
+
 GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=2 GITHUB_JOB=test
 grt_validate_run_identity || fail "valid run identity rejected"
 assert_eq "$GRT_JOB_SAFE" "test"

@@ -41,8 +41,11 @@ cd ~
 git clone https://github.com/ernestyu/github-runner-tools.git
 cd github-runner-tools
 
-bash scripts/setup-local-archive.sh
+bash scripts/setup-local-archive.sh --dry-run
+bash scripts/setup-local-archive.sh --apply
 ```
+
+The default is dry-run. Review the resolved paths and permissions first, then use `--apply` to make the host-level changes.
 
 Run the setup script as the same normal Linux user that owns the runners. Do **not** run the whole script with `sudo`; it requests sudo only for the host-level files under `/srv`, `/etc`, and `/usr/local/lib`.
 

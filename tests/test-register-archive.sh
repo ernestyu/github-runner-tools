@@ -2,9 +2,17 @@
 set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNNER_TOOLS_LIB_ONLY=1 source "$ROOT/scripts/register-runner.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+
+# Library-only sourcing must not replace the caller's EXIT trap.
+trap ':' EXIT
+EXIT_TRAP_BEFORE="$(trap -p EXIT)"
+RUNNER_TOOLS_LIB_ONLY=1 source "$ROOT/scripts/register-runner.sh"
+EXIT_TRAP_AFTER="$(trap -p EXIT)"
+[[ "$EXIT_TRAP_AFTER" == "$EXIT_TRAP_BEFORE" ]] || fail "library-only source changed caller EXIT trap"
+trap - EXIT
+
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
 ARCHIVE="$TMP/archive"
@@ -38,9 +46,17 @@ configure_runner_archive_hook "$ENVFILE"
 [[ "$(grep -c '^ACTIONS_RUNNER_HOOK_JOB_COMPLETED=' "$ENVFILE")" -eq 1 ]] || fail "registration hook duplicated"
 
 printf '%s\n' 'ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/other/hook' > "$ENVFILE"
-if configure_runner_archive_hook "$ENVFILE" >/dev/null 2>&1; then fail "conflicting hook accepted"; fi
+if (
+  configure_runner_archive_hook "$ENVFILE"
+) >/dev/null 2>&1; then
+  fail "conflicting hook accepted"
+fi
 
 LOCAL_ARCHIVE_CONFIG="$TMP/missing.conf"
-if validate_local_archive_platform >/dev/null 2>&1; then fail "missing config accepted"; fi
+if (
+  validate_local_archive_platform
+) >/dev/null 2>&1; then
+  fail "missing config accepted"
+fi
 
 echo "PASS: runner registration archive integration tests"

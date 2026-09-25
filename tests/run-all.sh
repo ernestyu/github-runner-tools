@@ -9,6 +9,7 @@ tests=(
   tests/test-archive-common.sh
   tests/test-register-archive.sh
   tests/test-archive-hook.sh
+  tests/test-archive-hook-failures.sh
   tests/test-enable-local-archive.sh
   tests/test-cleanup-local-artifacts.sh
   tests/test-migrate-github-artifacts.sh

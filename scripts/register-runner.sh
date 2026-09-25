@@ -8,6 +8,9 @@ REGISTRATION_COMPLETE=0
 TOKEN=""
 RELEASE_JSON=""
 ARCHIVE_PATH=""
+LOCAL_ARCHIVE_HOOK="/usr/local/lib/github-runner-tools/hooks/archive-job-completed.sh"
+LOCAL_ARCHIVE_LIB="/usr/local/lib/github-runner-tools/archive-common.sh"
+LOCAL_ARCHIVE_CONFIG="/etc/github-runner-tools/archive.conf"
 
 usage() {
   cat <<'USAGE'
@@ -104,6 +107,26 @@ read_secret_from_tty() {
   printf '%s' "$value"
 }
 
+validate_local_archive_platform() {
+  [[ -r "$LOCAL_ARCHIVE_LIB" ]] || die "Local archive platform is not installed. Run scripts/setup-local-archive.sh first."
+  [[ -r "$LOCAL_ARCHIVE_CONFIG" ]] || die "Local archive config is missing: $LOCAL_ARCHIVE_CONFIG"
+  [[ -x "$LOCAL_ARCHIVE_HOOK" ]] || die "Local archive completed hook is missing or not executable: $LOCAL_ARCHIVE_HOOK"
+  # shellcheck source=/dev/null
+  source "$LOCAL_ARCHIVE_LIB"
+  grt_load_archive_config "$LOCAL_ARCHIVE_CONFIG" || die "Local archive config is invalid."
+  [[ -d "$ARCHIVE_ROOT" && -x "$ARCHIVE_ROOT" && -r "$ARCHIVE_ROOT" && -w "$ARCHIVE_ROOT" ]] || die "Archive root is not accessible and writable by $RUNNER_USER: $ARCHIVE_ROOT"
+  (( MIN_FREE_PERCENT >= 1 && MIN_FREE_PERCENT <= 99 )) || die "Archive disk guard threshold is invalid."
+}
+
+configure_runner_archive_hook() {
+  local env_file="$1" current=""
+  if current="$(grt_read_runner_env_value "$env_file" ACTIONS_RUNNER_HOOK_JOB_COMPLETED 2>/dev/null)"; then
+    [[ "$current" == "$LOCAL_ARCHIVE_HOOK" ]] || die "Runner .env contains a conflicting completed hook: $current"
+    return 0
+  fi
+  grt_set_runner_env_value "$env_file" ACTIONS_RUNNER_HOOK_JOB_COMPLETED "$LOCAL_ARCHIVE_HOOK" || die "Could not configure completed hook in $env_file"
+}
+
 main() {
 if [[ ${EUID} -eq 0 ]]; then die "Do not run this script as root. Run it as the user that should own the runner."; fi
 
@@ -150,6 +173,8 @@ case "$(uname -m)" in
   *) die "Unsupported CPU architecture: $(uname -m)" ;;
 esac
 [[ -r /dev/tty && -w /dev/tty ]] || die "Interactive token input requires a TTY."
+
+validate_local_archive_platform
 
 RUNNER_BASE_DIR="${CLI_BASE_DIR:-${RUNNER_BASE_DIR:-$USER_HOME}}"
 RUNNER_NAME="${CLI_RUNNER_NAME:-${RUNNER_NAME:-local-ci-$LOCAL_ID}}"
@@ -234,6 +259,9 @@ echo "==> Registering runner for https://github.com/$REPO ..."
 REGISTRATION_COMPLETE=1
 unset TOKEN
 
+echo "==> Configuring local artifact completed hook..."
+configure_runner_archive_hook "$RUNNER_DIR/.env"
+
 echo "==> Installing systemd service for user $RUNNER_USER ..."
 sudo ./svc.sh install "$RUNNER_USER"
 echo "==> Starting runner service..."
@@ -254,6 +282,8 @@ Directory    : $RUNNER_DIR
 Architecture : $RUNNER_ARCH_LABEL
 Runner ver.  : $TAG
 Labels       : self-hosted, Linux, $RUNNER_ARCH_LABEL, $RUNNER_LABELS
+Archive hook : $LOCAL_ARCHIVE_HOOK
+Archive root : $ARCHIVE_ROOT
 
 GitHub page:
   https://github.com/$REPO/settings/actions/runners

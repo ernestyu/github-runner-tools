@@ -47,10 +47,15 @@ fi
 RUNNER_BASE_DIR="${RUNNER_BASE_DIR:-$USER_HOME}"
 RUNNER_BASE_DIR="$(grt_canonical_dir "$RUNNER_BASE_DIR")" || die "Invalid RUNNER_BASE_DIR."
 
-for cmd in jq systemctl sudo find awk; do grt_require_command "$cmd" || exit 1; done
+for cmd in jq systemctl sudo find awk stat tr grep; do grt_require_command "$cmd" || exit 1; done
 grt_load_archive_config "$CONFIG_PATH" || die "Archive platform config is missing or invalid. Run setup-local-archive.sh first."
 [[ -x "$HOOK_PATH" ]] || die "Shared archive hook is missing or not executable: $HOOK_PATH"
-[[ -d "$ARCHIVE_ROOT" && -w "$ARCHIVE_ROOT" ]] || die "Archive root is unavailable to $RUNNER_USER."
+[[ -d "$ARCHIVE_ROOT" && ! -L "$ARCHIVE_ROOT" && -w "$ARCHIVE_ROOT" ]] || die "Archive root is unavailable to $RUNNER_USER."
+grt_is_world_writable "$ARCHIVE_ROOT" || die "Archive root must not be world-writable."
+if [[ "${GRT_TEST_MODE:-0}" != "1" ]]; then
+  [[ "$(stat -c '%u' "$HOOK_PATH")" == "0" && ! -w "$HOOK_PATH" ]] || die "Shared hook must be root-owned and not writable by $RUNNER_USER."
+  [[ "$(stat -c '%u' "$CONFIG_PATH")" == "0" && ! -w "$CONFIG_PATH" ]] || die "Archive config must be root-owned and not writable by $RUNNER_USER."
+fi
 
 shopt -s nullglob
 dirs=("$RUNNER_BASE_DIR"/actions-runner-*)
@@ -63,6 +68,12 @@ for dir in "${dirs[@]}"; do
   echo "Candidate: $dir"
   if [[ ! -f "$dir/.runner" || ! -f "$dir/.service" ]]; then
     echo "SKIP: missing .runner or .service metadata"
+    continue
+  fi
+  DIR_OWNER="$(stat -c '%U' "$dir" 2>/dev/null || true)"
+  if [[ "$DIR_OWNER" != "$RUNNER_USER" ]]; then
+    echo "ERROR: runner directory owner is $DIR_OWNER, expected $RUNNER_USER" >&2
+    failures=$((failures+1))
     continue
   fi
 

@@ -41,8 +41,11 @@ cd ~
 git clone https://github.com/ernestyu/github-runner-tools.git
 cd github-runner-tools
 
-bash scripts/setup-local-archive.sh
+bash scripts/setup-local-archive.sh --dry-run
+bash scripts/setup-local-archive.sh --apply
 ```
+
+默认是 dry-run。先检查脚本解析出的路径、用户和权限，再使用 `--apply` 真正写入 host-level 配置。
 
 请使用实际拥有 runner 的普通 Linux 用户执行，不要写成 `sudo bash scripts/setup-local-archive.sh`。脚本只有在写入 `/srv`、`/etc` 和 `/usr/local/lib` 这些 host-level 位置时才会在内部调用 sudo。
 

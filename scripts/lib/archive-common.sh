@@ -35,6 +35,17 @@ grt_parse_repository() {
   GRT_REPO_PATH="$(grt_sanitize_component "$repo")" || return 1
 }
 
+grt_repository_from_github_url() {
+  local url="${1:-}" path
+  url="${url%/}"
+  url="${url%.git}"
+  [[ "$url" == https://github.com/* ]] || return 1
+  path="${url#https://github.com/}"
+  [[ "$path" =~ ^[^/]+/[^/]+$ ]] || return 1
+  grt_parse_repository "$path" || return 1
+  GRT_REPOSITORY="$path"
+}
+
 grt_validate_run_identity() {
   grt_is_uint "${GITHUB_RUN_ID:-}" || return 1
   grt_is_uint "${GITHUB_RUN_ATTEMPT:-}" || return 1

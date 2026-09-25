@@ -31,6 +31,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+for cmd in find grep jq date rm; do
+  grt_require_command "$cmd" || exit 1
+done
+
 grt_load_archive_config "$CONFIG" || die "Archive config missing or invalid."
 [[ -d "$ARCHIVE_ROOT" && ! -L "$ARCHIVE_ROOT" ]] || die "Archive root does not exist or is a symlink."
 ARCHIVE_ROOT="$(grt_canonical_dir "$ARCHIVE_ROOT")"
@@ -87,6 +91,6 @@ while IFS= read -r -d '' run; do
   else
     echo "WOULD DELETE: $run"
   fi
-done < <(find "$ARCHIVE_ROOT" -mindepth 3 -maxdepth 3 -type d -regextype posix-extended -regex '.*/[0-9]+' -print0)
+done < <(find "$ARCHIVE_ROOT" -regextype posix-extended -mindepth 3 -maxdepth 3 -type d -regex '.*/[0-9]+' -print0)
 
 echo "Cleanup mode=$MODE retention_days=$RETENTION_DAYS eligible=$eligible deleted=$deleted"

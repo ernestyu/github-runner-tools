@@ -192,9 +192,11 @@ archive_copy_finalize_worker() {
   # Build every success prerequisite before publishing the authoritative PASS
   # manifest. Hash the exact manifest bytes while they are still temporary.
   sha256sum "$manifest_tmp" | awk '{print $1"  manifest.json"}' > "$hash_tmp"
+  rm -f -- "$JOB_DIR/manifest.failed.json"
   mv -- "$hash_tmp" "$JOB_DIR/manifest.sha256"
 
   # manifest.json is deliberately the LAST authoritative success publication.
+  # No required archive-finalization operation follows this atomic rename.
   mv -- "$manifest_tmp" "$JOB_DIR/manifest.json"
 }
 
@@ -207,6 +209,10 @@ export JOB_KEY JOB_DIR STAGE ARCHIVE_URI
 if timeout --signal=TERM --kill-after=30 "${COPY_TIMEOUT_SECONDS}s" \
   bash -c archive_copy_finalize_worker; then
   STAGE=""
+  # From this point on manifest.json is authoritative PASS state. Disable the
+  # archive-failure trap so optional reporting/lock cleanup can never create a
+  # contradictory FAILED manifest after PASS publication.
+  trap - ERR
 else
   finalize_rc=$?
   if [[ "$finalize_rc" -eq 124 || "$finalize_rc" -eq 137 ]]; then
@@ -219,12 +225,11 @@ fi
 
 # A PASS manifest is authoritative only after the bounded worker completed.
 # Failure paths above can therefore never coexist with a published PASS state.
-rm -f -- "$JOB_DIR/manifest.failed.json"
-FILE_COUNT="$(jq -er '.file_count' "$JOB_DIR/manifest.json")"
-TOTAL_BYTES="$(jq -er '.total_bytes' "$JOB_DIR/manifest.json")"
+FILE_COUNT="$(jq -r '.file_count // "unknown"' "$JOB_DIR/manifest.json" 2>/dev/null || printf 'unknown')"
+TOTAL_BYTES="$(jq -r '.total_bytes // "unknown"' "$JOB_DIR/manifest.json" 2>/dev/null || printf 'unknown')"
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" && -w "${GITHUB_STEP_SUMMARY:-/nonexistent}" ]]; then
-  {
+  if {
     echo "## Local CI Artifact"
     echo
     echo "Repository: $GITHUB_REPOSITORY"
@@ -238,14 +243,16 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" && -w "${GITHUB_STEP_SUMMARY:-/nonexistent}"
     echo
     echo "Local archive:"
     echo "$ARCHIVE_URI"
-  } >> "$GITHUB_STEP_SUMMARY"
-  SUMMARY_WRITTEN=1
+  } >> "$GITHUB_STEP_SUMMARY"; then
+    SUMMARY_WRITTEN=1
+  else
+    echo "LOCAL_ARTIFACT_SUMMARY_UNAVAILABLE: failed to write GITHUB_STEP_SUMMARY after archive PASS" >&2
+  fi
 else
   echo "LOCAL_ARTIFACT_SUMMARY_UNAVAILABLE: GITHUB_STEP_SUMMARY is absent or not writable" >&2
 fi
 
-rm -f -- "$LOCK_FILE"
+rm -f -- "$LOCK_FILE" || echo "WARNING: could not remove archive lock marker: $LOCK_FILE" >&2
 flock -u 9 || true
-exec 9>&-
-trap - ERR
+exec 9>&- || true
 echo "LOCAL_ARTIFACT_ARCHIVE_PASS: $ARCHIVE_URI files=$FILE_COUNT bytes=$TOTAL_BYTES summary_written=$SUMMARY_WRITTEN"

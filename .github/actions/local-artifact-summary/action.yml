@@ -1,0 +1,8 @@
+name: Local Artifact Summary
+description: Publish a GitHub Step Summary from finalized local artifact manifests.
+runs:
+  using: composite
+  steps:
+    - name: Publish local artifact summary
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/summary.sh"

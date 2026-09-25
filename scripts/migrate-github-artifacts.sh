@@ -53,6 +53,8 @@ grt_load_archive_config "$CONFIG" || die "Archive config missing or invalid."
 [[ -d "$ARCHIVE_ROOT" && ! -L "$ARCHIVE_ROOT" && -w "$ARCHIVE_ROOT" ]] || die "Archive root unavailable or unsafe."
 ARCHIVE_ROOT="$(grt_canonical_dir "$ARCHIVE_ROOT")"
 grt_is_world_writable "$ARCHIVE_ROOT" || die "Archive root must not be world-writable."
+grt_disk_stats "$ARCHIVE_ROOT" || die "Could not read archive filesystem capacity."
+(( GRT_FS_FREE_PERCENT >= MIN_FREE_PERCENT )) || die "Archive filesystem free space ${GRT_FS_FREE_PERCENT}% is below threshold ${MIN_FREE_PERCENT}%."
 
 safe_extract_zip() {
   local zip="$1" dest="$2"

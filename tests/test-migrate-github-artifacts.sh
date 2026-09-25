@@ -29,6 +29,9 @@ if [[ "$1" == "auth" && "$2" == "status" ]]; then exit 0; fi
 if [[ "$1" != "api" ]]; then exit 2; fi
 shift
 if [[ "${1:-}" == "--paginate" ]]; then
+  if [[ -e "$MOCK_DELETED" && "$*" == *"select(.id == 123)"* ]]; then
+    exit 0
+  fi
   printf '%s\n' "$MOCK_ARTIFACT_B64"
   exit 0
 fi

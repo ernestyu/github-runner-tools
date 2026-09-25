@@ -84,6 +84,10 @@ for dir in "${dirs[@]}"; do
     echo "SKIP: runner metadata is invalid"
     continue
   fi
+  if ! grt_repository_from_github_url "$REPO_URL"; then
+    echo "SKIP: runner repository URL is not a valid GitHub repository identity: $REPO_URL"
+    continue
+  fi
 
   ENV_FILE="$dir/.env"
   current=""

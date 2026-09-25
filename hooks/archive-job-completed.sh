@@ -51,7 +51,11 @@ fail_archive() {
   FAILURE_CODE="$code"; FAILURE_MESSAGE="$message"
   write_failure_manifest "$code" "$message"
   write_failed_summary "$code" "$message"
-  [[ -n "$STAGE" && -d "$STAGE" ]] && rm -rf -- "$STAGE"
+  if [[ -n "$STAGE" && -d "$STAGE" && -n "$JOB_DIR" && -d "$JOB_DIR" ]]; then
+    failed_stage="$JOB_DIR/.workspace.failed.$(date -u +%Y%m%dT%H%M%S).$"
+    mv -- "$STAGE" "$failed_stage" 2>/dev/null || true
+    STAGE=""
+  fi
   echo "::error title=Local artifact archive failed::$code: $message" >&2
   echo "$code: $message" >&2
   exit 1
@@ -63,7 +67,7 @@ on_err() {
 }
 trap 'on_err "$?" "$LINENO"' ERR
 
-for cmd in jq rsync find du sha256sum df timeout date mktemp; do
+for cmd in jq rsync find du sha256sum df timeout date mktemp awk sed tr wc mkdir mv rm sleep; do
   grt_require_command "$cmd" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "missing required command: $cmd"
 done
 
@@ -104,9 +108,9 @@ fi
 JOB_DIR="$(grt_canonical_dir "$JOB_DIR")"
 grt_assert_beneath "$ARCHIVE_ROOT" "$JOB_DIR" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "job path escaped archive root"
 
-FAILURE_CODE="LOCAL_ARTIFACT_ARCHIVE_TIMEOUT"
-FAILURE_MESSAGE="workspace archive copy failed or exceeded timeout"
-STAGE="$JOB_DIR/.workspace.tmp.$$.$RANDOM"
+FAILURE_CODE="LOCAL_ARTIFACT_ARCHIVE_FAILED"
+FAILURE_MESSAGE="workspace archive copy failed"
+STAGE="$JOB_DIR/.workspace.tmp.$.$RANDOM"
 mkdir -- "$STAGE"
 
 RSYNC_ARGS=(-a --safe-links
@@ -117,7 +121,16 @@ RSYNC_ARGS=(-a --safe-links
   --exclude='__pycache__/'
   --exclude='.pytest_cache/'
 )
-timeout --signal=TERM --kill-after=30 "${COPY_TIMEOUT_SECONDS}s"   rsync "${RSYNC_ARGS[@]}" -- "$GITHUB_WORKSPACE/" "$STAGE/"
+if timeout --signal=TERM --kill-after=30 "${COPY_TIMEOUT_SECONDS}s" \
+  rsync "${RSYNC_ARGS[@]}" -- "$GITHUB_WORKSPACE/" "$STAGE/"; then
+  :
+else
+  copy_rc=$?
+  if [[ "$copy_rc" -eq 124 || "$copy_rc" -eq 137 ]]; then
+    fail_archive "LOCAL_ARTIFACT_ARCHIVE_TIMEOUT" "workspace archive copy exceeded ${COPY_TIMEOUT_SECONDS}s"
+  fi
+  fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "workspace archive copy failed with exit code $copy_rc"
+fi
 
 FAILURE_CODE="LOCAL_ARTIFACT_ARCHIVE_FAILED"
 FAILURE_MESSAGE="archive finalization failed"

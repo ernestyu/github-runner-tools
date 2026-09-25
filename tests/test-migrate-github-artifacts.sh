@@ -5,7 +5,7 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/scripts/migrate-github-artifacts.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-for cmd in python3 unzip base64 jq; do command -v "$cmd" >/dev/null 2>&1 || { echo "SKIP: $cmd not installed"; exit 0; }; done
+for cmd in python3 base64 jq; do command -v "$cmd" >/dev/null 2>&1 || { echo "SKIP: $cmd not installed"; exit 0; }; done
 
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT

@@ -7,6 +7,10 @@ source "$ROOT/scripts/lib/archive-common.sh"
 
 HOOK_PATH="/usr/local/lib/github-runner-tools/hooks/archive-job-completed.sh"
 CONFIG_PATH="/etc/github-runner-tools/archive.conf"
+if [[ "${GRT_TEST_MODE:-0}" == "1" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+  HOOK_PATH="${GRT_TEST_HOOK_PATH:-$HOOK_PATH}"
+  CONFIG_PATH="${GRT_TEST_CONFIG:-$CONFIG_PATH}"
+fi
 MODE="dry-run"
 
 usage() {

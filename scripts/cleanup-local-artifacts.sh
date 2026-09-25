@@ -40,7 +40,7 @@ CUTOFF=$((NOW - RETENTION_DAYS * 86400))
 
 is_active_or_ambiguous() {
   local run="$1"
-  find "$run" \( -type d -a \( -name '.workspace.tmp.*' -o -name '.workspace.failed.*' \) \) -o -name '.archive.lock' -print -quit | grep -q . && return 0
+  find "$run" \( \( -type d -a \( -name '.workspace.tmp.*' -o -name '.workspace.failed.*' \) \) -o -name '.archive.lock' \) -print -quit | grep -q . && return 0
   find "$run" -name 'manifest.failed.json' -print -quit | grep -q . && return 0
   return 1
 }

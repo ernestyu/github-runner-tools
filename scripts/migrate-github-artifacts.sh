@@ -5,6 +5,9 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/lib/archive-common.sh"
 
 CONFIG="/etc/github-runner-tools/archive.conf"
+if [[ "${GRT_TEST_MODE:-0}" == "1" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+  CONFIG="${GRT_TEST_CONFIG:-$CONFIG}"
+fi
 DELETE_AFTER=0
 DOWNLOAD_ONLY=0
 
@@ -83,11 +86,7 @@ while IFS= read -r row; do
   verify_status="NOT_REQUESTED"
   if (( DOWNLOAD_ONLY == 0 )); then
     [[ "$zip_bytes" -gt 0 ]] || die "Artifact $id download is empty."
-    # GitHub size_in_bytes describes the stored archive. Preserve both values and
-    # require equality when GitHub returned a positive size.
-    if [[ "$size" =~ ^[0-9]+$ && "$size" -gt 0 && "$zip_bytes" -ne "$size" ]]; then
-      die "Artifact $id size verification failed: expected=$size downloaded=$zip_bytes"
-    fi
+    unzip -tq "$zip" >/dev/null || die "Artifact $id ZIP integrity verification failed."
     verify_status="PASS"
   fi
 
@@ -100,6 +99,9 @@ while IFS= read -r row; do
   if (( DELETE_AFTER == 1 )); then
     [[ "$verify_status" == "PASS" ]] || die "Internal safety error: remote deletion requested without verification PASS."
     gh api --method DELETE "repos/$REPOSITORY/actions/artifacts/$id"
+    if gh api "repos/$REPOSITORY/actions/artifacts/$id" >/dev/null 2>&1; then
+      die "Remote artifact $id still exists after delete request."
+    fi
     tmpm="$(mktemp)"
     jq '.remote_deleted=true' "$dest/artifact-manifest.json" > "$tmpm"
     mv "$tmpm" "$dest/artifact-manifest.json"

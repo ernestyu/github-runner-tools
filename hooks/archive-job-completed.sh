@@ -122,8 +122,8 @@ exec 9>"$LOCK_FILE"
 flock -n 9 || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "archive target is already locked by another hook execution"
 
 [[ -n "${GITHUB_WORKSPACE:-}" ]] || fail_archive "LOCAL_ARTIFACT_WORKSPACE_INVALID" "missing GITHUB_WORKSPACE"
-[[ "$GITHUB_WORKSPACE" = /* && -d "$GITHUB_WORKSPACE" && -r "$GITHUB_WORKSPACE" ]] || \
-  fail_archive "LOCAL_ARTIFACT_WORKSPACE_INVALID" "workspace missing, relative, or unreadable"
+[[ "$GITHUB_WORKSPACE" = /* && -d "$GITHUB_WORKSPACE" && ! -L "$GITHUB_WORKSPACE" && -r "$GITHUB_WORKSPACE" ]] || \
+  fail_archive "LOCAL_ARTIFACT_WORKSPACE_INVALID" "workspace missing, relative, symlinked, or unreadable"
 
 grt_disk_stats "$ARCHIVE_ROOT" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "cannot read archive filesystem capacity"
 (( GRT_FS_FREE_PERCENT >= MIN_FREE_PERCENT )) || \

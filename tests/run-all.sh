@@ -3,6 +3,11 @@ set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
+echo "Checking shell syntax..."
+while IFS= read -r script; do
+  bash -n "$script"
+done < <(find "$ROOT/scripts" "$ROOT/hooks" "$ROOT/tests" "$ROOT/.github/actions" -type f -name '*.sh' -print | sort)
+
 tests=(
   tests/test-pure.sh
   tests/test-failure-paths.sh
@@ -13,6 +18,8 @@ tests=(
   tests/test-enable-local-archive.sh
   tests/test-cleanup-local-artifacts.sh
   tests/test-migrate-github-artifacts.sh
+  tests/test-migrate-artifact-safety.sh
+  tests/test-summary-action.sh
 )
 
 for test_script in "${tests[@]}"; do

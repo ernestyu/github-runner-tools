@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# github-runner-tools-managed-hook
 set -Eeuo pipefail
 
 LIB="/usr/local/lib/github-runner-tools/archive-common.sh"

@@ -16,7 +16,7 @@ First install the basic tools:
 
 ```bash
 sudo apt update
-sudo apt install -y ca-certificates curl jq tar coreutils
+sudo apt install -y ca-certificates curl jq tar coreutils rsync util-linux
 ```
 
 Open the target GitHub repository and go to:
@@ -30,7 +30,40 @@ Settings
 
 Choose Linux and the architecture that matches the host, then copy the temporary registration token from the `config.sh` command GitHub shows.
 
-### One-line bootstrap
+### One-time local artifact setup
+
+The current version archives completed self-hosted jobs to local Debian storage by default. Run the platform setup once on the runner host before registering new runners.
+
+Use a full checkout for this one-time host setup:
+
+```bash
+cd ~
+git clone https://github.com/ernestyu/github-runner-tools.git
+cd github-runner-tools
+
+bash scripts/setup-local-archive.sh
+```
+
+Run the setup script as the same normal Linux user that owns the runners. Do **not** run the whole script with `sudo`; it requests sudo only for the host-level files under `/srv`, `/etc`, and `/usr/local/lib`.
+
+The default local store is:
+
+```text
+/srv/github-actions-archive
+```
+
+Existing runners can be inspected and migrated after setup:
+
+```bash
+bash scripts/enable-local-archive.sh --dry-run
+bash scripts/enable-local-archive.sh --apply
+```
+
+The apply command adds the shared `ACTIONS_RUNNER_HOOK_JOB_COMPLETED` hook and restarts only validated runner services. A conflicting existing completed hook is never silently replaced.
+
+### One-line runner bootstrap
+
+After the one-time local artifact setup, future repository runners can still be registered with one command.
 
 Before the first tagged release, the development form is:
 
@@ -71,7 +104,42 @@ bash scripts/register-runner.sh OWNER/REPO
 bash scripts/status-runners.sh
 ```
 
-The cloned script and the one-line bootstrap use the same defaults.
+The cloned script and the one-line bootstrap use the same defaults. Both now require the one-time local artifact platform setup to be present.
+
+## Local artifact archive
+
+Every runner registered by the current tool is configured with the shared completed-job hook. After normal workflow steps finish, the hook copies the final workspace into:
+
+```text
+/srv/github-actions-archive/OWNER/REPO/RUN_ID/attempt_N/JOB_KEY/
+```
+
+The archive contains `workspace/`, `manifest.json`, and `manifest.sha256`. The default policy excludes reproducible dependency/cache directories such as `.git/`, `node_modules/`, virtual environments, Python bytecode caches, and pytest cache. It does **not** exclude research result directories such as `data/`, `results/`, `reports/`, `artifacts/`, `output/`, or `checkpoints/`.
+
+Archive failure is fail-closed: the hook emits a stable `LOCAL_ARTIFACT_*` error and exits non-zero. The default disk guard refuses a new archive when the archive filesystem has less than 15% free space. The default copy timeout is 3600 seconds.
+
+The hook attempts to write the final GitHub Step Summary after archive finalization. This completed-hook Summary path still requires live validation on the actual Debian runner version before it is treated as the stable V1 default. A reusable fallback action is included at:
+
+```text
+.github/actions/local-artifact-summary
+```
+
+Retention cleanup is separate from job completion:
+
+```bash
+bash scripts/cleanup-local-artifacts.sh --dry-run
+bash scripts/cleanup-local-artifacts.sh --apply
+```
+
+The default retention is 90 days. A run containing `.keep` at its run root is never removed by automatic cleanup.
+
+Existing GitHub Actions artifacts can be copied locally with:
+
+```bash
+bash scripts/migrate-github-artifacts.sh OWNER/REPO
+```
+
+The safe default is download + verify without remote deletion. Remote deletion requires the explicit `--delete-after-verified` option and only proceeds after a verified local copy exists.
 
 ## What the bootstrap does
 
@@ -173,14 +241,15 @@ Configured runners containing `.runner` are never removed by that option.
 
 ## Tests
 
-The repository includes pure helper tests plus failure-path tests for relative base-directory canonicalization and retry-safe systemd removal:
+The repository includes runner-management tests and local-artifact unit/integration/failure-path tests:
 
 ```bash
-bash tests/test-pure.sh
-bash tests/test-failure-paths.sh
+bash tests/run-all.sh
 ```
 
-These tests do not replace real-host validation. Registration, systemd service behavior, TTY input, GitHub token handling, and ARM64 still need environment-specific testing.
+The archive suite covers path validation, hook configuration, workspace archive behavior, exclusions, symlink safety, job-key collisions, failure manifests, disk guard, timeout handling, retention cleanup, existing-runner migration, and GitHub artifact migration.
+
+These automated tests do not replace real-host validation. In particular, completed-hook `$GITHUB_STEP_SUMMARY` behavior, hook failure propagation through GitHub's `Complete runner` stage, systemd restart behavior, and large real-workspace copies must be validated on the actual Debian runner before the local-artifact release is declared complete.
 
 ## Security and limitations
 

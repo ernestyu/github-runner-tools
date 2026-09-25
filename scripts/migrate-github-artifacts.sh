@@ -155,8 +155,18 @@ while IFS= read -r row; do
 
   if [[ -e "$manifest" ]]; then
     status="$(jq -r '.verification_status // empty' "$manifest" 2>/dev/null || true)"
+    manifest_id="$(jq -r '.artifact_id // empty' "$manifest" 2>/dev/null || true)"
+    manifest_repo="$(jq -r '.repository // empty' "$manifest" 2>/dev/null || true)"
+    manifest_run="$(jq -r '.run_id // empty' "$manifest" 2>/dev/null || true)"
+    manifest_payload="$(jq -r '.local_payload_path // empty' "$manifest" 2>/dev/null || true)"
     remote_deleted="$(jq -r '.remote_deleted // false' "$manifest" 2>/dev/null || true)"
+
+    [[ "$manifest_id" == "$id" && "$manifest_repo" == "$REPOSITORY" && "$manifest_run" == "$run_id" ]] || \
+      die "Existing artifact manifest identity mismatch: $manifest"
+    [[ "$manifest_payload" == "$dest/payload" ]] || die "Existing artifact manifest payload path mismatch: $manifest"
+
     if [[ "$status" == "PASS" ]]; then
+      [[ -d "$dest/payload" ]] || die "Verified manifest exists but local payload is missing: $dest/payload"
       if (( DELETE_AFTER == 1 )) && [[ "$remote_deleted" != "true" ]]; then
         echo "Using existing verified local copy for remote deletion: artifact $id $name"
         delete_remote_artifact "$id" "$manifest"

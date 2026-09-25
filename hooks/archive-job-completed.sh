@@ -9,13 +9,17 @@ if [[ "${GRT_TEST_MODE:-0}" == "1" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
   CONFIG="${GRT_TEST_CONFIG:-$CONFIG}"
 fi
 
-[[ -r "$LIB" ]] || { echo "LOCAL_ARTIFACT_ARCHIVE_FAILED: shared library not readable: $LIB" >&2; exit 1; }
+[[ -r "$LIB" ]] || {
+  echo "LOCAL_ARTIFACT_ARCHIVE_FAILED: shared library not readable: $LIB" >&2
+  exit 1
+}
 # shellcheck source=/dev/null
 source "$LIB"
 
 FAILURE_CODE="LOCAL_ARTIFACT_ARCHIVE_FAILED"
 FAILURE_MESSAGE="archive hook failed"
 JOB_DIR=""
+JOB_KEY=""
 STAGE=""
 SUMMARY_WRITTEN=0
 
@@ -38,22 +42,24 @@ write_failed_summary() {
 }
 
 write_failure_manifest() {
-  local code="$1" message="$2" now
+  local code="$1" message="$2" now tmp
   [[ -n "$JOB_DIR" && -d "$JOB_DIR" && -w "$JOB_DIR" ]] || return 0
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  jq -n     --arg schema "github-runner-tools/local-artifact-manifest/v1"     --arg status "FAILED"     --arg repository "${GITHUB_REPOSITORY:-}"     --arg run_id "${GITHUB_RUN_ID:-}"     --arg run_attempt "${GITHUB_RUN_ATTEMPT:-}"     --arg job "${GITHUB_JOB:-}"     --arg job_key "${JOB_KEY:-}"     --arg workflow "${GITHUB_WORKFLOW:-}"     --arg git_sha "${GITHUB_SHA:-}"     --arg git_ref "${GITHUB_REF:-}"     --arg runner_name "${RUNNER_NAME:-}"     --arg failed_at_utc "$now"     --arg failure_code "$code"     --arg failure_message "$message"     '{schema:$schema,archive_status:$status,repository:$repository,run_id:$run_id,run_attempt:$run_attempt,job:$job,job_key:$job_key,workflow:$workflow,git_sha:$git_sha,git_ref:$git_ref,runner_name:$runner_name,failed_at_utc:$failed_at_utc,failure_code:$failure_code,failure_message:$failure_message}'     > "$JOB_DIR/.manifest.failed.tmp.$$" 2>/dev/null || return 0
-  mv -f -- "$JOB_DIR/.manifest.failed.tmp.$$" "$JOB_DIR/manifest.failed.json" 2>/dev/null || true
+  tmp="$JOB_DIR/.manifest.failed.tmp.$$"
+  jq -n     --arg schema "github-runner-tools/local-artifact-manifest/v1"     --arg status "FAILED"     --arg repository "${GITHUB_REPOSITORY:-}"     --arg run_id "${GITHUB_RUN_ID:-}"     --arg run_attempt "${GITHUB_RUN_ATTEMPT:-}"     --arg job "${GITHUB_JOB:-}"     --arg job_key "$JOB_KEY"     --arg workflow "${GITHUB_WORKFLOW:-}"     --arg git_sha "${GITHUB_SHA:-}"     --arg git_ref "${GITHUB_REF:-}"     --arg runner_name "${RUNNER_NAME:-}"     --arg failed_at_utc "$now"     --arg failure_code "$code"     --arg failure_message "$message"     '{schema:$schema,archive_status:$status,repository:$repository,run_id:$run_id,run_attempt:$run_attempt,job:$job,job_key:$job_key,workflow:$workflow,git_sha:$git_sha,git_ref:$git_ref,runner_name:$runner_name,failed_at_utc:$failed_at_utc,failure_code:$failure_code,failure_message:$failure_message}'     > "$tmp" 2>/dev/null || return 0
+  mv -f -- "$tmp" "$JOB_DIR/manifest.failed.json" 2>/dev/null || true
 }
 
 fail_archive() {
-  local code="$1" message="$2"
+  local code="$1" message="$2" failed_stage=""
   trap - ERR
   set +e
-  FAILURE_CODE="$code"; FAILURE_MESSAGE="$message"
+  FAILURE_CODE="$code"
+  FAILURE_MESSAGE="$message"
   write_failure_manifest "$code" "$message"
   write_failed_summary "$code" "$message"
   if [[ -n "$STAGE" && -d "$STAGE" && -n "$JOB_DIR" && -d "$JOB_DIR" ]]; then
-    failed_stage="$JOB_DIR/.workspace.failed.$(date -u +%Y%m%dT%H%M%S).$"
+    failed_stage="$JOB_DIR/.workspace.failed.$(date -u +%Y%m%dT%H%M%S).$$"
     mv -- "$STAGE" "$failed_stage" 2>/dev/null || true
     STAGE=""
   fi
@@ -68,12 +74,12 @@ on_err() {
 }
 trap 'on_err "$?" "$LINENO"' ERR
 
-for cmd in jq rsync find du sha256sum df timeout date mktemp awk sed tr wc mkdir mv rm sleep grep stat; do
+for cmd in jq rsync find du sha256sum df timeout date awk sed tr wc mkdir mv rm sleep grep stat; do
   grt_require_command "$cmd" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "missing required command: $cmd"
 done
 
 grt_load_archive_config "$CONFIG" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "invalid or unreadable archive config"
-[[ -d "$ARCHIVE_ROOT" ]] || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "archive root does not exist"
+[[ -d "$ARCHIVE_ROOT" && ! -L "$ARCHIVE_ROOT" ]] || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "archive root does not exist or is a symlink"
 ARCHIVE_ROOT="$(grt_canonical_dir "$ARCHIVE_ROOT")" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "cannot canonicalize archive root"
 [[ -w "$ARCHIVE_ROOT" ]] || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "archive root is not writable"
 grt_is_world_writable "$ARCHIVE_ROOT" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "archive root is world-writable or its mode cannot be validated"
@@ -84,16 +90,15 @@ grt_validate_run_identity || fail_archive "LOCAL_ARTIFACT_IDENTITY_INVALID" "inv
 for v in GITHUB_SHA GITHUB_REF GITHUB_WORKFLOW GITHUB_WORKSPACE RUNNER_NAME; do
   [[ -n "${!v:-}" ]] || fail_archive "LOCAL_ARTIFACT_IDENTITY_INVALID" "missing $v"
 done
-[[ "$GITHUB_WORKSPACE" = /* && -d "$GITHUB_WORKSPACE" && -r "$GITHUB_WORKSPACE" ]] || fail_archive "LOCAL_ARTIFACT_WORKSPACE_INVALID" "workspace missing, relative, or unreadable"
+[[ "$GITHUB_WORKSPACE" = /* && -d "$GITHUB_WORKSPACE" && -r "$GITHUB_WORKSPACE" ]] ||   fail_archive "LOCAL_ARTIFACT_WORKSPACE_INVALID" "workspace missing, relative, or unreadable"
 
 grt_disk_stats "$ARCHIVE_ROOT" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "cannot read archive filesystem capacity"
-(( GRT_FS_FREE_PERCENT >= MIN_FREE_PERCENT )) || fail_archive "LOCAL_ARTIFACT_DISK_GUARD_FAILED" "archive filesystem free space ${GRT_FS_FREE_PERCENT}% is below threshold ${MIN_FREE_PERCENT}%"
+(( GRT_FS_FREE_PERCENT >= MIN_FREE_PERCENT )) ||   fail_archive "LOCAL_ARTIFACT_DISK_GUARD_FAILED" "archive filesystem free space ${GRT_FS_FREE_PERCENT}% is below threshold ${MIN_FREE_PERCENT}%"
 
-OWNER_ROOT="$(grt_ensure_child_dir "$ARCHIVE_ROOT" "$GRT_OWNER_PATH")" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe owner archive path"
-REPO_ROOT="$(grt_ensure_child_dir "$OWNER_ROOT" "$GRT_REPO_PATH")" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe repository archive path"
-RUN_ROOT="$(grt_ensure_child_dir "$REPO_ROOT" "$GITHUB_RUN_ID")" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe run archive path"
-ATTEMPT_ROOT="$(grt_ensure_child_dir "$RUN_ROOT" "attempt_$GITHUB_RUN_ATTEMPT")" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe attempt archive path"
-grt_assert_beneath "$ARCHIVE_ROOT" "$ATTEMPT_ROOT" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "attempt path escaped archive root"
+OWNER_ROOT="$(grt_ensure_child_dir "$ARCHIVE_ROOT" "$GRT_OWNER_PATH")" ||   fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe owner archive path"
+REPO_ROOT="$(grt_ensure_child_dir "$OWNER_ROOT" "$GRT_REPO_PATH")" ||   fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe repository archive path"
+RUN_ROOT="$(grt_ensure_child_dir "$REPO_ROOT" "$GITHUB_RUN_ID")" ||   fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe run archive path"
+ATTEMPT_ROOT="$(grt_ensure_child_dir "$RUN_ROOT" "attempt_$GITHUB_RUN_ATTEMPT")" ||   fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe attempt archive path"
 
 JOB_KEY="$GRT_JOB_SAFE"
 JOB_DIR="$ATTEMPT_ROOT/$JOB_KEY"
@@ -107,15 +112,17 @@ if ! mkdir -- "$JOB_DIR" 2>/dev/null; then
     sleep 0.01
   done
 fi
-JOB_DIR="$(grt_canonical_dir "$JOB_DIR")"
+JOB_DIR="$(grt_canonical_dir "$JOB_DIR")" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "cannot canonicalize job archive path"
 grt_assert_beneath "$ARCHIVE_ROOT" "$JOB_DIR" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "job path escaped archive root"
 
 FAILURE_CODE="LOCAL_ARTIFACT_ARCHIVE_FAILED"
 FAILURE_MESSAGE="workspace archive copy failed"
-STAGE="$JOB_DIR/.workspace.tmp.$.$RANDOM"
+STAGE="$JOB_DIR/.workspace.tmp.$$.$RANDOM"
 mkdir -- "$STAGE"
 
-RSYNC_ARGS=(-a --safe-links
+RSYNC_ARGS=(
+  -a
+  --safe-links
   --exclude='.git/'
   --exclude='node_modules/'
   --exclude='.venv/'
@@ -123,8 +130,8 @@ RSYNC_ARGS=(-a --safe-links
   --exclude='__pycache__/'
   --exclude='.pytest_cache/'
 )
-if timeout --signal=TERM --kill-after=30 "${COPY_TIMEOUT_SECONDS}s" \
-  rsync "${RSYNC_ARGS[@]}" -- "$GITHUB_WORKSPACE/" "$STAGE/"; then
+
+if timeout --signal=TERM --kill-after=30 "${COPY_TIMEOUT_SECONDS}s"   rsync "${RSYNC_ARGS[@]}" -- "$GITHUB_WORKSPACE/" "$STAGE/"; then
   :
 else
   copy_rc=$?
@@ -134,7 +141,6 @@ else
   fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "workspace archive copy failed with exit code $copy_rc"
 fi
 
-FAILURE_CODE="LOCAL_ARTIFACT_ARCHIVE_FAILED"
 FAILURE_MESSAGE="archive finalization failed"
 mv -- "$STAGE" "$JOB_DIR/workspace"
 STAGE=""

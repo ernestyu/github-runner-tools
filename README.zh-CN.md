@@ -6,7 +6,13 @@
 
 这个项目不会替代 GitHub Actions，也不会修改应用代码或自动部署应用。它解决的是一个更窄的问题：让多个仓库使用官方 GitHub Actions Runner 时，安装、注册和日常管理更简单，也更保守安全。
 
-当前主要面向 Debian 12/13 和 systemd。x86_64 是主要测试架构。脚本已经包含 ARM64 的下载与识别逻辑，但在真实 ARM64 主机完成验证之前，不把它作为已经验证的平台。
+当前主要面向 Debian 12/13 和 systemd。x86_64 路径，包括本地 artifact 归档主链，已经在真实 Debian self-hosted runner 主机上验证通过。脚本已经包含 ARM64 的下载与识别逻辑，但在真实 ARM64 主机完成验证之前，仍不把它作为已经验证的平台。
+
+## 当前验证状态
+
+当前实现已经通过完整仓库测试，并在真实 Debian self-hosted runner 上完成实机验证。completed-job hook、本地归档、manifest/hash 发布、GitHub Step Summary、已有 runner migration，以及真实 workflow 执行都已经实际跑通。
+
+目前主要剩余的平台级限制是 ARM64：代码路径已经实现，但还没有在真实 ARM64 runner 上验证。
 
 ## 快速开始
 
@@ -121,7 +127,7 @@ clone 方式和一行 bootstrap 使用相同的默认规则。两种方式现在
 
 归档采用 fail-closed：如果本地归档失败，hook 会输出稳定的 `LOCAL_ARTIFACT_*` 错误并返回非零。默认 disk guard 是剩余空间低于 15% 时拒绝开始新的归档，默认 copy timeout 是 3600 秒。
 
-completed hook 会尝试在归档完成后写 GitHub Step Summary。不过这条“零仓库额外配置”的 Summary 路径，还需要在真实 Debian runner 版本上完成 live validation，才能作为 V1 最终路径。项目同时保留 reusable fallback action：
+completed hook 会在归档完成后写 GitHub Step Summary。这条“零仓库额外配置”的 Summary 路径已经在真实 Debian self-hosted runner 上完成实机验证，因此现在作为默认路径使用。项目仍然保留 reusable fallback action：
 
 ```text
 .github/actions/local-artifact-summary
@@ -250,7 +256,9 @@ bash tests/run-all.sh
 
 归档测试覆盖路径校验、hook 配置、workspace 归档、默认 exclusion、symlink 安全、JOB_KEY 碰撞、failure manifest、disk guard、timeout、retention cleanup、已有 runner migration 和 GitHub artifact migration。
 
-这些自动测试不能替代真实主机验收。特别是 completed hook 写 `$GITHUB_STEP_SUMMARY`、归档失败是否会在 GitHub 的 `Complete runner` 阶段真正让 job 失败、systemd 重启和大型真实 workspace 复制，都必须在实际 Debian runner 上验证后，才能宣布本地 artifact 功能完成。
+完整自动测试已经在真实 Debian CI 主机上通过，本地 artifact 主链也已经用实际 self-hosted runner 跑通。实机验证覆盖 runner hook 安装、job 完成后的 workspace 归档、manifest/hash 发布、GitHub Step Summary、已有 runner 的迁移与 systemd 重启，以及真实 workflow 执行。
+
+ARM64 路径已经实现，但仍未在真实 ARM64 主机上验证。
 
 ## 安全与限制
 

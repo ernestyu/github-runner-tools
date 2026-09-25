@@ -67,7 +67,7 @@ on_err() {
 }
 trap 'on_err "$?" "$LINENO"' ERR
 
-for cmd in jq rsync find du sha256sum df timeout date mktemp awk sed tr wc mkdir mv rm sleep; do
+for cmd in jq rsync find du sha256sum df timeout date mktemp awk sed tr wc mkdir mv rm sleep grep stat; do
   grt_require_command "$cmd" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "missing required command: $cmd"
 done
 
@@ -75,6 +75,7 @@ grt_load_archive_config "$CONFIG" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED
 [[ -d "$ARCHIVE_ROOT" ]] || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "archive root does not exist"
 ARCHIVE_ROOT="$(grt_canonical_dir "$ARCHIVE_ROOT")" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "cannot canonicalize archive root"
 [[ -w "$ARCHIVE_ROOT" ]] || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "archive root is not writable"
+grt_is_world_writable "$ARCHIVE_ROOT" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "archive root is world-writable or its mode cannot be validated"
 
 grt_parse_repository "${GITHUB_REPOSITORY:-}" || fail_archive "LOCAL_ARTIFACT_IDENTITY_INVALID" "invalid GITHUB_REPOSITORY"
 grt_validate_run_identity || fail_archive "LOCAL_ARTIFACT_IDENTITY_INVALID" "invalid run/attempt/job identity"
@@ -87,10 +88,10 @@ done
 grt_disk_stats "$ARCHIVE_ROOT" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "cannot read archive filesystem capacity"
 (( GRT_FS_FREE_PERCENT >= MIN_FREE_PERCENT )) || fail_archive "LOCAL_ARTIFACT_DISK_GUARD_FAILED" "archive filesystem free space ${GRT_FS_FREE_PERCENT}% is below threshold ${MIN_FREE_PERCENT}%"
 
-RUN_ROOT="$ARCHIVE_ROOT/$GRT_OWNER_PATH/$GRT_REPO_PATH/$GITHUB_RUN_ID"
-ATTEMPT_ROOT="$RUN_ROOT/attempt_$GITHUB_RUN_ATTEMPT"
-mkdir -p -- "$ATTEMPT_ROOT"
-ATTEMPT_ROOT="$(grt_canonical_dir "$ATTEMPT_ROOT")"
+OWNER_ROOT="$(grt_ensure_child_dir "$ARCHIVE_ROOT" "$GRT_OWNER_PATH")" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe owner archive path"
+REPO_ROOT="$(grt_ensure_child_dir "$OWNER_ROOT" "$GRT_REPO_PATH")" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe repository archive path"
+RUN_ROOT="$(grt_ensure_child_dir "$REPO_ROOT" "$GITHUB_RUN_ID")" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe run archive path"
+ATTEMPT_ROOT="$(grt_ensure_child_dir "$RUN_ROOT" "attempt_$GITHUB_RUN_ATTEMPT")" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "unsafe attempt archive path"
 grt_assert_beneath "$ARCHIVE_ROOT" "$ATTEMPT_ROOT" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "attempt path escaped archive root"
 
 JOB_KEY="$GRT_JOB_SAFE"

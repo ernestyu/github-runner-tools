@@ -3,6 +3,18 @@ set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
+required_commands=(
+  bash jq rsync find du sha256sum df timeout date awk sed tr wc
+  mkdir mv rm sleep grep stat flock mktemp sort python3 base64
+)
+
+for cmd in "${required_commands[@]}"; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "FAIL: required test prerequisite missing: $cmd" >&2
+    exit 1
+  fi
+done
+
 echo "Checking shell syntax..."
 while IFS= read -r script; do
   bash -n "$script"
@@ -30,4 +42,4 @@ for test_script in "${tests[@]}"; do
 done
 
 echo
-echo "PASS: all available github-runner-tools tests"
+echo "PASS: all github-runner-tools tests"

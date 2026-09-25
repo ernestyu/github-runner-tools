@@ -6,7 +6,13 @@
 
 The project does not replace GitHub Actions, modify application code, or deploy applications. Its job is narrower: make the official GitHub Actions runner easier and safer to provision for multiple repositories.
 
-The current target is Debian 12/13 with systemd. x86_64 is the primary tested architecture. ARM64 support is implemented in the bootstrap path but should be treated as unvalidated until it has been tested on a real ARM64 host.
+The current target is Debian 12/13 with systemd. The x86_64 path, including the local-artifact archive flow, has been validated on a real Debian self-hosted runner host. ARM64 support is implemented in the bootstrap path but should still be treated as unvalidated until it has been tested on a real ARM64 host.
+
+## Current validation status
+
+The current implementation has passed the repository test suite and live Debian self-hosted runner validation. The completed-job hook, local archive, manifest/hash publication, GitHub Step Summary, existing-runner migration path, and normal workflow execution have all been exercised successfully on the real runner host.
+
+The remaining platform caveat is ARM64: the code path exists, but it has not yet been validated on a real ARM64 runner.
 
 ## Quick start
 
@@ -121,7 +127,7 @@ The archive contains `workspace/`, `manifest.json`, and `manifest.sha256`. The d
 
 Archive failure is fail-closed: the hook emits a stable `LOCAL_ARTIFACT_*` error and exits non-zero. The default disk guard refuses a new archive when the archive filesystem has less than 15% free space. The default copy timeout is 3600 seconds.
 
-The hook attempts to write the final GitHub Step Summary after archive finalization. This completed-hook Summary path still requires live validation on the actual Debian runner version before it is treated as the stable V1 default. A reusable fallback action is included at:
+The hook writes the final GitHub Step Summary after archive finalization. This completed-hook Summary path has now been validated on the real Debian self-hosted runner deployment, so it is the default zero-repository-configuration path. A reusable fallback action is still included at:
 
 ```text
 .github/actions/local-artifact-summary
@@ -252,7 +258,9 @@ bash tests/run-all.sh
 
 The archive suite covers path validation, hook configuration, workspace archive behavior, exclusions, symlink safety, job-key collisions, failure manifests, disk guard, timeout handling, retention cleanup, existing-runner migration, and GitHub artifact migration.
 
-These automated tests do not replace real-host validation. In particular, completed-hook `$GITHUB_STEP_SUMMARY` behavior, hook failure propagation through GitHub's `Complete runner` stage, systemd restart behavior, and large real-workspace copies must be validated on the actual Debian runner before the local-artifact release is declared complete.
+The full automated suite has been run successfully on the real Debian CI host, and the local-artifact flow has also been exercised end to end with a live self-hosted runner. The validated path includes runner hook installation, completed-job workspace archival, manifest/hash publication, GitHub Step Summary output, systemd runner restart/migration behavior, and real workflow execution.
+
+ARM64 remains implemented but not yet validated on a real ARM64 host.
 
 ## Security and limitations
 

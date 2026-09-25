@@ -32,14 +32,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 grt_load_archive_config "$CONFIG" || die "Archive config missing or invalid."
-[[ -d "$ARCHIVE_ROOT" ]] || die "Archive root does not exist."
+[[ -d "$ARCHIVE_ROOT" && ! -L "$ARCHIVE_ROOT" ]] || die "Archive root does not exist or is a symlink."
 ARCHIVE_ROOT="$(grt_canonical_dir "$ARCHIVE_ROOT")"
+grt_is_world_writable "$ARCHIVE_ROOT" || die "Archive root must not be world-writable."
 NOW="$(date -u +%s)"
 CUTOFF=$((NOW - RETENTION_DAYS * 86400))
 
 is_active_or_ambiguous() {
   local run="$1"
-  find "$run" -type d \( -name '.workspace.tmp.*' -o -name '.lock*' \) -print -quit | grep -q . && return 0
+  find "$run" -type d \( -name '.workspace.tmp.*' -o -name '.workspace.failed.*' -o -name '.lock*' \) -print -quit | grep -q . && return 0
   find "$run" -name 'manifest.failed.json' -print -quit | grep -q . && return 0
   return 1
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# github-runner-tools-managed-library
 # Shared helpers for the local GitHub Actions archive subsystem.
 # Intended to be sourced.
 

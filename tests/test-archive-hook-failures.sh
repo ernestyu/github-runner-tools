@@ -124,4 +124,49 @@ fi
 FM="$(find "$ARCHIVE/owner/repo/206/attempt_1" -name manifest.failed.json -type f -print -quit)"
 [[ "$(jq -r '.failure_code' "$FM")" == "LOCAL_ARTIFACT_ARCHIVE_TIMEOUT" ]] || fail "wrong timeout failure code"
 
+# The same configured deadline must cover finalization after rsync succeeds.
+# Mock find to block after the workspace has already been moved into place.
+FINALBIN="$TMP/finalbin"
+mkdir -p "$FINALBIN"
+cat > "$FINALBIN/find" <<'MOCK'
+#!/usr/bin/env bash
+sleep 5
+exit 0
+MOCK
+chmod +x "$FINALBIN/find"
+write_config 1 1
+SUMMARY="$TMP/finalize-timeout-summary.md"
+: > "$SUMMARY"
+if run_hook 207 "$WORK" "$SUMMARY" PATH="$FINALBIN:$PATH" >/dev/null 2>&1; then
+  fail "blocked finalization unexpectedly passed"
+fi
+FM="$(find "$ARCHIVE/owner/repo/207/attempt_1" -name manifest.failed.json -type f -print -quit)"
+[[ -n "$FM" ]] || fail "finalization timeout did not leave a failure manifest"
+[[ "$(jq -r '.failure_code' "$FM")" == "LOCAL_ARTIFACT_ARCHIVE_TIMEOUT" ]] || fail "wrong finalization-timeout failure code"
+if find "$ARCHIVE/owner/repo/207" -name manifest.json -type f -print -quit | grep -q .; then
+  fail "finalization timeout published a PASS manifest"
+fi
+
+# Hash/finalization failure after workspace publication must never leave both
+# PASS and FAILED state. manifest.json is published only after hash succeeds.
+HASHBIN="$TMP/hashbin"
+mkdir -p "$HASHBIN"
+cat > "$HASHBIN/sha256sum" <<'MOCK'
+#!/usr/bin/env bash
+exit 1
+MOCK
+chmod +x "$HASHBIN/sha256sum"
+write_config 1 30
+SUMMARY="$TMP/hash-failure-summary.md"
+: > "$SUMMARY"
+if run_hook 208 "$WORK" "$SUMMARY" PATH="$HASHBIN:$PATH" >/dev/null 2>&1; then
+  fail "forced manifest hash failure unexpectedly passed"
+fi
+FM="$(find "$ARCHIVE/owner/repo/208/attempt_1" -name manifest.failed.json -type f -print -quit)"
+[[ -n "$FM" ]] || fail "manifest hash failure did not leave FAILED state"
+if find "$ARCHIVE/owner/repo/208" -name manifest.json -type f -print -quit | grep -q .; then
+  fail "manifest hash failure left an authoritative PASS manifest"
+fi
+[[ "$(jq -r '.failure_code' "$FM")" == "LOCAL_ARTIFACT_ARCHIVE_FAILED" ]] || fail "wrong manifest-hash failure code"
+
 echo "PASS: archive completed-hook failure-path tests"

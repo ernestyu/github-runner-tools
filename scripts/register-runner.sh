@@ -46,7 +46,6 @@ cleanup() {
     if [[ -d "$RUNNER_DIR" && ! -e "$RUNNER_DIR/.runner" ]]; then rm -rf -- "$RUNNER_DIR" || true; fi
   fi
 }
-trap cleanup EXIT
 
 sanitize_component() {
   local value="$1" out
@@ -301,5 +300,6 @@ DONE
 }
 
 if [[ "${RUNNER_TOOLS_LIB_ONLY:-0}" != "1" ]]; then
+  trap cleanup EXIT
   main "$@"
 fi

@@ -74,7 +74,7 @@ on_err() {
 }
 trap 'on_err "$?" "$LINENO"' ERR
 
-for cmd in jq rsync find du sha256sum df timeout date awk sed tr wc mkdir mv rm sleep grep stat; do
+for cmd in jq rsync find du sha256sum df timeout date awk sed tr wc mkdir mv rm sleep grep stat flock; do
   grt_require_command "$cmd" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "missing required command: $cmd"
 done
 
@@ -116,6 +116,10 @@ if ! mkdir -- "$JOB_DIR" 2>/dev/null; then
 fi
 JOB_DIR="$(grt_canonical_dir "$JOB_DIR")" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "cannot canonicalize job archive path"
 grt_assert_beneath "$ARCHIVE_ROOT" "$JOB_DIR" || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "job path escaped archive root"
+
+LOCK_FILE="$JOB_DIR/.archive.lock"
+exec 9>"$LOCK_FILE"
+flock -n 9 || fail_archive "LOCAL_ARTIFACT_PATH_CONFLICT" "archive target is already locked by another hook execution"
 
 [[ -n "${GITHUB_WORKSPACE:-}" ]] || fail_archive "LOCAL_ARTIFACT_WORKSPACE_INVALID" "missing GITHUB_WORKSPACE"
 [[ "$GITHUB_WORKSPACE" = /* && -d "$GITHUB_WORKSPACE" && -r "$GITHUB_WORKSPACE" ]] || \
@@ -188,5 +192,8 @@ else
   echo "LOCAL_ARTIFACT_SUMMARY_UNAVAILABLE: GITHUB_STEP_SUMMARY is absent or not writable" >&2
 fi
 
+rm -f -- "$LOCK_FILE"
+flock -u 9 || true
+exec 9>&-
 trap - ERR
 echo "LOCAL_ARTIFACT_ARCHIVE_PASS: $ARCHIVE_URI files=$FILE_COUNT bytes=$TOTAL_BYTES summary_written=$SUMMARY_WRITTEN"

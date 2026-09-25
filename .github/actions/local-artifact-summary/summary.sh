@@ -12,7 +12,7 @@ fi
 # shellcheck source=/dev/null
 source "$LIB"
 
-for cmd in jq find sort; do
+for cmd in jq find sort grep tr sed; do
   grt_require_command "$cmd" || exit 1
 done
 
@@ -57,6 +57,16 @@ for m in "${manifests[@]}"; do
   b="$(jq -r '.total_bytes // 0' "$m")"
   [[ "$f" =~ ^[0-9]+$ ]] && files=$((files + f))
   [[ "$b" =~ ^[0-9]+$ ]] && bytes=$((bytes + b))
+done
+
+for m in "${failed[@]}"; do
+  repository="$(jq -r '.repository // empty' "$m")"
+  run_id="$(jq -r '.run_id // empty' "$m")"
+  attempt="$(jq -r '.run_attempt // empty' "$m")"
+  [[ "$repository" == "$GITHUB_REPOSITORY" && "$run_id" == "$GITHUB_RUN_ID" && "$attempt" == "$GITHUB_RUN_ATTEMPT" ]] || {
+    echo "::error::Failed-manifest identity mismatch: $m"
+    exit 1
+  }
 done
 
 if (( ${#failed[@]} > 0 )); then

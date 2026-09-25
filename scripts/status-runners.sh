@@ -23,7 +23,41 @@ RUNNER_BASE_DIR="${RUNNER_BASE_DIR:-$USER_HOME}"
 RUNNER_BASE_DIR="$(canonicalize_existing_dir "$RUNNER_BASE_DIR")" || die "Could not canonicalize RUNNER_BASE_DIR: $RUNNER_BASE_DIR"
 
 printf 'Runner user : %s\n' "$RUNNER_USER"
-printf 'Runner base : %s\n\n' "$RUNNER_BASE_DIR"
+printf 'Runner base : %s\n' "$RUNNER_BASE_DIR"
+
+ARCHIVE_LIB="/usr/local/lib/github-runner-tools/archive-common.sh"
+ARCHIVE_CONFIG="/etc/github-runner-tools/archive.conf"
+ARCHIVE_HOOK="/usr/local/lib/github-runner-tools/hooks/archive-job-completed.sh"
+echo
+echo "Local artifact archive:"
+echo "  config: $ARCHIVE_CONFIG"
+echo "  hook  : $ARCHIVE_HOOK"
+if [[ -r "$ARCHIVE_LIB" && -r "$ARCHIVE_CONFIG" ]]; then
+  # shellcheck source=/dev/null
+  source "$ARCHIVE_LIB"
+  if grt_load_archive_config "$ARCHIVE_CONFIG" && [[ -d "$ARCHIVE_ROOT" ]]; then
+    writable="no"; [[ -w "$ARCHIVE_ROOT" ]] && writable="yes"
+    if grt_disk_stats "$ARCHIVE_ROOT"; then
+      echo "  root                 : $ARCHIVE_ROOT"
+      echo "  root writable        : $writable"
+      echo "  filesystem total     : $GRT_FS_TOTAL_BYTES bytes"
+      echo "  filesystem used      : $GRT_FS_USED_BYTES bytes"
+      echo "  filesystem free      : $GRT_FS_FREE_BYTES bytes"
+      echo "  free percentage      : $GRT_FS_FREE_PERCENT%"
+      echo "  retention days       : $RETENTION_DAYS"
+      echo "  disk guard threshold : $MIN_FREE_PERCENT%"
+      echo "  copy timeout         : $COPY_TIMEOUT_SECONDS seconds"
+      echo "  hook executable      : $([[ -x "$ARCHIVE_HOOK" ]] && echo yes || echo no)"
+    else
+      echo "  status: configured, but filesystem statistics failed"
+    fi
+  else
+    echo "  status: config invalid or archive root missing"
+  fi
+else
+  echo "  status: not configured"
+fi
+echo
 
 shopt -s nullglob
 RUNNER_DIRS=("$RUNNER_BASE_DIR"/actions-runner-*)

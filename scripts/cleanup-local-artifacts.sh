@@ -5,6 +5,9 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/lib/archive-common.sh"
 
 CONFIG="/etc/github-runner-tools/archive.conf"
+if [[ "${GRT_TEST_MODE:-0}" == "1" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+  CONFIG="${GRT_TEST_CONFIG:-$CONFIG}"
+fi
 MODE="dry-run"
 VERBOSE=0
 

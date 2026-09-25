@@ -16,7 +16,7 @@
 
 ```bash
 sudo apt update
-sudo apt install -y ca-certificates curl jq tar coreutils
+sudo apt install -y ca-certificates curl jq tar coreutils rsync util-linux
 ```
 
 然后进入目标 GitHub 仓库：
@@ -30,7 +30,40 @@ Settings
 
 选择 Linux 和与主机相符的架构，从 GitHub 显示的 `config.sh` 命令里复制临时 registration token。
 
-### 一行注册
+### 一次性的本地归档平台配置
+
+当前版本默认会把 self-hosted job 完成时的 workspace 归档到 Debian 本地。因此，在以后注册新 runner 之前，先在这台 runner 主机上做一次平台级配置。
+
+这一步需要完整 clone 仓库：
+
+```bash
+cd ~
+git clone https://github.com/ernestyu/github-runner-tools.git
+cd github-runner-tools
+
+bash scripts/setup-local-archive.sh
+```
+
+请使用实际拥有 runner 的普通 Linux 用户执行，不要写成 `sudo bash scripts/setup-local-archive.sh`。脚本只有在写入 `/srv`、`/etc` 和 `/usr/local/lib` 这些 host-level 位置时才会在内部调用 sudo。
+
+默认归档位置是：
+
+```text
+/srv/github-actions-archive
+```
+
+已有 runner 可以先检查，再一次性迁移：
+
+```bash
+bash scripts/enable-local-archive.sh --dry-run
+bash scripts/enable-local-archive.sh --apply
+```
+
+`--apply` 只会对经过 metadata 验证的 runner 配置统一的 `ACTIONS_RUNNER_HOOK_JOB_COMPLETED`，然后重启对应 service。如果原来已经有不同的 completed hook，脚本会停止，不会直接覆盖。
+
+### 一行注册 Runner
+
+完成上面这一次平台配置以后，以后新仓库仍然可以继续使用一条命令注册 runner。
 
 在第一个正式 tag 发布之前，可以使用开发版本：
 
@@ -71,7 +104,42 @@ bash scripts/register-runner.sh OWNER/REPO
 bash scripts/status-runners.sh
 ```
 
-clone 方式和一行 bootstrap 使用相同的默认规则。
+clone 方式和一行 bootstrap 使用相同的默认规则。两种方式现在都要求这台主机已经完成一次本地归档平台配置。
+
+## 本地 Artifact 归档
+
+通过当前工具注册的 runner 会自动配置统一的 completed-job hook。普通 workflow steps 结束以后，hook 会把最终 workspace 保存到：
+
+```text
+/srv/github-actions-archive/OWNER/REPO/RUN_ID/attempt_N/JOB_KEY/
+```
+
+每个成功归档包含 `workspace/`、`manifest.json` 和 `manifest.sha256`。默认会排除 `.git/`、`node_modules/`、虚拟环境、Python bytecode cache 和 pytest cache 这类可重新生成的内容，但不会默认排除 `data/`、`results/`、`reports/`、`artifacts/`、`output/`、`checkpoints/` 等研究结果目录。
+
+归档采用 fail-closed：如果本地归档失败，hook 会输出稳定的 `LOCAL_ARTIFACT_*` 错误并返回非零。默认 disk guard 是剩余空间低于 15% 时拒绝开始新的归档，默认 copy timeout 是 3600 秒。
+
+completed hook 会尝试在归档完成后写 GitHub Step Summary。不过这条“零仓库额外配置”的 Summary 路径，还需要在真实 Debian runner 版本上完成 live validation，才能作为 V1 最终路径。项目同时保留 reusable fallback action：
+
+```text
+.github/actions/local-artifact-summary
+```
+
+Retention 清理由独立脚本完成，不放进 job completion hook：
+
+```bash
+bash scripts/cleanup-local-artifacts.sh --dry-run
+bash scripts/cleanup-local-artifacts.sh --apply
+```
+
+默认 retention 是 90 天。某个 Run 根目录存在 `.keep` 时，自动 cleanup 永远跳过这个 Run。
+
+已有 GitHub Actions artifact 可以下载并迁移到本地：
+
+```bash
+bash scripts/migrate-github-artifacts.sh OWNER/REPO
+```
+
+默认只做 download + verify，不删除 GitHub 远端 artifact。只有显式使用 `--delete-after-verified`，而且本地验证已经 PASS，才会执行远端删除。
 
 ## 脚本会创建什么
 
@@ -171,14 +239,15 @@ bash scripts/register-runner.sh --clean-incomplete OWNER/REPO
 
 ## 测试
 
-目前包含纯函数测试，以及针对相对 base directory 和 systemd 删除重试路径的 failure-path 测试：
+目前包含原有 runner 管理测试，以及本地 artifact 的 unit / integration / failure-path 测试：
 
 ```bash
-bash tests/test-pure.sh
-bash tests/test-failure-paths.sh
+bash tests/run-all.sh
 ```
 
-这些测试不能替代真实主机验证。runner 注册、systemd service、TTY 输入、GitHub token 以及 ARM64 仍需要在相应环境中进行实际测试。
+归档测试覆盖路径校验、hook 配置、workspace 归档、默认 exclusion、symlink 安全、JOB_KEY 碰撞、failure manifest、disk guard、timeout、retention cleanup、已有 runner migration 和 GitHub artifact migration。
+
+这些自动测试不能替代真实主机验收。特别是 completed hook 写 `$GITHUB_STEP_SUMMARY`、归档失败是否会在 GitHub 的 `Complete runner` 阶段真正让 job 失败、systemd 重启和大型真实 workspace 复制，都必须在实际 Debian runner 上验证后，才能宣布本地 artifact 功能完成。
 
 ## 安全与限制
 

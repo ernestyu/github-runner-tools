@@ -131,7 +131,7 @@ grt_disk_stats "$ARCHIVE_ROOT" || fail_archive "LOCAL_ARTIFACT_ARCHIVE_FAILED" "
 
 FAILURE_CODE="LOCAL_ARTIFACT_ARCHIVE_FAILED"
 FAILURE_MESSAGE="workspace archive copy/finalization failed"
-STAGE="$JOB_DIR/.workspace.tmp.$.$RANDOM"
+STAGE="$JOB_DIR/.workspace.tmp.${BASHPID}.$RANDOM"
 mkdir -- "$STAGE"
 
 ARCHIVE_URI="$(grt_archive_uri_for "$GRT_OWNER_PATH" "$GRT_REPO_PATH" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$JOB_KEY")"
@@ -160,8 +160,8 @@ archive_copy_finalize_worker() {
   total_bytes="$(du -sb "$JOB_DIR/workspace" | awk '{print $1}')"
   completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-  manifest_tmp="$JOB_DIR/.manifest.tmp.$"
-  hash_tmp="$JOB_DIR/.manifest.sha256.tmp.$"
+  manifest_tmp="$JOB_DIR/.manifest.tmp.${BASHPID}"
+  hash_tmp="$JOB_DIR/.manifest.sha256.tmp.${BASHPID}"
 
   jq -n \
     --arg schema "github-runner-tools/local-artifact-manifest/v1" \

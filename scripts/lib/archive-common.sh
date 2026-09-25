@@ -18,7 +18,8 @@ grt_sanitize_component() {
   local value="${1:-}" out
   [[ -n "$value" ]] || return 1
   [[ "$value" != "." && "$value" != ".." ]] || return 1
-  [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *"/"* ]] || return 1
+  [[ "$value" != *"/"* ]] || return 1
+  if printf '%s' "$value" | LC_ALL=C grep -q '[[:cntrl:]]'; then return 1; fi
   out="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^[._-]+//; s/[._-]+$//')"
   [[ -n "$out" && "$out" != "." && "$out" != ".." ]] || return 1
   printf '%s' "$out"
@@ -55,6 +56,29 @@ grt_assert_beneath() {
   esac
 }
 
+grt_ensure_child_dir() {
+  local parent="$1" child="$2" path canon
+  [[ "$parent" = /* && -d "$parent" && ! -L "$parent" ]] || return 1
+  [[ -n "$child" && "$child" != "." && "$child" != ".." && "$child" != *"/"* ]] || return 1
+  path="$parent/$child"
+  [[ ! -L "$path" ]] || return 1
+  if [[ ! -e "$path" ]]; then
+    mkdir -- "$path" || return 1
+  fi
+  [[ -d "$path" && ! -L "$path" ]] || return 1
+  canon="$(grt_canonical_dir "$path")" || return 1
+  grt_assert_beneath "$parent" "$canon" || return 1
+  printf '%s' "$canon"
+}
+
+grt_is_world_writable() {
+  local path="$1" mode other
+  mode="$(stat -c '%a' "$path" 2>/dev/null)" || return 1
+  other="${mode: -1}"
+  [[ "$other" =~ ^[0-7]$ ]] || return 1
+  (( (10#$other & 2) == 0 ))
+}
+
 grt_load_archive_config() {
   local file="${1:-$GRT_DEFAULT_CONFIG_FILE}" line key value
   ARCHIVE_ROOT=""
@@ -77,7 +101,7 @@ grt_load_archive_config() {
     esac
   done < "$file"
 
-  [[ -n "$ARCHIVE_ROOT" && "$ARCHIVE_ROOT" = /* ]] || return 1
+  [[ -n "$ARCHIVE_ROOT" && "$ARCHIVE_ROOT" = /* && "$ARCHIVE_ROOT" != "/" ]] || return 1
   grt_is_uint "$RETENTION_DAYS" || return 1
   grt_is_uint "$MIN_FREE_PERCENT" || return 1
   grt_is_uint "$COPY_TIMEOUT_SECONDS" || return 1

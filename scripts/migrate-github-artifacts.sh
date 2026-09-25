@@ -67,8 +67,21 @@ while IFS= read -r row; do
   dest="$root/artifact_${id}--${safe_name}"
   if [[ -e "$dest/artifact-manifest.json" ]]; then
     status="$(jq -r '.verification_status // empty' "$dest/artifact-manifest.json" 2>/dev/null || true)"
+    remote_deleted="$(jq -r '.remote_deleted // false' "$dest/artifact-manifest.json" 2>/dev/null || true)"
     if [[ "$status" == "PASS" ]]; then
-      echo "SKIP already verified artifact $id $name"
+      if (( DELETE_AFTER == 1 )) && [[ "$remote_deleted" != "true" ]]; then
+        echo "Using existing verified local copy for remote deletion: artifact $id $name"
+        gh api --method DELETE "repos/$REPOSITORY/actions/artifacts/$id"
+        if gh api "repos/$REPOSITORY/actions/artifacts/$id" >/dev/null 2>&1; then
+          die "Remote artifact $id still exists after delete request."
+        fi
+        tmpm="$(mktemp)"
+        jq '.remote_deleted=true' "$dest/artifact-manifest.json" > "$tmpm"
+        mv "$tmpm" "$dest/artifact-manifest.json"
+        echo "Deleted remote artifact $id after existing local verification."
+      else
+        echo "SKIP already verified artifact $id $name"
+      fi
       continue
     fi
     die "Existing ambiguous migration directory: $dest"

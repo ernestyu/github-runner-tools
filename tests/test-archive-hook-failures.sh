@@ -7,10 +7,6 @@ LIB="$ROOT/scripts/lib/archive-common.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-for cmd in jq rsync timeout flock; do
-  command -v "$cmd" >/dev/null 2>&1 || { echo "SKIP: $cmd not installed"; exit 0; }
-done
-
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
 ARCHIVE="$TMP/archive"

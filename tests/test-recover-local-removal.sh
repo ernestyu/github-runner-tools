@@ -34,6 +34,7 @@ chmod +x "$TMP/mockbin/systemctl" "$TMP/mockbin/sudo"
 export PATH="$TMP/mockbin:$PATH"
 
 RUNNER_TOOLS_LIB_ONLY=1 source "$ROOT/scripts/remove-runner.sh"
+trap cleanup_test EXIT
 
 # CLI surface exists.
 grep -q -- '--recover-local' "$ROOT/scripts/remove-runner.sh" ||

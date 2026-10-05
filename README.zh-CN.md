@@ -74,26 +74,26 @@ bash scripts/enable-local-archive.sh --apply
 
 完成上面这一次平台配置以后，以后新仓库仍然可以继续使用一条命令注册 runner。
 
-在第一个正式 tag 发布之前，可以使用开发版本：
+稳定使用时建议固定第一个正式版本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/v1.0.0/scripts/register-runner.sh \
+  | bash -s -- OWNER/REPO
+```
+
+脚本会从 `/dev/tty` 读取 registration token，而不是从标准输入读取，所以 `curl | bash` 不会和 token 输入冲突。token 输入时不会显示，也不会被脚本保存。
+
+如果希望跟随 `main` 的当前开发版本：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/main/scripts/register-runner.sh \
   | bash -s -- OWNER/REPO
 ```
 
-脚本会从 `/dev/tty` 读取 registration token，而不是从标准输入读取，所以 `curl | bash` 不会和 token 输入冲突。token 输入时不会显示，也不会被脚本保存。
-
-正式发布 tag 后，更建议固定版本：
+如果希望先检查正式版本脚本再执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/VERSION/scripts/register-runner.sh \
-  | bash -s -- OWNER/REPO
-```
-
-如果希望先检查脚本再执行：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/VERSION/scripts/register-runner.sh \
+curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/v1.0.0/scripts/register-runner.sh \
   -o register-runner.sh
 
 less register-runner.sh

@@ -6,7 +6,15 @@ Changes intended for the next release are collected under **Unreleased**.
 
 ## Unreleased
 
-_No changes yet._
+### Added
+
+- Explicit `remove-runner.sh --recover-local OWNER/REPO` mode for cleaning verified local service/directory residue after the GitHub-side runner was already removed.
+- Fail-closed recovery identity checks for absent-only `.runner` state, exact owner+repository directory identity, normalized non-truncated service scope, custom runner names, and systemd post-uninstall state.
+- Deterministic recovery-removal tests covering configured/malformed residue, legacy ambiguity, service failure states, truncated identity, and archive preservation.
+
+### Changed
+
+- README documentation now distinguishes normal GitHub unregister/removal from local-only recovery cleanup.
 
 ## v1.0.0 - 2026-10-05
 

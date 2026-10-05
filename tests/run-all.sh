@@ -23,6 +23,7 @@ done < <(find "$ROOT/scripts" "$ROOT/hooks" "$ROOT/tests" "$ROOT/.github/actions
 tests=(
   tests/test-pure.sh
   tests/test-failure-paths.sh
+  tests/test-recover-local-removal.sh
   tests/test-archive-common.sh
   tests/test-register-archive.sh
   tests/test-archive-hook.sh

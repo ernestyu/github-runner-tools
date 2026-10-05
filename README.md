@@ -74,26 +74,26 @@ The apply command adds the shared `ACTIONS_RUNNER_HOOK_JOB_COMPLETED` hook and r
 
 After the one-time local artifact setup, future repository runners can still be registered with one command.
 
-Before the first tagged release, the development form is:
+For stable use, pin the first public release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/v1.0.0/scripts/register-runner.sh \
+  | bash -s -- OWNER/REPO
+```
+
+The script reads the registration token from `/dev/tty`, not standard input, so this works correctly with `curl | bash`. The token is entered silently and is not stored by the script.
+
+To follow current development on `main` instead:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/main/scripts/register-runner.sh \
   | bash -s -- OWNER/REPO
 ```
 
-The script reads the registration token from `/dev/tty`, not standard input, so this works correctly with `curl | bash`. The token is entered silently and is not stored by the script.
-
-For stable use, prefer a tagged release once one is published:
+If you prefer to inspect the released script before running it:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/VERSION/scripts/register-runner.sh \
-  | bash -s -- OWNER/REPO
-```
-
-If you prefer to inspect the script before running it:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/VERSION/scripts/register-runner.sh \
+curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/v1.0.0/scripts/register-runner.sh \
   -o register-runner.sh
 
 less register-runner.sh

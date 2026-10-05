@@ -88,12 +88,62 @@ normalize_service_repo_scope() {
 }
 
 read_service_name_strict() {
-  local file="$1" line extra
+  local file="$1" line
+  local -a lines=()
 
   [[ -f "$file" && ! -L "$file" && -r "$file" ]] || return 1
 
-  IFS= read -r line < "$file" || [[ -n "$line" ]] || return 1
-  line="${line%
+  mapfile -t lines < "$file" || return 1
+  [[ "${#lines[@]}" -eq 1 ]] || return 1
+
+  line="${lines[0]}"
+  line="${line%$'\\r'}"
+  [[ -n "$line" ]] || return 1
+  printf '%s' "$line"
+}
+
+service_name_matches_repo_scope() {
+  local service_name="$1" owner="$2" repo="$3"
+  local scope lower_service lower_prefix suffix runner_segment prefix_len suffix_len
+
+  scope="$(normalize_service_repo_scope "$owner" "$repo")" || return 1
+  lower_service="$(printf '%s' "$service_name" | tr '[:upper:]' '[:lower:]')"
+  lower_prefix="actions.runner.$(printf '%s' "$scope" | tr '[:upper:]' '[:lower:]')."
+  suffix=".service"
+  prefix_len=${#lower_prefix}
+  suffix_len=${#suffix}
+
+  (( ${#lower_service} > prefix_len + suffix_len )) || return 1
+  [[ "${lower_service:0:prefix_len}" == "$lower_prefix" ]] || return 1
+  [[ "${lower_service: -suffix_len}" == "$suffix" ]] || return 1
+
+  runner_segment="${lower_service:prefix_len:${#lower_service}-prefix_len-suffix_len}"
+  [[ -n "$runner_segment" ]] || return 1
+}
+
+validate_recovery_identity() {
+  local runner_dir="$1" expected_dir="$2" owner="$3" repo="$4"
+  local service_name
+
+  [[ "$runner_dir" == "$expected_dir" ]] ||
+    die "Recovery identity cannot be verified: runner directory does not match the expected owner+repository path."
+
+  if path_exists_any "$runner_dir/.runner"; then
+    die "Recovery requires .runner to be completely absent. Use normal removal for a configured runner; abnormal .runner residue requires manual review."
+  fi
+
+  service_name="$(read_service_name_strict "$runner_dir/.service")" ||
+    die "Recovery identity cannot be verified: .service must be one readable regular file containing exactly one non-empty service name."
+
+  service_name_matches_repo_scope "$service_name" "$owner" "$repo" ||
+    die "Recovery identity cannot be verified from the complete repository scope in .service. Truncated or mismatched service names require manual cleanup."
+
+  [[ -x "$runner_dir/svc.sh" ]] ||
+    die "Runner service-management script is missing or not executable: $runner_dir/svc.sh"
+
+  printf '%s' "$service_name"
+}
+
 read_tty_line() {
   local prompt="$1" secret="${2:-0}" value
   [[ -r /dev/tty && -w /dev/tty ]] || die "Interactive input requires a TTY."

@@ -156,6 +156,11 @@ assert_identity_rejected "$IDENTITY" "$IDENTITY" "missing .service"
 : > "$IDENTITY/.service"
 assert_identity_rejected "$IDENTITY" "$IDENTITY" "empty .service"
 
+printf '%s\n' 'actions.runner.ernestyu-example.custom.service' > "$IDENTITY/.service"
+chmod 000 "$IDENTITY/.service"
+assert_identity_rejected "$IDENTITY" "$IDENTITY" "unreadable .service"
+chmod 600 "$IDENTITY/.service"
+
 printf '%s\n%s\n'   'actions.runner.ernestyu-example.custom.service'   'actions.runner.ernestyu-example.other.service' > "$IDENTITY/.service"
 assert_identity_rejected "$IDENTITY" "$IDENTITY" "multi-line .service"
 

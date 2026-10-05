@@ -262,6 +262,14 @@ The full automated suite has been run successfully on the real Debian CI host, a
 
 ARM64 remains implemented but not yet validated on a real ARM64 host.
 
+## Contributing and security
+
+Contributions are welcome. Before changing runner identity, service management, archive publication, cleanup, deletion, or credential handling, please read [CONTRIBUTING.md](CONTRIBUTING.md).
+
+For security-sensitive issues, do not open a public issue with exploit details, tokens, or sensitive logs. Follow [SECURITY.md](SECURITY.md) instead.
+
+Bug reports and feature requests use the repository's structured GitHub issue forms, and pull requests include a checklist for tests, platform validation, and safety impact.
+
 ## Security and limitations
 
 A self-hosted runner executes commands from repository workflows. Treat the runner host as a real code-execution environment and isolate it from production where practical.
@@ -269,3 +277,8 @@ A self-hosted runner executes commands from repository workflows. Treat the runn
 Do not commit registration/removal tokens, PATs, SSH private keys, production API keys, database passwords, or other long-lived secrets. Avoid exposing a host Docker socket or unrelated production data to CI merely for convenience.
 
 This project currently focuses on repository-level runners on systemd Linux hosts. Organization runner groups, autoscaling fleets, Kubernetes, Windows, macOS, cross-user installation, automatic token generation, workflow rewriting, and production deployment are outside the v1 scope.
+
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

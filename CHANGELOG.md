@@ -2,9 +2,15 @@
 
 All notable changes to this project are documented here.
 
-The project has not published its first tagged release yet. Until then, changes are collected under **Unreleased**.
+Changes intended for the next release are collected under **Unreleased**.
 
 ## Unreleased
+
+_No changes yet._
+
+## v1.0.0 - 2026-10-05
+
+First stable public release. The release covers repository-level self-hosted runner provisioning and management on systemd Linux, plus the local artifact archive workflow validated on a real Debian x86_64 host.
 
 ### Added
 

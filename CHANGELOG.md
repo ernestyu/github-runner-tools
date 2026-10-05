@@ -8,6 +8,11 @@ The project has not published its first tagged release yet. Until then, changes 
 
 ### Added
 
+- Open-source contribution guide in `CONTRIBUTING.md`.
+- Security reporting policy in `SECURITY.md`.
+- Structured bug report and feature request issue forms.
+- Pull request template covering tests, live validation, documentation, and safety impact.
+- Issue-template configuration that directs security-sensitive reports to the security policy.
 - One-line repository-level self-hosted runner bootstrap with `curl | bash`.
 - Interactive registration-token input through `/dev/tty`, so token entry does not conflict with piped script input.
 - Deterministic owner+repository runner identity, including collision-safe handling for long names.

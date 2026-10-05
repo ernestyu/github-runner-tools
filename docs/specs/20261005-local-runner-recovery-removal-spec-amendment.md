@@ -104,32 +104,141 @@ A candidate recovery directory is eligible only when all of the following are tr
 
 1. the path is exactly the expected runner path under the resolved `RUNNER_BASE_DIR`;
 2. the path passes the existing base-directory safety boundary;
-3. `.runner` is absent, or the runner is otherwise in an explicitly unconfigured local residue state;
-4. `.service` exists and contains a non-empty service name;
-5. the service name is structurally consistent with the requested `OWNER/REPO` and the expected local runner identity, using existing naming rules;
+3. `.runner` is completely absent; if any `.runner` filesystem object exists, recovery is not eligible;
+4. `.service` exists as a regular readable file and contains exactly one non-empty service name;
+5. the service name passes the anchored repository-scope predicate defined in §5.1;
 6. required runner service-management files, especially `svc.sh`, exist before service cleanup is attempted.
 
 If repository identity cannot be established from trusted local information, recovery must stop.
 
 No fallback may guess identity from repo-only legacy directory names.
 
-## 6. Configured-runner guard
+### 5.1 Frozen recovery identity predicate
 
-If `.runner` still exists and identifies a configured runner, `--recover-local` must refuse to proceed.
+For this amendment, recovery identity is established only for the new owner+repository runner directory:
 
-The user must use the normal removal flow instead.
+```text
+RUNNER_DIR =
+<canonical RUNNER_BASE_DIR>/actions-runner-<LOCAL_ID>
+```
 
-This prevents recovery mode from becoming a token-bypass path for a still-configured GitHub runner.
+where `LOCAL_ID` is derived from the requested `OWNER/REPO` by the existing `make_local_id` rules.
+
+The second required identity fact is the service name stored in `.service`.
+
+The service-name validator must use the following anchored structural rule:
+
+```text
+service name starts with:
+actions.runner.<OWNER>-<REPO>.
+
+service name ends with:
+.service
+
+the runner-name segment between those two anchors is non-empty
+```
+
+Repository-scope comparison is ASCII case-insensitive because GitHub repository identity is case-insensitive for this purpose.
+
+Equivalently, after lowercasing both values:
+
+```text
+SERVICE_NAME =
+"actions.runner." + lower(OWNER) + "-" + lower(REPO) + "." + RUNNER_NAME + ".service"
+
+RUNNER_NAME != ""
+```
+
+The validator must compare the complete anchored repository prefix and the final `.service` suffix. It must not use ordinary substring matching, unanchored `grep`, or repo-name-only matching.
+
+The `RUNNER_NAME` segment is intentionally opaque. A runner created with:
+
+```text
+--runner-name CUSTOM_NAME
+```
+
+is valid recovery residue if the directory identity and repository-scoped service prefix match. Recovery must not require the runner-name suffix to equal the default `local-ci-<LOCAL_ID>`.
+
+Examples:
+
+```text
+requested: ernestyu/github-runner-tools
+
+valid:
+actions.runner.ernestyu-github-runner-tools.local-ci-ernestyu--github-runner-tools.service
+
+valid custom runner name:
+actions.runner.ernestyu-github-runner-tools.my-custom-runner.service
+
+invalid:
+actions.runner.someoneelse-github-runner-tools.my-custom-runner.service
+
+invalid:
+foo.actions.runner.ernestyu-github-runner-tools.my-custom-runner.service
+
+invalid:
+actions.runner.ernestyu-github-runner-tools.service
+```
+
+For recovery, the identity proof is therefore the conjunction:
+
+```text
+exact canonical new-style runner directory
++
+.runner absent
++
+valid repository-scoped .service name
+```
+
+If any part cannot be established, identity is unknown and recovery must fail closed before any service mutation or directory deletion.
+
+Legacy repo-only directories are explicitly excluded from this predicate and remain governed by §10.
+
+## 6. `.runner` absence guard
+
+For this amendment, `--recover-local` is eligible only when `.runner` is absent.
+
+The implementation must not interpret or classify any existing `.runner` content.
 
 Required behavior:
 
 ```text
-.runner exists and configured
+.runner absent
+→ may continue to directory/service identity validation
+
+.runner exists in any form
 → fail closed
-→ tell user to use normal removal
-→ do not uninstall service
-→ do not delete directory
+→ no stop
+→ no uninstall
+→ no directory deletion
 ```
+
+"Exists in any form" includes at least:
+
+```text
+valid configured file
+empty file
+malformed file
+partial file
+unreadable file
+symlink, including a broken symlink
+other unexpected filesystem object at .runner
+```
+
+The implementation must not parse such a file and decide that it is "unconfigured residue".
+
+This amendment intentionally supports only the real observed state:
+
+```text
+GitHub-side deletion
+→ Runner.Listener removes .runner/.credentials
+→ .runner is absent
+→ local .service + systemd unit + runner directory remain
+```
+
+Any future recovery path for an existing but abnormal `.runner` requires a separate SPEC amendment.
+
+This guard prevents `--recover-local` from becoming a token-bypass path for a still-configured or ambiguously configured GitHub runner.
 
 ## 7. Systemd cleanup contract
 
@@ -313,23 +422,62 @@ or systemctl cannot establish state
 → directory preserved
 ```
 
-### F. Configured runner guard
+### F. Any existing `.runner` fails closed
+
+Deterministic cases must cover all of:
 
 ```text
-.runner exists and is configured
---recover-local used
+.runner valid/configured
 → FAIL
-→ no service uninstall
-→ no deletion
+
+.runner malformed
+→ FAIL
+
+.runner unreadable
+→ FAIL
+
+.runner empty
+→ FAIL
+
+.runner symlink or broken symlink
+→ FAIL
+
+.runner absent
+→ only then continue recovery validation
 ```
 
-### G. Identity mismatch
+For every existing-`.runner` case:
+
+```text
+→ no service stop
+→ no service uninstall
+→ no directory deletion
+```
+
+### G. Identity mismatch and custom runner-name handling
 
 ```text
 requested OWNER/REPO
-local service metadata does not match expected identity
+.service has a different anchored repository scope
 → FAIL
+→ no service mutation
 → no deletion
+```
+
+Also cover:
+
+```text
+.service matches requested repository scope
+runner-name suffix is custom/non-default but non-empty
+→ identity validation may PASS
+→ continue normal recovery checks
+```
+
+And:
+
+```text
+.service only contains repo name as an unanchored substring
+→ FAIL
 ```
 
 ### H. Ambiguous legacy directory
@@ -383,19 +531,22 @@ Implementation is complete only when all of the following are true:
 2. Recovery mode never requests a GitHub removal token.
 3. Recovery mode never calls `config.sh remove --token`.
 4. Normal removal behavior remains unchanged.
-5. A still-configured runner cannot be removed through recovery mode.
-6. Missing `.runner` alone is not treated as proof of identity.
-7. The new owner+repo runner path can be recovered only after local identity validation.
-8. Ambiguous legacy directories are never automatically deleted.
-9. Service state must be known before directory deletion.
-10. Service uninstall failure blocks deletion unless the service is subsequently confirmed absent.
-11. An already-absent service is a valid recovery state.
-12. Directory deletion remains constrained to the canonical runner base.
-13. Local artifact archives are never deleted by recovery mode.
-14. Recovery requires explicit destructive confirmation.
-15. Deterministic tests cover cases A–I.
-16. `bash tests/run-all.sh` passes on a suitable test host.
-17. README, Chinese README, and CHANGELOG describe the new recovery path.
+5. Recovery is eligible only when `.runner` is completely absent.
+6. Any existing `.runner` object, including valid, malformed, empty, unreadable, partial, symlinked, or otherwise abnormal state, fails closed before service mutation.
+7. Missing `.runner` alone is not treated as proof of identity.
+8. The new owner+repo runner path can be recovered only when the canonical directory matches the requested `LOCAL_ID` and `.service` passes the anchored repository-scope predicate in §5.1.
+9. Service-name validation is anchored and case-normalized; ordinary substring matching is forbidden.
+10. A custom `--runner-name` suffix is allowed and must not be required to equal the default runner name.
+11. Ambiguous legacy directories are never automatically deleted.
+12. Service state must be known before directory deletion.
+13. Service uninstall failure blocks deletion unless the service is subsequently confirmed absent.
+14. An already-absent service is a valid recovery state.
+15. Directory deletion remains constrained to the canonical runner base.
+16. Local artifact archives are never deleted by recovery mode.
+17. Recovery requires explicit destructive confirmation.
+18. Deterministic tests cover cases A–I, including all existing-`.runner` states and custom runner-name service validation.
+19. `bash tests/run-all.sh` passes on a suitable test host.
+20. README, Chinese README, and CHANGELOG describe the new recovery path.
 
 ## 15. Implementation boundary
 

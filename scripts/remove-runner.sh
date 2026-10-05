@@ -261,7 +261,8 @@ if [[ "$RECOVER_LOCAL" == "1" ]]; then
     die "Could not canonicalize recovery target: $NEW_DIR"
   EXPECTED_NEW_DIR="$NEW_DIR"
 
-  SERVICE_NAME="$(validate_recovery_identity "$RUNNER_DIR" "$EXPECTED_NEW_DIR" "$OWNER" "$REPO_NAME")"
+  SERVICE_NAME="$(validate_recovery_identity "$RUNNER_DIR" "$EXPECTED_NEW_DIR" "$OWNER" "$REPO_NAME")" ||
+    die "Recovery identity validation failed. No local service mutation or directory deletion was performed."
 
   cd "$RUNNER_DIR"
   SERVICE_STATE="$(runner_service_state)"

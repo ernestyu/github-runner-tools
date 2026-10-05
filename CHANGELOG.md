@@ -6,15 +6,25 @@ Changes intended for the next release are collected under **Unreleased**.
 
 ## Unreleased
 
+_No changes yet._
+
+## v1.0.1 - 2026-10-05
+
+Maintenance release adding safe local recovery cleanup for runners that were already removed from GitHub.
+
 ### Added
 
-- Explicit `remove-runner.sh --recover-local OWNER/REPO` mode for cleaning verified local service/directory residue after the GitHub-side runner was already removed.
-- Fail-closed recovery identity checks for absent-only `.runner` state, exact owner+repository directory identity, normalized non-truncated service scope, custom runner names, and systemd post-uninstall state.
-- Deterministic recovery-removal tests covering configured/malformed residue, legacy ambiguity, service failure states, truncated identity, and archive preservation.
+- Added `remove-runner.sh --recover-local OWNER/REPO` for safely cleaning verified local service/directory residue after the GitHub-side runner was already removed.
+- Added fail-closed recovery identity checks for absent-only `.runner` state, exact owner+repository directory identity, normalized non-truncated service scope, custom runner names, and systemd post-uninstall state.
+- Added deterministic recovery-removal tests covering configured/malformed residue, legacy ambiguity, service failure states, truncated identity, and archive preservation.
 
 ### Changed
 
-- README documentation now distinguishes normal GitHub unregister/removal from local-only recovery cleanup.
+- Documented the difference between normal GitHub unregister/removal and local-only recovery cleanup.
+
+### Validated
+
+- Full `bash tests/run-all.sh` suite passed on the Debian CI host after the recovery implementation.
 
 ## v1.0.0 - 2026-10-05
 

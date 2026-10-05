@@ -97,7 +97,7 @@ read_service_name_strict() {
   [[ "${#lines[@]}" -eq 1 ]] || return 1
 
   line="${lines[0]}"
-  line="${line%$'\\r'}"
+
   [[ -n "$line" ]] || return 1
   printf '%s' "$line"
 }
@@ -260,8 +260,7 @@ if [[ "$RECOVER_LOCAL" == "1" ]]; then
 
   RUNNER_DIR="$(canonicalize_existing_dir "$NEW_DIR")" ||
     die "Could not canonicalize recovery target: $NEW_DIR"
-  EXPECTED_NEW_DIR="$(canonicalize_existing_dir "$NEW_DIR")" ||
-    die "Could not canonicalize expected recovery target: $NEW_DIR"
+  EXPECTED_NEW_DIR="$NEW_DIR"
 
   SERVICE_NAME="$(validate_recovery_identity "$RUNNER_DIR" "$EXPECTED_NEW_DIR" "$OWNER" "$REPO_NAME")"
 

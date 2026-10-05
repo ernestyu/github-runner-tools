@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security issue
+    url: https://github.com/ernestyu/github-runner-tools/blob/main/SECURITY.md
+    about: Read the private reporting guidance before sharing security-sensitive details.

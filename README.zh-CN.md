@@ -212,15 +212,27 @@ ARM64 对应的系统架构 label 是 `ARM64`。
 bash scripts/status-runners.sh
 ```
 
-删除 runner：
+GitHub 端 runner 仍然存在时，使用正常删除：
 
 ```bash
 bash scripts/remove-runner.sh OWNER/REPO
 ```
 
-删除工具同时兼容新版 owner+repo 目录和旧版 repo-only 目录。对于旧目录，脚本不会只根据目录名猜它属于哪个仓库，而是必须读取 `.runner` 元数据确认 OWNER/REPO。无法确认身份时会停止，不会删除。
+正常删除会要求输入 GitHub 临时 removal token，注销 runner，安全卸载 systemd service，然后删除经过验证的本地 runner 目录。
 
-systemd service 卸载失败时，本地 runner 目录也不会继续被删除。旧版 runner 不会被自动改名或迁移。
+如果 runner 已经先在 GitHub 页面删除，而且 Runner.Listener 已经自动清掉本地 `.runner` / `.credentials`，使用显式的本地恢复模式：
+
+```bash
+bash scripts/remove-runner.sh --recover-local OWNER/REPO
+```
+
+Recovery 模式不会要求 GitHub removal token，也不会调用 `config.sh remove`。它的范围刻意很窄：`.runner` 必须完全不存在，目录必须精确对应 owner+repo identity，而且必须能从未截断的 `.service` 名称中完整验证规范化后的 repository scope。Legacy repo-only 目录、任何仍存在或异常的 `.runner`、unknown systemd state，以及 truncated / mismatch 的 service identity 都会 fail closed。
+
+本地 recovery 只清理经过验证的 runner service 残留和 runner 目录，**不会删除** `/srv/github-actions-archive` 下已经保存的 CI 归档。
+
+正常删除仍兼容旧版 repo-only 目录，但旧目录不能只靠目录名判断身份，必须由 `.runner` 元数据确认 OWNER/REPO。缺少 `.runner` 的 legacy 目录不支持自动 recovery。
+
+systemd service 卸载失败时，本地 runner 目录不会继续被删除，除非 post-check 已明确证明 unit 不存在。旧版 runner 不会被自动改名或迁移。
 
 ## 自定义设置
 

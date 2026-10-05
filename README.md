@@ -77,7 +77,7 @@ After the one-time local artifact setup, future repository runners can still be 
 For stable use, pin the first public release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/v1.0.0/scripts/register-runner.sh \
+curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/v1.0.1/scripts/register-runner.sh \
   | bash -s -- OWNER/REPO
 ```
 
@@ -93,7 +93,7 @@ curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/main/s
 If you prefer to inspect the released script before running it:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/v1.0.0/scripts/register-runner.sh \
+curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/v1.0.1/scripts/register-runner.sh \
   -o register-runner.sh
 
 less register-runner.sh

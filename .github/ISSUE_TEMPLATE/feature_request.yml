@@ -1,0 +1,52 @@
+name: Feature request
+description: Propose a change to github-runner-tools
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the user problem first. This project intentionally keeps a narrow scope around repository-level self-hosted runners and local CI artifact handling.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem are you trying to solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest behavior change that would solve the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. Explain any simpler workaround or existing project feature you considered.
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety impact
+      description: Select any area this proposal would change.
+      options:
+        - label: Runner registration or identity
+        - label: systemd service management
+        - label: Local archive layout or publication
+        - label: Cleanup or deletion
+        - label: GitHub artifact migration or remote deletion
+        - label: Credentials or authentication
+        - label: None of the above
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Target environment
+      description: If relevant, specify OS, architecture, and GitHub Actions Runner version.

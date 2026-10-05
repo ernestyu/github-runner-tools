@@ -126,30 +126,56 @@ where `LOCAL_ID` is derived from the requested `OWNER/REPO` by the existing `mak
 
 The second required identity fact is the service name stored in `.service`.
 
-The service-name validator must use the following anchored structural rule:
+GitHub Actions Runner service names are not defined by simple raw `OWNER/REPO` concatenation in every case. The official runner normalizes the repository/org scope by replacing characters outside:
 
 ```text
-service name starts with:
-actions.runner.<OWNER>-<REPO>.
+[0-9a-zA-Z._-]
+```
 
-service name ends with:
+with:
+
+```text
+-
+```
+
+and may truncate long service names to satisfy the platform service-name length limit.
+
+This amendment intentionally supports only service names whose repository scope remains fully present and can therefore be matched exactly.
+
+For a non-truncated service name, define:
+
+```text
+REPO_SCOPE_RAW =
+OWNER + "-" + REPO
+
+REPO_SCOPE_NORMALIZED =
+replace every character in REPO_SCOPE_RAW
+that is not [0-9a-zA-Z._-]
+with "-"
+
+SERVICE_NAME =
+"actions.runner."
++ REPO_SCOPE_NORMALIZED
++ "."
++ RUNNER_NAME
++ ".service"
+```
+
+Repository-scope comparison is ASCII case-insensitive because GitHub repository identity is case-insensitive for this purpose.
+
+The validator must therefore require all of the following:
+
+```text
+service name begins exactly with:
+actions.runner.<REPO_SCOPE_NORMALIZED>.
+
+service name ends exactly with:
 .service
 
 the runner-name segment between those two anchors is non-empty
 ```
 
-Repository-scope comparison is ASCII case-insensitive because GitHub repository identity is case-insensitive for this purpose.
-
-Equivalently, after lowercasing both values:
-
-```text
-SERVICE_NAME =
-"actions.runner." + lower(OWNER) + "-" + lower(REPO) + "." + RUNNER_NAME + ".service"
-
-RUNNER_NAME != ""
-```
-
-The validator must compare the complete anchored repository prefix and the final `.service` suffix. It must not use ordinary substring matching, unanchored `grep`, or repo-name-only matching.
+The validator must use anchored structural validation. It must not use ordinary substring matching, unanchored `grep`, repo-name-only matching, or a truncated repository prefix as proof of identity.
 
 The `RUNNER_NAME` segment is intentionally opaque. A runner created with:
 
@@ -157,12 +183,16 @@ The `RUNNER_NAME` segment is intentionally opaque. A runner created with:
 --runner-name CUSTOM_NAME
 ```
 
-is valid recovery residue if the directory identity and repository-scoped service prefix match. Recovery must not require the runner-name suffix to equal the default `local-ci-<LOCAL_ID>`.
+is valid recovery residue if the directory identity and the complete normalized repository-scope component match. Recovery must not require the runner-name suffix to equal the default `local-ci-<LOCAL_ID>`.
 
 Examples:
 
 ```text
-requested: ernestyu/github-runner-tools
+requested:
+ernestyu/github-runner-tools
+
+normalized repository scope:
+ernestyu-github-runner-tools
 
 valid:
 actions.runner.ernestyu-github-runner-tools.local-ci-ernestyu--github-runner-tools.service
@@ -170,15 +200,37 @@ actions.runner.ernestyu-github-runner-tools.local-ci-ernestyu--github-runner-too
 valid custom runner name:
 actions.runner.ernestyu-github-runner-tools.my-custom-runner.service
 
-invalid:
+invalid repository scope:
 actions.runner.someoneelse-github-runner-tools.my-custom-runner.service
 
-invalid:
+invalid unanchored prefix:
 foo.actions.runner.ernestyu-github-runner-tools.my-custom-runner.service
 
-invalid:
+invalid empty runner-name segment:
 actions.runner.ernestyu-github-runner-tools.service
 ```
+
+### 5.2 Official service-name truncation boundary
+
+The official Actions Runner may truncate a long service name. In that state, the complete normalized repository-scope component may no longer be present in `.service`.
+
+This amendment does not attempt to reproduce or reverse the official truncation algorithm, including any generated/random suffix behavior.
+
+If the complete normalized repository scope cannot be established exactly from the anchored service name:
+
+```text
+identity unknown
+→ FAIL CLOSED
+→ no service stop
+→ no service uninstall
+→ no directory deletion
+```
+
+An official-style truncated service name is therefore an unsupported/manual administrative recovery case for this amendment.
+
+A truncated prefix must never be treated as sufficient repository identity evidence.
+
+Supporting automatic recovery for truncated service names would require a separate amendment with an additional reliable identity source.
 
 For recovery, the identity proof is therefore the conjunction:
 
@@ -187,7 +239,9 @@ exact canonical new-style runner directory
 +
 .runner absent
 +
-valid repository-scoped .service name
+complete normalized repository scope proven by .service
++
+non-empty runner-name segment
 ```
 
 If any part cannot be established, identity is unknown and recovery must fail closed before any service mutation or directory deletion.
@@ -480,6 +534,17 @@ And:
 → FAIL
 ```
 
+Also cover the official truncation boundary:
+
+```text
+official-style truncated .service name
+complete normalized repository scope cannot be proven
+→ FAIL
+→ no service stop
+→ no service uninstall
+→ no directory deletion
+```
+
 ### H. Ambiguous legacy directory
 
 ```text
@@ -534,19 +599,21 @@ Implementation is complete only when all of the following are true:
 5. Recovery is eligible only when `.runner` is completely absent.
 6. Any existing `.runner` object, including valid, malformed, empty, unreadable, partial, symlinked, or otherwise abnormal state, fails closed before service mutation.
 7. Missing `.runner` alone is not treated as proof of identity.
-8. The new owner+repo runner path can be recovered only when the canonical directory matches the requested `LOCAL_ID` and `.service` passes the anchored repository-scope predicate in §5.1.
-9. Service-name validation is anchored and case-normalized; ordinary substring matching is forbidden.
-10. A custom `--runner-name` suffix is allowed and must not be required to equal the default runner name.
-11. Ambiguous legacy directories are never automatically deleted.
-12. Service state must be known before directory deletion.
-13. Service uninstall failure blocks deletion unless the service is subsequently confirmed absent.
-14. An already-absent service is a valid recovery state.
-15. Directory deletion remains constrained to the canonical runner base.
-16. Local artifact archives are never deleted by recovery mode.
-17. Recovery requires explicit destructive confirmation.
-18. Deterministic tests cover cases A–I, including all existing-`.runner` states and custom runner-name service validation.
-19. `bash tests/run-all.sh` passes on a suitable test host.
-20. README, Chinese README, and CHANGELOG describe the new recovery path.
+8. The new owner+repo runner path can be recovered only when the canonical directory matches the requested `LOCAL_ID` and `.service` proves the complete normalized repository scope under §5.1.
+9. Repository-scope normalization follows the official allowed-character rule: characters outside `[0-9a-zA-Z._-]` are replaced with `-`.
+10. Service-name validation is anchored and case-normalized; ordinary substring matching, repo-name-only matching, and truncated-prefix matching are forbidden.
+11. A custom `--runner-name` suffix is allowed and must not be required to equal the default runner name.
+12. If official service-name truncation prevents exact repository-scope proof, recovery fails closed and the case remains manual/out of scope.
+13. Ambiguous legacy directories are never automatically deleted.
+14. Service state must be known before directory deletion.
+15. Service uninstall failure blocks deletion unless the service is subsequently confirmed absent.
+16. An already-absent service is a valid recovery state.
+17. Directory deletion remains constrained to the canonical runner base.
+18. Local artifact archives are never deleted by recovery mode.
+19. Recovery requires explicit destructive confirmation.
+20. Deterministic tests cover cases A–I, including all existing-`.runner` states, custom runner-name validation, normalized repository scope, and truncated-service fail-closed behavior.
+21. `bash tests/run-all.sh` passes on a suitable test host.
+22. README, Chinese README, and CHANGELOG describe the new recovery path.
 
 ## 15. Implementation boundary
 

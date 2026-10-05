@@ -212,17 +212,27 @@ Check all local runners:
 bash scripts/status-runners.sh
 ```
 
-Remove a runner:
+Remove a runner while its GitHub registration still exists:
 
 ```bash
 bash scripts/remove-runner.sh OWNER/REPO
 ```
 
-The removal tool understands both the new owner+repo directory naming and the old repo-only naming used by earlier versions. A legacy directory is never trusted by filename alone: its `.runner` metadata must identify the requested repository before removal can continue. If identity is ambiguous, removal stops.
+The normal removal flow asks for GitHub's temporary removal token, unregisters the runner, safely uninstalls the systemd service, and then deletes the verified local runner directory.
 
-Service uninstall failure also stops local directory deletion. The removal script does not silently continue to `rm -rf` after a failed systemd uninstall.
+If the runner was already deleted in GitHub and Runner.Listener has removed the local `.runner` / `.credentials` files, use the explicit local recovery path:
 
-Existing legacy runners are not renamed automatically.
+```bash
+bash scripts/remove-runner.sh --recover-local OWNER/REPO
+```
+
+Recovery mode never asks for a GitHub removal token and never calls `config.sh remove`. It is deliberately narrow: `.runner` must be completely absent, the directory must be the exact owner+repository path, and the complete normalized repository scope must be provable from the non-truncated `.service` name. Ambiguous legacy directories, existing or malformed `.runner` state, unknown systemd state, and truncated/mismatched service identity all fail closed.
+
+Local recovery removes only the verified runner service residue and runner directory. It does **not** delete archived CI results under `/srv/github-actions-archive`.
+
+The removal tool also understands the old repo-only naming used by earlier versions during normal removal. A legacy directory is never trusted by filename alone: its `.runner` metadata must identify the requested repository before normal removal can continue. Legacy directories with missing `.runner` metadata are not eligible for automatic local recovery.
+
+Service uninstall failure stops local directory deletion unless a post-check proves the unit is already absent. Existing legacy runners are not renamed automatically.
 
 ## Custom settings
 

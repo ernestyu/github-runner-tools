@@ -77,7 +77,7 @@ bash scripts/enable-local-archive.sh --apply
 稳定使用时建议固定第一个正式版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/v1.0.0/scripts/register-runner.sh \
+curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/v1.0.1/scripts/register-runner.sh \
   | bash -s -- OWNER/REPO
 ```
 
@@ -93,7 +93,7 @@ curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/main/s
 如果希望先检查正式版本脚本再执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/v1.0.0/scripts/register-runner.sh \
+curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/v1.0.1/scripts/register-runner.sh \
   -o register-runner.sh
 
 less register-runner.sh

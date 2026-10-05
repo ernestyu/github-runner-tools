@@ -260,6 +260,14 @@ bash tests/run-all.sh
 
 ARM64 路径已经实现，但仍未在真实 ARM64 主机上验证。
 
+## 贡献与安全报告
+
+欢迎提交贡献。涉及 runner 身份、systemd service、本地归档发布、cleanup、删除逻辑或凭据处理的修改，请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+安全问题不要在公开 Issue 中直接贴漏洞细节、token 或敏感日志，请按 [SECURITY.md](SECURITY.md) 的方式私下报告。
+
+仓库已经提供结构化的 Bug / Feature Issue 表单，以及带测试、实机验证和安全影响检查项的 Pull Request 模板。
+
 ## 安全与限制
 
 Self-hosted runner 会执行 repository workflow 中的命令，因此应该把 runner 主机看成真正的代码执行环境。条件允许时，应与生产环境隔离。
@@ -267,3 +275,8 @@ Self-hosted runner 会执行 repository workflow 中的命令，因此应该把 
 不要提交 registration/removal token、PAT、SSH private key、生产 API key、数据库密码或其他长期 secrets。也不要为了方便，把宿主机 Docker socket 或无关的生产数据直接暴露给 CI。
 
 当前项目只处理 systemd Linux 上的 repository-level runner。Organization runner group、自动扩缩容、Kubernetes、Windows、macOS、跨用户安装、自动生成 token、自动修改 workflow 和生产部署都不属于 v1 范围。
+
+
+## License
+
+本项目使用 [MIT License](LICENSE)。

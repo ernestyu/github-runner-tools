@@ -59,6 +59,30 @@ def disable_ptrace_dumpability() -> None:
         raise OSError(ctypes.get_errno(), "prctl(PR_SET_DUMPABLE) failed")
 
 
+def verify_unprivileged_identity(uid: int, gid: int) -> bool:
+    if os.geteuid() != uid or os.getegid() != gid:
+        return False
+    if hasattr(os, "getresuid") and os.getresuid() != (uid, uid, uid):
+        return False
+    if hasattr(os, "getresgid") and os.getresgid() != (gid, gid, gid):
+        return False
+    if os.getgroups():
+        return False
+    try:
+        status = {}
+        with open("/proc/self/status", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    status[key] = value.strip()
+        for key in ("CapInh", "CapPrm", "CapEff", "CapAmb"):
+            if int(status.get(key, "0"), 16) != 0:
+                return False
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def main() -> int:
     if os.environ.get("GRT_WEB_CONTEXT") != "1":
         return 70
@@ -74,11 +98,8 @@ def main() -> int:
         return 70
 
     pw = pwd.getpwnam(runner_user)
-    if os.geteuid() != pw.pw_uid or os.getegid() != pw.pw_gid:
+    if not verify_unprivileged_identity(pw.pw_uid, pw.pw_gid):
         return 71
-    if os.getgroups():
-        # Dispatcher must clear supplementary groups before lifecycle entry.
-        return 72
 
     try:
         disable_ptrace_dumpability()

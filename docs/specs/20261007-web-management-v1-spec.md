@@ -1024,22 +1024,78 @@ The UI must show a safe message.
 
 Detailed diagnostics may be written to the local journal only if they contain no secrets.
 
-## 22. Web setup
+## 22. Web setup and explicit opt-in installation
 
-Add a setup tool, for example:
+Web Management V1 is an optional component.
+
+The default `github-runner-tools` operating mode remains:
+
+```text
+CLI-only
+```
+
+The following existing workflows must remain fully supported without Web Management installed:
+
+```text
+register-runner.sh
+status-runners.sh
+remove-runner.sh
+remove-runner.sh --recover-local
+local artifact setup
+normal CLI-only upgrades/maintenance
+```
+
+None of those paths may implicitly:
+
+- create the `grt-web` account;
+- install or enable the Web frontend service;
+- install or enable the root dispatcher;
+- create the privileged Web dispatch socket;
+- create the Web HTTP listener;
+- configure Tailscale Serve;
+- create Web authentication material.
+
+Web Management is installed only after an operator explicitly runs the dedicated setup tool.
+
+Required interface:
 
 ```bash
 bash scripts/setup-web-management.sh --dry-run
 bash scripts/setup-web-management.sh --apply
 ```
 
-Default mode is dry-run.
+### 22.1 Dry-run contract
+
+`--dry-run` is the default mode.
+
+Dry-run may inspect host state and print the planned changes, but must not perform persistent host mutation.
+
+It must not:
+
+- create users/groups;
+- write files under `/etc`, `/usr/local`, `/run`, or systemd directories;
+- install/enable/start services or sockets;
+- change sudoers;
+- create authentication secrets;
+- configure Tailscale Serve;
+- create the shared mutation lock if it does not already exist;
+- alter existing runner directories or archives.
+
+### 22.2 Apply contract
+
+Only explicit:
+
+```bash
+bash scripts/setup-web-management.sh --apply
+```
+
+may install/enable Web Management.
 
 Setup is run by the normal runner owner/operator and may use sudo internally for host-level installation.
 
 It must not require running the entire setup script as root.
 
-Setup responsibilities:
+Apply responsibilities:
 
 - verify Tailscale CLI/service availability;
 - resolve and freeze the configured runner-owner UID/GID;
@@ -1053,12 +1109,12 @@ Setup responsibilities:
 - install the root dispatcher socket/service;
 - create `/run/github-runner-tools/web-dispatch.sock` with the ownership/mode in §10.1;
 - verify `actions` cannot connect to the dispatch socket;
-- create/prepare `/run/lock/github-runner-tools/mutation.lock` for both CLI and Web coordination;
+- create/prepare `/run/lock/github-runner-tools/mutation.lock` for CLI/Web coordination;
 - install/verify the root-controlled dependency mechanism;
 - install/verify the canonical root-controlled runner unit mechanism;
 - configure or print the exact Tailscale Serve command;
 - validate that the Web backend binds only to loopback;
-- start/enable services only after validation succeeds.
+- start/enable Web-related services only after validation succeeds.
 
 Setup must stop rather than replace unmanaged conflicting services, sockets, unit templates, or configuration.
 
@@ -1070,6 +1126,14 @@ actions
 ```
 
 The lifecycle worker executes as `actions`, but its installed code remains root-owned and non-runner-writable.
+
+### 22.3 CLI-only remains a first-class supported mode
+
+A host that never runs `setup-web-management.sh --apply` remains a complete and supported `github-runner-tools` installation.
+
+CLI-only mode is not a temporary pre-Web state.
+
+Future updates to existing CLI/archive features must not assume that Web Management components are present.
 
 ## 23. Configuration
 
@@ -1459,6 +1523,30 @@ oversized token field
 → rejected before lifecycle execution
 ```
 
+### 28.16 Explicit opt-in installation
+
+Verify:
+
+```text
+fresh CLI-only installation
+→ no grt-web account required
+→ no Web service
+→ no dispatcher service/socket
+→ no 127.0.0.1:8765 Web listener
+→ no Tailscale Serve management endpoint
+
+normal CLI register/status/remove/recover
+→ does not install or enable Web Management
+
+setup-web-management.sh --dry-run
+→ no persistent host mutation
+
+setup-web-management.sh --apply
+→ only then installs/enables Web Management
+```
+
+CLI-only operation must remain fully functional when every Web component is absent.
+
 ### 28.15 CLI/Web parity
 
 For the same fixture state, CLI/shared lifecycle and Web/controller must agree on at least:
@@ -1478,8 +1566,12 @@ service mismatch failure
 After static/code audit passes, validate on the real Debian host in this order:
 
 ```text
-1. bash tests/run-all.sh
-2. setup-web-management.sh --dry-run
+1. begin from a CLI-only host state and verify no grt-web/Web/dispatcher/Tailscale management endpoint exists
+2. verify normal CLI register/status/remove/recover does not install/enable Web components
+3. bash tests/run-all.sh
+4. setup-web-management.sh --dry-run
+5. verify dry-run caused no persistent host mutation
+6. setup-web-management.sh --apply
 3. inspect generated users/config/services/socket/lock/unit plan
 4. setup-web-management.sh --apply
 
@@ -1613,11 +1705,16 @@ Web Management V1 is complete only when all of the following are true:
 47. Mutation timeout is bounded.
 48. Local artifact archive is never deleted by Web runner removal/recovery.
 49. Existing CLI lifecycle remains functional and semantically aligned with the Web worker.
+50. Web Management is not installed or enabled by default.
+51. Normal CLI register/status/remove/recover and archive setup do not create or enable Web components.
+52. `setup-web-management.sh --dry-run` performs no persistent host mutation.
+53. Only explicit `setup-web-management.sh --apply` may install/enable Web Management.
+54. CLI-only mode remains a complete, supported operating mode when all Web components are absent.
 
-50. Automated tests cover §28.
-51. Full repository test suite passes.
-52. Live Debian acceptance sequence in §29 passes before release.
-53. README, Chinese README, and CHANGELOG are updated only after implementation passes audit.
+55. Automated tests cover §28.
+56. Full repository test suite passes.
+57. Live Debian acceptance sequence in §29 passes before release.
+58. README, Chinese README, and CHANGELOG are updated only after implementation passes audit.
 
 ## 32. Implementation boundary
 

@@ -101,7 +101,7 @@ V1 must not add:
 
 ## 5. Architecture
 
-V1 uses two local processes with a strict privilege boundary.
+V1 uses three security identities with a narrow privilege split.
 
 ```text
 Browser / phone
@@ -109,22 +109,40 @@ Browser / phone
 Tailscale Serve
     ↓ loopback HTTP
 github-runner-tools-web.service
-    unprivileged dedicated account: grt-web
-    ↓ local Unix socket only
-github-runner-tools-broker.socket
-github-runner-tools-broker.service
-    root-owned privileged broker
+    user: grt-web
+    ↓ typed local IPC
+management controller
     ↓
-existing/shared runner lifecycle implementation
-    ↓
-GitHub Actions Runner + systemd
+    ├── runner-owner lifecycle
+    │     executes as: actions
+    │     registration/configuration/local runner files
+    │
+    └── privileged service helper
+          root-owned
+          system-level dependency/service operations only
 ```
 
 The Web frontend must never run as root.
 
-The privileged broker must never expose a TCP listener.
+The normal runner lifecycle must not run wholesale as root.
 
-The privileged broker must only be reachable through a root-controlled Unix-domain socket.
+The runner owner remains the same normal Linux account used by the existing CLI, for example:
+
+```text
+actions
+```
+
+Root privilege is limited to host-level operations that genuinely require it, specifically:
+
+- one-time/host-level runner dependency installation when required;
+- systemd service installation;
+- systemd service start/stop/restart/state management;
+- systemd service uninstall/removal;
+- installation of root-owned Web/helper/configuration files during setup.
+
+Runner registration with GitHub, runner directory creation, `.runner` / `.credentials` creation, archive-hook configuration, GitHub unregister, and ordinary runner-directory cleanup must execute as the runner owner, not root.
+
+The privileged helper must never expose a TCP listener and must never become a general lifecycle executor.
 
 ## 6. Network exposure
 
@@ -190,7 +208,26 @@ The password:
 - is never written to logs;
 - is never passed in argv or environment variables.
 
-Authentication state uses a server-side signed session.
+Authentication uses an opaque server-side session.
+
+Required model:
+
+```text
+browser cookie
+→ random opaque session identifier with at least 256 bits of entropy
+
+server memory
+→ session identifier
+→ authenticated state
+→ login time
+→ last activity
+→ CSRF state
+→ pending confirmation nonces
+```
+
+No authentication or authorization state is encoded into a client-visible signed payload.
+
+A Web service restart invalidates all sessions. Persistent login is out of scope for V1.
 
 Required cookie properties when accessed through Tailscale HTTPS:
 
@@ -207,7 +244,7 @@ idle timeout: 30 minutes
 absolute lifetime: 8 hours
 ```
 
-Login attempts must be rate-limited per client/session source. A simple bounded in-memory limiter is sufficient; no database is required.
+Login attempts must be rate-limited. A bounded in-memory limiter is sufficient; no database is required.
 
 ## 8. CSRF and browser safety
 
@@ -243,6 +280,14 @@ Temporary GitHub tokens must never appear in:
 - process argv;
 - environment variables.
 
+Production Web mode must disable framework debug mode and any request-body/form-value logging.
+
+Exception handling must not dump submitted form values or full request bodies to logs or HTML error pages.
+
+Request bodies and token fields must have explicit bounded maximum sizes. Oversized requests must be rejected before lifecycle execution.
+
+The implementation must not retain a full request body after the request has been parsed and the required fields copied into bounded in-memory variables.
+
 ## 9. Dedicated Web account
 
 The Web frontend must run as a dedicated locked service account:
@@ -266,57 +311,62 @@ Runner jobs continue to run as the normal runner owner, for example:
 actions
 ```
 
-The Web frontend and runner execution identity must therefore remain separate:
+The Web frontend and runner execution identity must remain separate:
 
 ```text
 grt-web != actions
 ```
 
-This separation is required so workflow code executing as `actions` cannot directly read Web authentication material or invoke the privileged broker.
+The runner owner must not be able to read Web authentication material.
 
-## 10. Privileged broker
+The runner owner must not receive access to the privileged-helper socket or another privileged IPC endpoint.
+
+Any controller path that performs runner-owner lifecycle work must explicitly execute with the configured runner-owner UID/GID and must not inherit root identity.
+
+## 10. Privileged service helper
 
 ### 10.1 Purpose
 
-Operations that require root/systemd authority must be performed through a dedicated broker.
+The privileged component exists only for host-level operations that cannot be performed safely as the runner owner.
 
-The broker is installed as root-owned code and is activated through a Unix-domain socket.
+It is not a general broker for `list/create/remove/recover_local`.
 
-Suggested paths:
+Suggested installed location:
 
 ```text
 /usr/local/lib/github-runner-tools/web/
-/run/github-runner-tools/web-broker.sock
 ```
 
-### 10.2 Socket contract
-
-The socket must be:
+Any privileged IPC endpoint must be a root-controlled Unix-domain socket under:
 
 ```text
-owner: root
-group: grt-web
-mode: 0660
+/run/github-runner-tools/
 ```
 
-The broker must verify the peer credentials of the connecting process and accept requests only from the configured Web service UID.
+No privileged component may expose TCP.
 
-Filesystem permissions alone are not the sole identity check.
+### 10.2 Allowed privileged operation classes
 
-### 10.3 Allowed operations
-
-The broker accepts only these typed operations:
+The helper may expose only narrowly typed host operations required by the lifecycle, such as:
 
 ```text
-list
-create
-remove
-recover_local
+ensure_runner_dependencies
+service_install
+service_start
+service_stop
+service_restart
+service_state
+service_uninstall
 ```
 
-There is no:
+Exact operation names may differ, but the semantic scope may not expand beyond dependency/service management.
+
+There is no privileged:
 
 ```text
+create_runner
+remove_runner
+recover_runner
 exec
 shell
 command
@@ -327,11 +377,11 @@ argv
 
 operation.
 
-The request schema must reject unknown fields.
+The helper must reject unknown operations and unknown fields.
 
-### 10.4 No arbitrary shell execution
+### 10.3 No arbitrary shell execution
 
-The broker must not build shell command strings from Web input.
+The helper must not build shell command strings from Web input.
 
 The implementation must not use:
 
@@ -344,23 +394,96 @@ bash -c <user-controlled-string>
 
 for Web-supplied values.
 
-### 10.5 Root execution boundary
+### 10.4 Root-owned code boundary
 
-The broker must not execute a file that is writable by the runner owner as root.
+The privileged helper must execute only root-owned, non-runner-writable installed code as root.
 
-In particular, a permanent Web privilege path must not reduce to:
+It must never execute as root:
+
+- the repository checkout under the runner owner's home;
+- a runner-owned `svc.sh`;
+- a runner-owned `config.sh`;
+- a runner-owned `runsvc.sh`;
+- another executable/script whose contents are writable by `actions`;
+- a path supplied by the browser.
+
+A permanent Web privilege path must not reduce to:
 
 ```text
-NOPASSWD sudo ./svc.sh
+NOPASSWD sudo /home/actions/.../svc.sh
 ```
 
-from a runner-owned directory.
+The Web feature must not grant `actions` any new passwordless root command.
 
-If implementation refactoring is required, privileged service-management logic must be located in root-owned, non-user-writable installed code.
+### 10.5 Runner-owner execution
 
-The Web feature must not grant the runner owner `actions` new passwordless root execution capability.
+Lifecycle operations that do not require root must execute as the configured runner owner.
 
-## 11. Lifecycle authority
+Required runner-owner operations include at least:
+
+```text
+create/canonicalize runner directory
+download/verify/extract runner package
+config.sh registration
+write .runner/.credentials/.env
+GitHub unregister through config.sh remove
+remove verified runner-owned directory
+```
+
+If a controller is launched from a privileged context, it must explicitly drop to the configured runner-owner UID/GID before performing these operations.
+
+### 10.6 Dependency installation
+
+The existing CLI currently invokes the official runner dependency installer through sudo during registration.
+
+For Web V1, dependency handling must not execute a runner-owner-writable installer as root.
+
+Implementation must choose one safe path:
+
+1. move host dependency installation into one-time root-controlled Web/platform setup; or
+2. provide an equivalent root-owned dependency helper whose inputs are not runner-controlled.
+
+A runner-owned extracted `bin/installdependencies.sh` must not become a reusable privileged Web execution path.
+
+### 10.7 systemd unit trust boundary
+
+Runner-owned `.service` metadata is not sufficient authority for a privileged systemd mutation.
+
+Immediately before any privileged service mutation, the helper/controller must cross-check the target against root-controlled systemd state.
+
+For an existing service, validation must establish at least:
+
+```text
+requested OWNER/REPO
+→ expected canonical runner directory
+→ candidate service name
+→ actual systemd unit exists or is in the expected absent transition state
+→ systemd User == configured runner owner
+→ systemd WorkingDirectory == exact canonical runner directory
+→ systemd ExecStart resolves to the expected runner service entrypoint for that directory
+```
+
+A mismatch or an inability to establish these properties is:
+
+```text
+identity unknown
+→ FAIL CLOSED
+→ no privileged mutation
+```
+
+The helper must not trust a modified runner-owned `.service` file by itself.
+
+For service installation, the implementation must use a root-owned service-installation mechanism. It must not execute runner-owned `svc.sh` as root.
+
+### 10.8 Peer identity
+
+If a Unix socket is used, its filesystem permissions must deny the runner owner access.
+
+The privileged helper must also verify peer credentials and accept only the intended Web/controller service identity.
+
+Filesystem permissions alone are not the sole peer-identity check.
+
+## 11. Lifecycle authority and mutation revalidation
 
 Existing lifecycle semantics remain authoritative.
 
@@ -386,6 +509,44 @@ Web path
 must use the same semantic authority and must be covered by parity tests.
 
 The existing CLI commands must continue to work after this change.
+
+### 11.1 Frontend eligibility is advisory only
+
+Machine-readable fields such as:
+
+```text
+can_remove
+can_recover_local
+```
+
+control what the UI displays.
+
+They are not authorization for a mutation.
+
+Immediately before every create/remove/recover operation, the server-side lifecycle controller must:
+
+```text
+acquire global mutation lock
+→ re-read current filesystem/systemd state
+→ re-resolve repository/runner identity
+→ re-run current eligibility validation
+→ only then begin mutation
+```
+
+The controller/helper must not trust:
+
+- stale list-page data;
+- browser hidden fields;
+- a previously generated `can_remove` value;
+- a previously generated `can_recover_local` value.
+
+This revalidation must occur while the mutation lock is held.
+
+### 11.2 Privileged systemd revalidation
+
+For any service mutation, the root-controlled systemd cross-check in §10.7 must occur again immediately before that privileged operation.
+
+This prevents runner-owned metadata or service state from changing between list rendering and destructive execution.
 
 ## 12. Non-interactive secret transport
 
@@ -508,15 +669,21 @@ authenticated POST
 → CSRF validation
 → repository validation
 → acquire global mutation lock
+→ re-check target identity/collision state
+→ perform runner-owner lifecycle as actions
 → pass registration token by anonymous pipe/FD
-→ invoke shared registration lifecycle
+→ use privileged helper only for allowed host dependency/service operations
 → wait for bounded completion
 → return sanitized result
 → release lock
 → refresh list
 ```
 
-On success, the resulting runner must have the same defaults and archive hook configuration as a runner created through the normal CLI.
+The Web/frontend process itself must not create runner files as `grt-web`.
+
+The lifecycle controller must not create runner files as root.
+
+On success, the resulting runner must have the same owner, defaults, labels, archive hook configuration, and collision semantics as a runner created through the normal CLI.
 
 No `--replace` behavior may be introduced.
 
@@ -540,12 +707,23 @@ Remove
 
 Removal token is required.
 
+After confirmation and while holding the mutation lock, the server must independently revalidate current removal eligibility.
+
 The operation must preserve all current normal-removal semantics, including:
 
 - identity verification;
 - systemd cleanup ordering;
 - GitHub unregister;
 - local directory safety boundary.
+
+Required privilege split:
+
+```text
+identity/filesystem validation        runner-owner/shared lifecycle
+systemd stop/uninstall                privileged helper
+GitHub config.sh remove               actions
+verified local directory deletion     actions
+```
 
 The Web layer must not call GitHub APIs directly.
 
@@ -565,6 +743,8 @@ Recover local residue
 
 No GitHub removal token is requested.
 
+After confirmation and while holding the mutation lock, the server must independently revalidate current recovery eligibility.
+
 The exact frozen `--recover-local` rules remain authoritative:
 
 - `.runner` must be completely absent;
@@ -573,6 +753,16 @@ The exact frozen `--recover-local` rules remain authoritative:
 - legacy ambiguous residue rejected;
 - unknown systemd state rejected;
 - local artifact archive preserved.
+
+Before privileged service cleanup, the systemd unit must additionally pass the root-controlled cross-check in §10.7.
+
+Required privilege split:
+
+```text
+identity/filesystem validation        runner-owner/shared lifecycle
+systemd stop/uninstall                privileged helper
+verified local directory deletion     actions
+```
 
 ## 17. Destructive confirmation
 
@@ -611,7 +801,9 @@ remove
 recover_local
 ```
 
-Use one host-level lock.
+Use one host-level lock stored in a root-/service-controlled location that is not writable by runner workflow code.
+
+The lock must be acquired before the authoritative mutation revalidation in §11.1 and held until the mutation reaches a terminal result.
 
 If another mutation is in progress, V1 returns:
 
@@ -622,7 +814,7 @@ operation already in progress
 
 Do not queue multiple destructive operations in V1.
 
-List/status requests remain available while no state-reading conflict exists.
+List/status requests may continue, but their eligibility data remains advisory and must be revalidated before any later mutation.
 
 ## 19. Timeouts
 
@@ -710,17 +902,27 @@ Setup responsibilities:
 - verify Tailscale CLI/service availability;
 - verify the expected runner owner;
 - create the locked `grt-web` account;
-- install root-owned Web and broker code;
+- install root-owned Web/controller/helper code;
 - install root-owned configuration;
 - install authentication hash/session secret;
 - install systemd Web service;
-- install broker socket/service;
-- set Unix socket ownership/permissions;
+- install only the narrow privileged-helper IPC/service required by §10;
+- configure IPC ownership/permissions so `actions` cannot invoke privileged operations;
+- install/verify any root-controlled dependency/service-management mechanism;
 - configure or print the exact Tailscale Serve command;
 - validate that the Web backend binds only to loopback;
 - start/enable the Web service only after validation succeeds.
 
 Setup must stop rather than replace an unmanaged conflicting service/configuration.
+
+Setup must verify that no installed privileged executable/script is writable by either:
+
+```text
+grt-web
+actions
+```
+
+unless that file is deliberately non-executable data and its mutability is part of the frozen contract.
 
 ## 23. Configuration
 
@@ -762,14 +964,14 @@ Exact numeric modes may be selected during implementation if these properties ar
 
 ## 24. Tailscale Serve contract
 
-V1 remote access depends on Tailscale Serve.
+V1 remote access depends exclusively on Tailscale Serve.
 
 Setup must either:
 
 1. configure Tailscale Serve automatically after explicit operator confirmation; or
 2. print the exact command and verify it during acceptance.
 
-The resulting public surface must be Tailnet-only HTTPS.
+The resulting management surface must be Tailnet-only HTTPS.
 
 The implementation must not enable a Funnel/public Internet endpoint.
 
@@ -780,6 +982,10 @@ tailscale funnel
 ```
 
 is forbidden in V1.
+
+Direct access to the backend through a LAN address is forbidden because the backend listens only on loopback.
+
+Tailnet policy may further restrict which Tailnet identities/devices can reach this service. Such policy restriction is recommended but is not a substitute for the Web administrator password.
 
 ## 25. Frontend technology
 
@@ -826,7 +1032,11 @@ MemoryDenyWriteExecute=true
 
 The frontend must not require write access to runner home directories.
 
-The broker is privileged and will require a narrower but different hardening profile. Its writable paths and capabilities must be limited to the lifecycle operations actually required.
+The runner-owner controller/lifecycle process must receive only the filesystem access required by the existing runner lifecycle.
+
+The privileged helper must have a separate, narrower hardening profile. Its accepted operations, writable paths, executable paths, and systemd authority must be limited to §10.
+
+The privileged helper must not have a general-purpose shell/command interface.
 
 ## 27. Security invariants
 
@@ -835,19 +1045,37 @@ The implementation must preserve all of these:
 ```text
 Web frontend is never root.
 
+Whole runner lifecycle is never executed as root.
+
+Runner registration/configuration/unregister/directory operations execute as actions.
+
+Root privilege is limited to host dependency/service management.
+
 Runner workflow user cannot read Web auth secrets.
 
-Runner workflow user cannot directly access broker socket.
+Runner workflow user cannot invoke privileged helper IPC.
 
 No NOPASSWD path to runner-user-writable svc.sh.
+
+Privileged helper never executes runner-user-writable code as root.
+
+Privileged service mutation cross-checks root-controlled systemd properties.
+
+Frontend eligibility flags are advisory only.
+
+Every mutation revalidates current identity/state under the mutation lock.
 
 No arbitrary shell input.
 
 No token in argv/env/file/log/URL.
 
+No request-body or form-value secret logging.
+
 No public Internet listener.
 
-No direct LAN plaintext Web management in V1.
+No direct LAN Web management in V1.
+
+Tailscale Serve is the only remote access path.
 
 No GitHub PAT storage.
 
@@ -876,10 +1104,13 @@ wrong password
 → rejected
 
 valid login
-→ session established
+→ opaque server-side session established
 
 expired session
 → rejected
+
+service restart / missing server-side session
+→ old cookie rejected
 
 session cookie flags correct
 ```
@@ -901,18 +1132,20 @@ valid CSRF
 
 ```text
 invalid repository
-→ rejected before broker call
+→ rejected before lifecycle call
 
 valid OWNER/REPO + token
-→ broker receives typed create request
+→ runner-owner lifecycle receives typed create request
 
 token absent
 → rejected
 
-token never appears in captured argv/env/log
+token never appears in captured argv/env/log/file/response
 ```
 
 ### 28.4 Status JSON
+
+Cover:
 
 ```text
 configured runner
@@ -948,30 +1181,61 @@ nonce for another operation
 → all rejected
 ```
 
-### 28.7 Broker input safety
+### 28.7 Mutation-time revalidation / TOCTOU
+
+Cover at least:
+
+```text
+list page says can_remove=true
+→ state changes before POST
+→ mutation revalidation rejects operation
+
+list page says can_recover_local=true
+→ .runner appears before POST
+→ mutation revalidation rejects operation
+
+service identity changes before privileged operation
+→ systemd cross-check rejects operation
+```
+
+### 28.8 Privileged-helper input safety
 
 Reject:
 
 - unknown operation;
-- unknown JSON field;
+- unknown field;
 - malformed repository;
 - arbitrary path;
 - arbitrary command;
 - shell metacharacter injection attempts.
 
-### 28.8 Privilege boundary
+### 28.9 Privilege boundary
 
 Tests must prove:
 
 ```text
 frontend service user != runner owner
+
 runner owner cannot read Web auth config
-runner owner cannot connect to broker socket
-frontend cannot perform privileged action except through broker
-broker does not execute runner-user-writable files as root
+
+runner owner cannot invoke privileged helper
+
+frontend does not own/write runner directories
+
+runner lifecycle files are created as actions, not root/grt-web
+
+privileged helper does not execute runner-user-writable svc.sh/config.sh/runsvc.sh as root
+
+privileged helper rejects a systemd unit whose User != actions
+
+privileged helper rejects a systemd unit whose WorkingDirectory != expected canonical runner directory
+
+privileged helper rejects an unexpected ExecStart
+
+actions receives no new passwordless root command
 ```
 
-### 28.9 Mutation lock
+### 28.10 Mutation lock
 
 ```text
 first mutation active
@@ -980,19 +1244,50 @@ second mutation request
 → second mutation not started
 ```
 
-### 28.10 Secret redaction
+Also verify authoritative identity revalidation happens after lock acquisition.
+
+### 28.11 Secret redaction
 
 Captured:
 
 ```text
 application log
-broker log
+helper log
 argv
 environment
+temporary files
 HTTP response
+error response
 ```
 
 must not contain registration/removal token.
+
+Framework debug/error handling must not echo submitted form values.
+
+### 28.12 Request bounds
+
+Cover:
+
+```text
+oversized request body
+oversized repository field
+oversized token field
+→ rejected before lifecycle execution
+```
+
+### 28.13 CLI/Web parity
+
+For the same fixture state, CLI/shared lifecycle and Web/controller must agree on at least:
+
+```text
+repository validation
+local identity
+configured state
+normal-removal eligibility
+recovery eligibility
+ambiguous legacy state
+service mismatch failure
+```
 
 ## 29. Live Debian acceptance
 
@@ -1001,24 +1296,34 @@ After static/code audit passes, validate on the real Debian host in this order:
 ```text
 1. bash tests/run-all.sh
 2. setup-web-management.sh --dry-run
-3. inspect generated user/config/service/socket plan
+3. inspect generated users/config/services/helper plan
 4. setup-web-management.sh --apply
-5. verify frontend only listens on 127.0.0.1
-6. verify broker has no TCP listener
-7. verify Tailscale Serve HTTPS endpoint
-8. login from phone through Tailnet
-9. list current runners
-10. create a disposable/test repository runner using a temporary registration token
-11. verify runner appears and service is active
-12. normal-remove that disposable runner using a temporary removal token
-13. create a second disposable runner
-14. delete it on GitHub first
-15. wait for local .runner/.credentials cleanup
-16. use Web Recover local residue
-17. verify systemd unit absent
-18. verify runner directory removed
-19. verify /srv/github-actions-archive is untouched
-20. verify no secrets appeared in journal
+5. verify frontend runs as grt-web
+6. verify frontend only listens on 127.0.0.1
+7. verify no direct LAN/WAN listener exists
+8. verify privileged helper has no TCP listener
+9. verify actions cannot read Web auth config
+10. verify actions cannot invoke privileged helper
+11. verify grt-web cannot write runner directories
+12. verify privileged installed code is root-owned and not writable by actions/grt-web
+13. verify Tailscale Serve HTTPS endpoint
+14. verify no Tailscale Funnel/public endpoint exists
+15. login from phone through Tailnet
+16. list current runners
+17. create a disposable/test repository runner using a temporary registration token
+18. verify runner files are owned by actions
+19. verify runner appears and service is active
+20. verify systemd unit User/WorkingDirectory/ExecStart match expected runner identity
+21. normal-remove that disposable runner using a temporary removal token
+22. create a second disposable runner
+23. delete it on GitHub first
+24. wait for local .runner/.credentials cleanup
+25. use Web Recover local residue
+26. verify systemd unit absent
+27. verify runner directory removed
+28. verify /srv/github-actions-archive is untouched
+29. verify registration/removal tokens do not appear in journal, argv, environment, temp files, or responses
+30. verify local CLI create/status/remove behavior still works
 ```
 
 Do not use a production/private research runner as the first Web mutation test.
@@ -1043,7 +1348,7 @@ Documentation must explain:
 - normal remove flow;
 - local recovery flow;
 - why direct LAN HTTP/public Internet exposure is not supported;
-- security boundary between `grt-web`, broker, and runner owner.
+- security boundary between `grt-web`, runner-owner lifecycle, privileged service helper, and the runner owner.
 
 ## 31. Acceptance criteria
 
@@ -1052,34 +1357,42 @@ Web Management V1 is complete only when all of the following are true:
 1. Web frontend runs as dedicated non-root `grt-web`.
 2. Runner owner and Web frontend identities are separate.
 3. Frontend binds only to loopback.
-4. Remote access is Tailnet-only HTTPS through Tailscale Serve.
-5. No Tailscale Funnel/public exposure is enabled.
-6. Local administrator password is stored only as a hardened hash.
-7. Session cookie uses Secure, HttpOnly, SameSite=Strict.
-8. CSRF protection covers every mutation.
-9. No temporary GitHub token is sent through argv, environment, file, URL, or logs.
-10. Broker is reachable only through a protected Unix socket.
-11. Broker validates peer credentials.
-12. Broker exposes only typed list/create/remove/recover_local operations.
-13. Unknown request fields/operations are rejected.
-14. Broker never executes runner-user-writable code as root.
-15. Runner owner receives no new passwordless root execution path.
-16. Existing CLI lifecycle remains functional.
-17. CLI and Web lifecycle share the same semantic authority.
-18. `status-runners.sh --json` implements the frozen machine contract.
-19. UI action availability comes only from machine-readable eligibility flags.
-20. Create accepts only OWNER/REPO + temporary registration token in V1.
-21. Normal remove requires temporary removal token.
-22. Local recovery requires no GitHub token and preserves existing frozen recovery semantics.
-23. Destructive operation uses session-bound, operation-bound, repository-bound single-use confirmation.
-24. Only one mutation runs at a time.
-25. Mutation timeout is bounded.
-26. Local artifact archive is never deleted by Web runner removal/recovery.
-27. Direct LAN plaintext management is not available in V1.
-28. Automated tests cover §28.
-29. Full repository test suite passes.
-30. Live Debian acceptance sequence in §29 passes before release.
-31. README, Chinese README, and CHANGELOG are updated only after implementation passes audit.
+4. Remote access is exclusively Tailnet HTTPS through Tailscale Serve.
+5. Direct LAN/WAN access to the backend is impossible under the default configuration.
+6. No Tailscale Funnel/public exposure is enabled.
+7. Local administrator password is stored only as a hardened salted hash.
+8. Authentication uses opaque server-side sessions; restart invalidates sessions.
+9. Session cookie uses Secure, HttpOnly, SameSite=Strict.
+10. CSRF protection covers every mutation.
+11. Production mode disables request-body/form-value/debug secret logging.
+12. Request/token sizes are bounded.
+13. No temporary GitHub token is sent through argv, environment, file, URL, logs, or response.
+14. Whole runner lifecycle is never run as root.
+15. Registration/configuration/unregister/directory operations execute as the configured runner owner.
+16. Root privilege is limited to host dependency/service-management operations.
+17. Privileged helper executes only root-owned, non-runner-writable code as root.
+18. Runner owner receives no new passwordless root execution path.
+19. Runner owner cannot invoke privileged-helper IPC.
+20. Privileged service mutation cross-checks actual systemd User, WorkingDirectory, and ExecStart against expected identity.
+21. Runner-owned `.service` metadata alone is never sufficient privileged authority.
+22. Existing CLI lifecycle remains functional.
+23. CLI and Web lifecycle share the same semantic authority.
+24. `status-runners.sh --json` implements the frozen machine contract.
+25. UI action availability comes from machine-readable eligibility flags, but those flags are advisory only.
+26. Every mutation acquires the global lock before authoritative identity/state revalidation.
+27. Every privileged service mutation revalidates root-controlled systemd state immediately before execution.
+28. Create accepts only OWNER/REPO + temporary registration token in V1.
+29. Normal remove requires temporary removal token.
+30. Local recovery requires no GitHub token and preserves existing frozen recovery semantics.
+31. Destructive operation uses session-bound, operation-bound, repository-bound single-use confirmation.
+32. Only one mutation runs at a time.
+33. Mutation timeout is bounded.
+34. Local artifact archive is never deleted by Web runner removal/recovery.
+35. Direct LAN management is not available in V1.
+36. Automated tests cover §28.
+37. Full repository test suite passes.
+38. Live Debian acceptance sequence in §29 passes before release.
+39. README, Chinese README, and CHANGELOG are updated only after implementation passes audit.
 
 ## 32. Implementation boundary
 
@@ -1098,7 +1411,9 @@ status JSON adapter
 +
 non-interactive token FD adapter
 +
-privilege-separated broker
+runner-owner lifecycle controller
++
+narrow root-owned dependency/systemd helper
 +
 systemd/Tailscale setup
 +
@@ -1117,7 +1432,7 @@ logs
 artifact browser
 workflow control
 GitHub PAT automation
-direct LAN HTTP
+direct LAN access
 public Internet access
 ```
 

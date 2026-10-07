@@ -328,7 +328,7 @@ class Runtime:
             return stable_error("unknown_privileged_field")
         try:
             repository = validate_repository(str(request["repository"]))
-            runner_dir = self.validate_runner_dir(str(request["runner_dir"]))
+            runner_dir = self.validate_runner_dir(repository, str(request["runner_dir"]))
             runner_name = str(request["runner_name"])
             if op == "service_install":
                 return self.install_service(request, deadline=deadline)
@@ -364,7 +364,9 @@ class Runtime:
                 self._run(["systemctl", "disable", service], deadline=deadline, check=False)
                 self._run(["systemctl", "stop", service], deadline=deadline, check=False)
                 # Revalidate after stop and before unlinking the unit.
-                self.validate_unit(repository, runner_dir, runner_name, service)
+                self.validate_unit(
+                    repository, runner_dir, runner_name, service, deadline=deadline
+                )
                 os.unlink(f"/etc/systemd/system/{service}")
                 self._run(["systemctl", "daemon-reload"], deadline=deadline, check=True)
                 final_state, _ = self.validate_unit(
@@ -391,17 +393,16 @@ class DispatchHandler(socketserver.BaseRequestHandler):
         server: "DispatchServer" = self.server  # type: ignore[assignment]
         runtime = server.runtime
         try:
-            pid, uid, gid = socket.getpeereid(self.request) if hasattr(socket, "getpeereid") else (None, None, None)
+            import struct
+            raw = self.request.getsockopt(
+                socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+            )
+            pid, uid, gid = struct.unpack("3i", raw)
         except Exception:
-            pid = uid = gid = None
-        if uid is None:
-            try:
-                import struct
-                raw = self.request.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
-                pid, uid, gid = struct.unpack("3i", raw)
-            except Exception:
-                self.request.sendall(encode_json_line(stable_error("peer_credentials_unavailable")))
-                return
+            self.request.sendall(
+                encode_json_line(stable_error("peer_credentials_unavailable"))
+            )
+            return
         if uid != runtime.web_pw.pw_uid:
             self.request.sendall(encode_json_line(stable_error("peer_not_authorized")))
             return

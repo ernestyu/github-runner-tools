@@ -130,6 +130,23 @@ web_priv_request() {
 }
 
 web_context_check() {
+  [[ "$PRIVILEGED_FD" =~ ^[0-9]+$ ]] || die "Invalid Web privileged context."
+  python3 - "$PRIVILEGED_FD" <<'PY' || die "Web lifecycle privileged channel is not owned by the root dispatcher."
+import os
+import socket
+import struct
+import sys
+
+fd = int(sys.argv[1])
+sock = socket.socket(fileno=os.dup(fd))
+try:
+    raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    _pid, uid, _gid = struct.unpack("3i", raw)
+finally:
+    sock.close()
+if uid != 0:
+    raise SystemExit(1)
+PY
   web_priv_request '{"op":"context_check"}' || die "Web lifecycle context is not authorized by dispatcher."
 }
 

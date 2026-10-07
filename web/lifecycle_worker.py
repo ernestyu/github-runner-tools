@@ -11,15 +11,26 @@ import subprocess
 import sys
 from typing import Any
 
-from grt_web_common import ProtocolError, recv_json_line, validate_repository
+from grt_web_common import ProtocolError, validate_repository
 
 
 def read_request(fd: int) -> dict[str, Any]:
-    sock = socket.socket(fileno=os.dup(fd))
+    data = bytearray()
+    while True:
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            raise ProtocolError("request pipe closed")
+        data.extend(chunk)
+        if len(data) > 16384:
+            raise ProtocolError("request too large")
+        pos = data.find(b"\n")
+        if pos >= 0:
+            line = bytes(data[:pos])
+            break
     try:
-        req = recv_json_line(sock)
-    finally:
-        sock.close()
+        req = json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProtocolError("invalid request JSON") from exc
     if not isinstance(req, dict):
         raise ProtocolError("request must be object")
     return req

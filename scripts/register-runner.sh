@@ -11,6 +11,12 @@ ARCHIVE_PATH=""
 LOCAL_ARCHIVE_HOOK="/usr/local/lib/github-runner-tools/hooks/archive-job-completed.sh"
 LOCAL_ARCHIVE_LIB="/usr/local/lib/github-runner-tools/archive-common.sh"
 LOCAL_ARCHIVE_CONFIG="/etc/github-runner-tools/archive.conf"
+MUTATION_LOCK_DIR="/run/lock/github-runner-tools"
+MUTATION_LOCK_FILE="$MUTATION_LOCK_DIR/mutation.lock"
+WEB_MODE=0
+TOKEN_FD=""
+PRIVILEGED_FD=""
+LOCK_ALREADY_HELD=0
 
 usage() {
   cat <<'USAGE'
@@ -106,6 +112,68 @@ read_secret_from_tty() {
   printf '%s' "$value"
 }
 
+read_secret_from_fd() {
+  local fd="$1" value
+  [[ "$fd" =~ ^[0-9]+$ ]] || die "Invalid token FD."
+  IFS= read -r value <&"$fd" || true
+  [[ -n "$value" ]] || die "Token input cannot be empty."
+  printf '%s' "$value"
+}
+
+web_priv_request() {
+  local payload="$1" response
+  [[ "$WEB_MODE" == "1" && "$PRIVILEGED_FD" =~ ^[0-9]+$ ]] || die "Invalid Web privileged context."
+  printf '%s\n' "$payload" >&"$PRIVILEGED_FD" || die "Privileged dispatcher channel write failed."
+  IFS= read -r response <&"$PRIVILEGED_FD" || die "Privileged dispatcher channel closed."
+  WEB_PRIV_RESPONSE="$response"
+  jq -e '.ok == true' <<<"$response" >/dev/null 2>&1
+}
+
+web_context_check() {
+  web_priv_request '{"op":"context_check"}' || die "Web lifecycle context is not authorized by dispatcher."
+}
+
+ensure_mutation_lock() {
+  local group gid
+  if [[ "${GRT_TEST_MODE:-0}" == "1" ]]; then
+    MUTATION_LOCK_DIR="${GRT_TEST_LOCK_DIR:-${TMPDIR:-/tmp}/github-runner-tools-test-lock-$(id -u)}"
+    MUTATION_LOCK_FILE="$MUTATION_LOCK_DIR/mutation.lock"
+    mkdir -p -- "$MUTATION_LOCK_DIR"
+    : > "$MUTATION_LOCK_FILE"
+    chmod 0660 "$MUTATION_LOCK_FILE"
+    return 0
+  fi
+
+  group="$(id -gn)"
+  gid="$(id -g)"
+  if [[ ! -e "$MUTATION_LOCK_DIR" ]]; then
+    sudo install -d -o root -g root -m 0755 "$MUTATION_LOCK_DIR"
+  fi
+  [[ -d "$MUTATION_LOCK_DIR" && ! -L "$MUTATION_LOCK_DIR" ]] || die "Mutation lock directory has invalid type."
+  [[ "$(stat -c '%u' "$MUTATION_LOCK_DIR")" == "0" && "$(stat -c '%a' "$MUTATION_LOCK_DIR")" == "755" ]] ||
+    die "Mutation lock directory has invalid ownership/mode."
+
+  if [[ ! -e "$MUTATION_LOCK_FILE" ]]; then
+    sudo install -o root -g "$group" -m 0660 /dev/null "$MUTATION_LOCK_FILE"
+  fi
+  [[ -f "$MUTATION_LOCK_FILE" && ! -L "$MUTATION_LOCK_FILE" ]] || die "Mutation lock file has invalid type."
+  [[ "$(stat -c '%u' "$MUTATION_LOCK_FILE")" == "0" &&
+     "$(stat -c '%g' "$MUTATION_LOCK_FILE")" == "$gid" &&
+     "$(stat -c '%a' "$MUTATION_LOCK_FILE")" == "660" ]] ||
+    die "Mutation lock file has invalid ownership/mode."
+}
+
+acquire_mutation_lock() {
+  if [[ "$WEB_MODE" == "1" ]]; then
+    [[ "$LOCK_ALREADY_HELD" == "1" ]] || die "Web lifecycle requires dispatcher-held mutation lock."
+    web_context_check
+    return 0
+  fi
+  ensure_mutation_lock
+  exec {MUTATION_LOCK_FD}<>"$MUTATION_LOCK_FILE"
+  flock -n "$MUTATION_LOCK_FD" || die "Another runner lifecycle operation is already in progress."
+}
+
 validate_local_archive_platform() {
   [[ -r "$LOCAL_ARCHIVE_LIB" ]] || die "Local archive platform is not installed. Run scripts/setup-local-archive.sh first."
   [[ -r "$LOCAL_ARCHIVE_CONFIG" ]] || die "Local archive config is missing: $LOCAL_ARCHIVE_CONFIG"
@@ -144,6 +212,10 @@ while [[ $# -gt 0 ]]; do
     --labels) [[ $# -ge 2 ]] || die "--labels requires a value"; CLI_LABELS="$2"; shift 2 ;;
     --runner-version) [[ $# -ge 2 ]] || die "--runner-version requires a value"; CLI_RUNNER_VERSION="$2"; shift 2 ;;
     --clean-incomplete) CLEAN_INCOMPLETE=1; shift ;;
+    --web-worker) WEB_MODE=1; shift ;;
+    --token-fd) [[ $# -ge 2 ]] || die "--token-fd requires a value"; TOKEN_FD="$2"; shift 2 ;;
+    --privileged-fd) [[ $# -ge 2 ]] || die "--privileged-fd requires a value"; PRIVILEGED_FD="$2"; shift 2 ;;
+    --lock-already-held) LOCK_ALREADY_HELD=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; POSITIONAL+=("$@"); break ;;
     -*) die "Unknown option: $1" ;;
@@ -153,6 +225,14 @@ done
 set -- "${POSITIONAL[@]}"
 [[ $# -eq 1 ]] || { usage; exit 1; }
 
+if [[ "$WEB_MODE" == "1" ]]; then
+  [[ "${GRT_WEB_CONTEXT:-0}" == "1" ]] || die "Internal Web mode requires dispatcher context."
+  [[ "$TOKEN_FD" =~ ^[0-9]+$ && "$PRIVILEGED_FD" =~ ^[0-9]+$ && "$LOCK_ALREADY_HELD" == "1" ]] ||
+    die "Incomplete internal Web lifecycle context."
+elif [[ -n "$TOKEN_FD" || -n "$PRIVILEGED_FD" || "$LOCK_ALREADY_HELD" == "1" ]]; then
+  die "Internal Web options are not available in normal CLI mode."
+fi
+
 REPO="$1"
 [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "Repository must be in OWNER/REPO form."
 OWNER="${REPO%%/*}"; REPO_NAME="${REPO##*/}"
@@ -160,7 +240,8 @@ SAFE_REPO="$(sanitize_component "$REPO_NAME")" || die "Could not derive a safe r
 LOCAL_ID="$(make_local_id "$OWNER" "$REPO_NAME")" || die "Could not derive a safe local identity from: $REPO"
 (( ${#LOCAL_ID} <= MAX_LOCAL_ID_LENGTH )) || die "Internal error: local identity exceeds ${MAX_LOCAL_ID_LENGTH} characters"
 
-for cmd in bash curl tar jq sha256sum sudo uname id ps sed tr awk find mktemp cut xargs systemctl stat grep; do require_command "$cmd"; done
+for cmd in bash curl tar jq sha256sum uname id ps sed tr awk find mktemp cut xargs systemctl stat grep flock python3; do require_command "$cmd"; done
+if [[ "$WEB_MODE" != "1" ]]; then require_command sudo; fi
 
 REQUESTED_RUNNER_USER="${RUNNER_USER:-}"
 RUNNER_USER="$(id -un)"
@@ -168,7 +249,11 @@ if [[ -n "$REQUESTED_RUNNER_USER" && "$REQUESTED_RUNNER_USER" != "$RUNNER_USER" 
 USER_HOME="$(resolve_home "$RUNNER_USER")" || die "Could not resolve a valid home directory for user: $RUNNER_USER"
 [[ -d "$USER_HOME" && -x "$USER_HOME" && -r "$USER_HOME" && -w "$USER_HOME" ]] || die "Runner user's home directory is not accessible and writable: $USER_HOME"
 
-sudo -v || die "sudo access is required for dependency and systemd service setup."
+if [[ "$WEB_MODE" != "1" ]]; then
+  sudo -v || die "sudo access is required for dependency and systemd service setup."
+else
+  web_context_check
+fi
 PID1="$(ps -p 1 -o comm= | xargs)"
 [[ "$PID1" == "systemd" ]] || die "This version requires a systemd-based Linux host."
 case "$(uname -m)" in
@@ -176,9 +261,12 @@ case "$(uname -m)" in
   aarch64|arm64) RUNNER_ARCH="arm64"; RUNNER_ARCH_LABEL="ARM64" ;;
   *) die "Unsupported CPU architecture: $(uname -m)" ;;
 esac
-[[ -r /dev/tty && -w /dev/tty ]] || die "Interactive token input requires a TTY."
+if [[ "$WEB_MODE" != "1" ]]; then
+  [[ -r /dev/tty && -w /dev/tty ]] || die "Interactive token input requires a TTY."
+fi
 
 validate_local_archive_platform
+acquire_mutation_lock
 
 RUNNER_BASE_DIR="${CLI_BASE_DIR:-${RUNNER_BASE_DIR:-$USER_HOME}}"
 RUNNER_NAME="${CLI_RUNNER_NAME:-${RUNNER_NAME:-local-ci-$LOCAL_ID}}"
@@ -217,8 +305,10 @@ fi
 if [[ ! -d "$RUNNER_DIR" ]]; then mkdir -- "$RUNNER_DIR"; CREATED_RUNNER_DIR=1; fi
 cd "$RUNNER_DIR"
 
-TOKEN="$(read_secret_from_tty "Paste GitHub registration token: ")"
-[[ -n "$TOKEN" ]] || die "Registration token cannot be empty."
+if [[ "$WEB_MODE" != "1" ]]; then
+  TOKEN="$(read_secret_from_tty "Paste GitHub registration token: ")"
+  [[ -n "$TOKEN" ]] || die "Registration token cannot be empty."
+fi
 
 RELEASE_JSON="$(mktemp)"
 if [[ -n "$TAG" ]]; then API_URL="https://api.github.com/repos/actions/runner/releases/tags/$TAG"; echo "==> Fetching official GitHub Actions Runner release $TAG..."; else API_URL="https://api.github.com/repos/actions/runner/releases/latest"; echo "==> Fetching latest official GitHub Actions Runner release..."; fi
@@ -249,31 +339,62 @@ fi
 
 echo "==> Extracting runner..."
 tar xzf "$ARCHIVE_PATH"; rm -f -- "$ARCHIVE_PATH"; ARCHIVE_PATH=""
-echo "==> Installing official runner dependencies..."
-sudo ./bin/installdependencies.sh
+echo "==> Checking/installing official runner dependencies..."
+if [[ "$WEB_MODE" == "1" ]]; then
+  web_priv_request '{"op":"ensure_runner_dependencies"}' || die "Host runner dependencies are not available for Web lifecycle."
+  if command -v ldd >/dev/null 2>&1 && ldd ./bin/Runner.Listener 2>/dev/null | grep -q 'not found'; then
+    die "Runner dependencies are missing. Re-run Web platform setup before creating a runner."
+  fi
+else
+  sudo ./bin/installdependencies.sh
+fi
 
 echo "==> Registering runner for https://github.com/$REPO ..."
-./config.sh \
-  --url "https://github.com/$REPO" \
-  --token "$TOKEN" \
-  --name "$RUNNER_NAME" \
-  --labels "$RUNNER_LABELS" \
-  --work "_work" \
-  --unattended
+if [[ "$WEB_MODE" == "1" ]]; then
+  PTY_ADAPTER="${GRT_PTY_ADAPTER:-/usr/local/lib/github-runner-tools/web/pty_token_adapter.py}"
+  [[ -x "$PTY_ADAPTER" ]] || die "Web PTY token adapter is unavailable."
+  python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode create -- \
+    ./config.sh \
+      --url "https://github.com/$REPO" \
+      --name "$RUNNER_NAME" \
+      --labels "$RUNNER_LABELS" \
+      --work "_work" ||
+    die "Runner registration failed or the runner version does not support secure interactive token input."
+else
+  ./config.sh \
+    --url "https://github.com/$REPO" \
+    --token "$TOKEN" \
+    --name "$RUNNER_NAME" \
+    --labels "$RUNNER_LABELS" \
+    --work "_work" \
+    --unattended
+  unset TOKEN
+fi
 REGISTRATION_COMPLETE=1
-unset TOKEN
 
 echo "==> Configuring local artifact completed hook..."
 configure_runner_archive_hook "$RUNNER_DIR/.env"
 
-echo "==> Installing systemd service for user $RUNNER_USER ..."
-sudo ./svc.sh install "$RUNNER_USER"
-echo "==> Starting runner service..."
-sudo ./svc.sh start
+if [[ "$WEB_MODE" == "1" ]]; then
+  INSTALL_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" --arg runner_name "$RUNNER_NAME" \
+    '{op:"service_install",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name}')"
+  web_priv_request "$INSTALL_REQ" || die "Privileged canonical service installation failed."
+  SERVICE_NAME="$(jq -er '.service' <<<"$WEB_PRIV_RESPONSE")" || die "Privileged service installer returned invalid identity."
+  printf '%s\n' "$SERVICE_NAME" > "$RUNNER_DIR/.service"
 
-echo
-echo "==> Runner status"
-sudo ./svc.sh status
+  START_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" --arg runner_name "$RUNNER_NAME" --arg service "$SERVICE_NAME" \
+    '{op:"service_start",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,service:$service}')"
+  web_priv_request "$START_REQ" || die "Privileged runner service start failed."
+else
+  echo "==> Installing systemd service for user $RUNNER_USER ..."
+  sudo ./svc.sh install "$RUNNER_USER"
+  echo "==> Starting runner service..."
+  sudo ./svc.sh start
+
+  echo
+  echo "==> Runner status"
+  sudo ./svc.sh status
+fi
 
 echo
 cat <<DONE

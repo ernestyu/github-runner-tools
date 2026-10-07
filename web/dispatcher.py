@@ -65,6 +65,14 @@ def stable_error(code: str) -> dict[str, Any]:
     return {"ok": False, "error": code}
 
 
+def unix_peer_uid(sock: socket.socket) -> int:
+    import struct
+
+    raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    _pid, uid, _gid = struct.unpack("3i", raw)
+    return int(uid)
+
+
 class Runtime:
     def __init__(self, config_path: str):
         cfg = load_key_value(config_path)
@@ -423,11 +431,7 @@ class DispatchHandler(socketserver.BaseRequestHandler):
         server: "DispatchServer" = self.server  # type: ignore[assignment]
         runtime = server.runtime
         try:
-            import struct
-            raw = self.request.getsockopt(
-                socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
-            )
-            pid, uid, gid = struct.unpack("3i", raw)
+            uid = unix_peer_uid(self.request)
         except Exception:
             self.request.sendall(
                 encode_json_line(stable_error("peer_credentials_unavailable"))

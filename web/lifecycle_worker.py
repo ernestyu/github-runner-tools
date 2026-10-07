@@ -11,7 +11,7 @@ import subprocess
 import sys
 from typing import Any
 
-from grt_web_common import ProtocolError, load_key_value, recv_json_line, validate_repository
+from grt_web_common import ProtocolError, recv_json_line, validate_repository
 
 
 def read_request(fd: int) -> dict[str, Any]:
@@ -55,12 +55,13 @@ def main() -> int:
         request_fd = int(os.environ["GRT_REQUEST_FD"])
         token_fd = int(os.environ["GRT_TOKEN_FD"])
         privileged_fd = int(os.environ["GRT_PRIVILEGED_FD"])
-        config_path = os.environ["GRT_WEB_CONFIG"]
+        runner_user = os.environ["GRT_RUNNER_USER"]
+        runner_home = os.environ["GRT_RUNNER_HOME"]
+        cli_dir = os.environ["GRT_CLI_DIR"]
+        pty_adapter = os.environ["GRT_PTY_ADAPTER"]
     except (KeyError, ValueError):
         return 70
 
-    cfg = load_key_value(config_path)
-    runner_user = cfg["RUNNER_USER"]
     pw = pwd.getpwnam(runner_user)
     if os.geteuid() != pw.pw_uid or os.getegid() != pw.pw_gid:
         return 71
@@ -80,27 +81,21 @@ def main() -> int:
         return 73
 
     op = request.get("op")
-    cli_dir = cfg.get("CLI_DIR", "/usr/local/lib/github-runner-tools/web/cli")
     status_script = os.path.join(cli_dir, "status-runners.sh")
     register_script = os.path.join(cli_dir, "register-runner.sh")
     remove_script = os.path.join(cli_dir, "remove-runner.sh")
 
     env = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "HOME": cfg["RUNNER_HOME"],
+        "HOME": runner_home,
         "USER": runner_user,
         "LOGNAME": runner_user,
         "GRT_WEB_CONTEXT": "1",
         "GRT_PRIVILEGED_FD": str(privileged_fd),
         "GRT_TOKEN_FD": str(token_fd),
         "GRT_WEB_LOCK_HELD": "1",
-        "GRT_PTY_ADAPTER": cfg.get(
-            "PTY_ADAPTER", "/usr/local/lib/github-runner-tools/web/pty_token_adapter.py"
-        ),
+        "GRT_PTY_ADAPTER": pty_adapter,
     }
-    archive_test = cfg.get("GRT_ARCHIVE_TEST_MODE")
-    if archive_test:
-        env["GRT_TEST_MODE"] = archive_test
 
     try:
         if op == "list":

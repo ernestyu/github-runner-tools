@@ -1304,7 +1304,17 @@ token absent
 token never appears in captured argv/env/log/file/response
 ```
 
-### 28.4 Status JSON
+### 28.4 Dispatch identity / UID path
+
+Tests must verify that the Web process runs as `grt-web`, the dispatch socket rejects non-`grt-web` peers, `actions` cannot connect to the dispatch socket, the dispatcher launches only the fixed installed worker, and the worker begins lifecycle logic as the configured `actions` UID/GID after supplementary groups are cleared.
+
+### 28.5 Final token consumer
+
+Tests must verify end-to-end that registration/removal tokens are absent from the final runner configuration/removal process argv, environment, files, logs, HTTP responses, session state, and confirmation state.
+
+The supported runner version must complete the Web token path through controlled stdin/PTY input without a secret `--token` argument. If that behavior is unavailable, the Web mutation must fail rather than fall back to argv secret transport.
+
+### 28.6 Status JSON
 
 Cover:
 
@@ -1323,15 +1333,18 @@ can_remove
 can_recover_local
 ```
 
-### 28.5 Remove
+### 28.7 Remove
 
 ```text
 normal removal requires removal token
 recovery never asks for removal token
 ambiguous item exposes no destructive action
+normal-removal confirmation page initially contains an empty token field
+removal token is submitted only in the final confirmation POST
+removal token is not stored across requests
 ```
 
-### 28.6 Confirmation
+### 28.8 Confirmation
 
 ```text
 missing confirmation nonce
@@ -1342,7 +1355,7 @@ nonce for another operation
 → all rejected
 ```
 
-### 28.7 Mutation-time revalidation / TOCTOU
+### 28.9 Mutation-time revalidation / TOCTOU
 
 Cover at least:
 
@@ -1359,7 +1372,7 @@ service identity changes before privileged operation
 → systemd cross-check rejects operation
 ```
 
-### 28.8 Privileged-helper input safety
+### 28.10 Privileged-helper input safety
 
 Reject:
 
@@ -1370,7 +1383,7 @@ Reject:
 - arbitrary command;
 - shell metacharacter injection attempts.
 
-### 28.9 Privilege boundary
+### 28.11 Privilege boundary
 
 Tests must prove:
 
@@ -1393,21 +1406,31 @@ privileged helper rejects a systemd unit whose WorkingDirectory != expected cano
 
 privileged helper rejects an unexpected ExecStart
 
+privileged helper rejects an unexpected FragmentPath or writable unit
+
+privileged helper rejects an unexpected drop-in or extra Exec* command
+
 actions receives no new passwordless root command
 ```
 
-### 28.10 Mutation lock
+### 28.12 Mutation lock
 
 ```text
 first mutation active
 second mutation request
 → 409
 → second mutation not started
+
+CLI holds shared lock
+→ Web mutation does not start
+
+Web holds shared lock
+→ CLI register/remove/recover does not start
 ```
 
 Also verify authoritative identity revalidation happens after lock acquisition.
 
-### 28.11 Secret redaction
+### 28.13 Secret redaction
 
 Captured:
 
@@ -1425,7 +1448,7 @@ must not contain registration/removal token.
 
 Framework debug/error handling must not echo submitted form values.
 
-### 28.12 Request bounds
+### 28.14 Request bounds
 
 Cover:
 
@@ -1436,7 +1459,7 @@ oversized token field
 → rejected before lifecycle execution
 ```
 
-### 28.13 CLI/Web parity
+### 28.15 CLI/Web parity
 
 For the same fixture state, CLI/shared lifecycle and Web/controller must agree on at least:
 

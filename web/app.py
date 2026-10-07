@@ -18,6 +18,7 @@ from grt_web_common import (
     DEFAULT_AUTH_CONFIG,
     DEFAULT_CONFIG,
     MAX_REQUEST_BYTES,
+    MAX_REPOSITORY_LEN,
     MAX_TOKEN_LEN,
     encode_json_line,
     load_key_value,
@@ -38,6 +39,53 @@ COOKIE_NAME = "grt_session"
 
 def now() -> float:
     return time.time()
+
+
+def session_is_valid(sess: dict[str, Any], at: float | None = None) -> bool:
+    t = now() if at is None else at
+    return (
+        t - float(sess["last"]) <= SESSION_IDLE
+        and t - float(sess["created"]) <= SESSION_ABSOLUTE
+    )
+
+
+def login_attempt_allowed(source: str, at: float | None = None) -> bool:
+    t = now() if at is None else at
+    attempts = [x for x in LOGIN_ATTEMPTS.get(source, []) if t - x < 300]
+    if attempts:
+        LOGIN_ATTEMPTS[source] = attempts
+    else:
+        LOGIN_ATTEMPTS.pop(source, None)
+    return len(attempts) < 8
+
+
+def record_login_attempt(source: str, at: float | None = None) -> None:
+    LOGIN_ATTEMPTS.setdefault(source, []).append(now() if at is None else at)
+
+
+def consume_confirmation(
+    sess: dict[str, Any], nonce: str, expected_op: str, at: float | None = None
+) -> dict[str, Any] | None:
+    pending = sess["confirm"].pop(nonce, None)
+    t = now() if at is None else at
+    if (
+        not isinstance(pending, dict)
+        or pending.get("op") != expected_op
+        or pending.get("expires", 0) < t
+    ):
+        return None
+    return pending
+
+
+def form_fields_within_bounds(form: dict[str, str]) -> bool:
+    limits = {
+        "repository": MAX_REPOSITORY_LEN,
+        "token": MAX_TOKEN_LEN,
+        "password": 256,
+        "csrf": 256,
+        "nonce": 256,
+    }
+    return all(len(value) <= limits.get(key, 4096) for key, value in form.items())
 
 
 def dispatch(config: dict[str, str], request: dict[str, Any]) -> dict[str, Any]:
@@ -169,7 +217,7 @@ class Handler(BaseHTTPRequestHandler):
         if not sess:
             return None
         t = now()
-        if t - sess["last"] > SESSION_IDLE or t - sess["created"] > SESSION_ABSOLUTE:
+        if not session_is_valid(sess, t):
             SESSIONS.pop(sid, None)
             return None
         sess["last"] = t
@@ -196,7 +244,11 @@ class Handler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, ValueError):
             self._send(400, page("Bad request", "<h1>Invalid form</h1>"))
             return None
-        return {key: values[-1] for key, values in parsed.items()}
+        form = {key: values[-1] for key, values in parsed.items()}
+        if not form_fields_within_bounds(form):
+            self._send(413, page("Request rejected", "<h1>Request field too large</h1>"))
+            return None
+        return form
 
     @staticmethod
     def _csrf_ok(form: dict[str, str], sess: dict[str, Any]) -> bool:
@@ -281,12 +333,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/login":
             source = self._source()
             self.app.prune()
-            attempts = LOGIN_ATTEMPTS.setdefault(source, [])
-            if len(attempts) >= 8:
+            if not login_attempt_allowed(source):
                 self._send(429, page("Too many attempts", "<h1>Try again later</h1>"))
                 return
             password = form.get("password", "")
-            attempts.append(now())
+            record_login_attempt(source)
             if len(password) > 256 or not verify_password(password, self.app.password_hash):
                 self._send(403, page("Login failed", "<h1>Login failed</h1>"))
                 return
@@ -377,13 +428,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path in ("/remove/confirm", "/recover/confirm"):
             nonce = form.get("nonce", "")
-            pending = sess["confirm"].pop(nonce, None)
             expected_op = "remove" if path.startswith("/remove") else "recover_local"
-            if (
-                not pending
-                or pending.get("op") != expected_op
-                or pending.get("expires", 0) < now()
-            ):
+            pending = consume_confirmation(sess, nonce, expected_op)
+            if pending is None:
                 self._send(403, page("Rejected", "<h1>Confirmation expired or invalid.</h1>"))
                 return
             repo = pending["repository"]

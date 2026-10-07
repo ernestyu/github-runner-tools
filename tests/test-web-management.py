@@ -889,6 +889,11 @@ class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
                     raise subprocess.TimeoutExpired("worker", timeout)
                 return ('{"ok":true}', "")
 
+            def wait(self, timeout=None):
+                if not self.release.wait(timeout=timeout or 5):
+                    raise subprocess.TimeoutExpired("worker", timeout)
+                return self.returncode
+
         with tempfile.TemporaryDirectory() as td:
             lock_path = pathlib.Path(td) / "mutation.lock"
             lock_path.touch()
@@ -913,6 +918,7 @@ class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
                     server, {"op": "create", "repository": "owner/repo", "token": "temporary"}
                 )
 
+            real_popen = subprocess.Popen
             with mock.patch(
                 "dispatcher.subprocess.Popen",
                 side_effect=lambda *a, **kw: BlockingProc(entered, release),
@@ -926,12 +932,13 @@ class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
                         f'RUNNER_TOOLS_LIB_ONLY=1 source "{ROOT}/scripts/{script}"; '
                         "acquire_mutation_lock"
                     )
-                    proc = subprocess.run(
+                    proc = real_popen(
                         ["bash", "-c", command],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
                         text=True,
-                        capture_output=True,
-                        check=False,
                     )
+                    _stdout, _stderr = proc.communicate(timeout=5)
                     self.assertNotEqual(proc.returncode, 0, script)
                 release.set()
                 thread.join(timeout=5)

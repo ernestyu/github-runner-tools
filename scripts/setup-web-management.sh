@@ -12,6 +12,8 @@ AUTH_FILE="$CONFIG_DIR/web-auth.conf"
 DISPATCH_SOCKET="/run/github-runner-tools/web-dispatch.sock"
 LOCK_DIR="/run/lock/github-runner-tools"
 LOCK_FILE="$LOCK_DIR/mutation.lock"
+MANAGED_MARKER="# managed-by=github-runner-tools-web-v1"
+INSTALL_MARKER="$INSTALL_ROOT/.managed-by-github-runner-tools-web-v1"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 require_command() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
@@ -79,6 +81,18 @@ fi
 
 sudo -v || die "sudo access is required for explicit Web setup."
 
+# Refuse to replace unmanaged Web components.
+for managed_file in "$CONFIG_FILE" "$AUTH_FILE"   /etc/systemd/system/github-runner-tools-web.service   /etc/systemd/system/github-runner-tools-dispatch.service; do
+  if sudo test -e "$managed_file" && ! sudo grep -Fqx "$MANAGED_MARKER" "$managed_file" 2>/dev/null; then
+    die "Refusing to replace unmanaged Web Management file: $managed_file"
+  fi
+done
+
+if sudo test -e "$INSTALL_ROOT"; then
+  sudo test -f "$INSTALL_MARKER" ||
+    die "Refusing to replace unmanaged Web install directory: $INSTALL_ROOT"
+fi
+
 # The shared lock is core lifecycle infrastructure. Web setup reuses the same
 # root-controlled path and does not create a Web-specific lock authority.
 if sudo test -L "$LOCK_DIR"; then die "Shared mutation lock directory must not be a symlink."; fi
@@ -109,6 +123,10 @@ WEB_GID="$(id -g "$WEB_USER")"
 [[ "$WEB_UID" != "$RUNNER_UID" ]] || die "Web user must differ from runner owner."
 
 sudo install -d -o root -g root -m 0755 "$INSTALL_ROOT" "$INSTALL_ROOT/cli"
+TMP_MARKER="$(mktemp)"
+printf '%s\n' "$MANAGED_MARKER" > "$TMP_MARKER"
+sudo install -o root -g root -m 0644 "$TMP_MARKER" "$INSTALL_MARKER"
+rm -f -- "$TMP_MARKER"
 for file in grt_web_common.py app.py dispatcher.py lifecycle_worker.py pty_token_adapter.py; do
   [[ -f "$ROOT/web/$file" ]] || die "Missing source file: web/$file"
   sudo install -o root -g root -m 0755 "$ROOT/web/$file" "$INSTALL_ROOT/$file"
@@ -126,6 +144,7 @@ else
 fi
 TMP_CONFIG="$(mktemp)"
 cat > "$TMP_CONFIG" <<CFG
+$MANAGED_MARKER
 WEB_BIND_ADDRESS=127.0.0.1
 WEB_PORT=$WEB_PORT
 WEB_USER=$WEB_USER
@@ -152,11 +171,16 @@ if [[ ! -f "$AUTH_FILE" ]]; then
   PASSWORD_HASH="$(printf '%s' "$PASSWORD" | PYTHONPATH="$ROOT/web" python3 -c 'import sys; from grt_web_common import password_hash; print(password_hash(sys.stdin.read()))')"
   unset PASSWORD PASSWORD2
   TMP_AUTH="$(mktemp)"
-  printf 'PASSWORD_HASH=%s\n' "$PASSWORD_HASH" > "$TMP_AUTH"
+  {
+    printf '%s\n' "$MANAGED_MARKER"
+    printf 'PASSWORD_HASH=%s\n' "$PASSWORD_HASH"
+  } > "$TMP_AUTH"
   unset PASSWORD_HASH
   sudo install -o root -g "$WEB_USER" -m 0640 "$TMP_AUTH" "$AUTH_FILE"
   rm -f -- "$TMP_AUTH"
 else
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$AUTH_FILE")" == "root:$WEB_USER:640:regular file" ]] ||
+    die "Existing Web authentication config has unexpected ownership/mode/type."
   echo "==> Preserving existing Web authentication config: $AUTH_FILE"
 fi
 
@@ -165,6 +189,7 @@ DISPATCH_UNIT="/etc/systemd/system/github-runner-tools-dispatch.service"
 
 TMP_WEB_UNIT="$(mktemp)"
 cat > "$TMP_WEB_UNIT" <<UNIT
+$MANAGED_MARKER
 [Unit]
 Description=github-runner-tools Web Management
 After=network-online.target tailscaled.service github-runner-tools-dispatch.service
@@ -195,6 +220,7 @@ UNIT
 
 TMP_DISPATCH_UNIT="$(mktemp)"
 cat > "$TMP_DISPATCH_UNIT" <<UNIT
+$MANAGED_MARKER
 [Unit]
 Description=github-runner-tools privileged Web dispatcher
 After=network-online.target
@@ -232,8 +258,10 @@ for installed in "$INSTALL_ROOT"/*.py "$INSTALL_ROOT"/cli/*.sh; do
 done
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now github-runner-tools-dispatch.service
-sudo systemctl enable --now github-runner-tools-web.service
+sudo systemctl enable github-runner-tools-dispatch.service
+sudo systemctl enable github-runner-tools-web.service
+sudo systemctl restart github-runner-tools-dispatch.service
+sudo systemctl restart github-runner-tools-web.service
 
 echo
 echo "Web Management installed and enabled."

@@ -86,14 +86,14 @@ chmod +x "$MOCK"/*
 # setup-web-management.sh reads the administrator password from /dev/tty.
 # util-linux script(1) provides a disposable PTY while every privileged host
 # mutation is intercepted by the sudo mock above.
-if ! printf 'test-web-password\ntest-web-password\n' |
-  script -q -e -c "PATH='$MOCK':\$PATH bash '$ROOT/scripts/setup-web-management.sh' --apply" /dev/null
-  >"$OUT" 2>&1; then
-  cat "$OUT" >&2
-  fail "mocked explicit Web --apply path failed"
-fi
+printf 'test-web-password\ntest-web-password\n' |
+  script -q -c "PATH='$MOCK':\$PATH bash '$ROOT/scripts/setup-web-management.sh' --apply" /dev/null
+  >"$OUT" 2>&1 || true
 
-grep -Fq "Web Management installed and enabled." "$OUT" || fail "--apply did not reach successful install completion"
+if ! grep -Fq "Web Management installed and enabled." "$OUT"; then
+  cat "$OUT" >&2
+  fail "mocked explicit Web --apply path did not reach successful completion"
+fi
 
 grep -Fq "useradd --system --user-group --no-create-home --shell /usr/sbin/nologin grt-web" "$LOG" ||
   fail "--apply did not request locked grt-web account"

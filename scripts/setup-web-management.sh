@@ -83,14 +83,24 @@ sudo -v || die "sudo access is required for explicit Web setup."
 
 # Refuse to replace unmanaged Web components.
 for managed_file in "$CONFIG_FILE" "$AUTH_FILE"   /etc/systemd/system/github-runner-tools-web.service   /etc/systemd/system/github-runner-tools-dispatch.service; do
+  if sudo test -L "$managed_file"; then
+    die "Refusing symlinked Web Management file: $managed_file"
+  fi
   if sudo test -e "$managed_file" && ! sudo grep -Fqx "$MANAGED_MARKER" "$managed_file" 2>/dev/null; then
     die "Refusing to replace unmanaged Web Management file: $managed_file"
   fi
 done
 
+if sudo test -L "$INSTALL_ROOT"; then
+  die "Refusing symlinked Web install directory: $INSTALL_ROOT"
+fi
 if sudo test -e "$INSTALL_ROOT"; then
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$INSTALL_ROOT")" == "root:root:755:directory" ]] ||
+    die "Existing Web install directory has unexpected ownership/mode/type."
   sudo test -f "$INSTALL_MARKER" ||
     die "Refusing to replace unmanaged Web install directory: $INSTALL_ROOT"
+  sudo grep -Fqx "$MANAGED_MARKER" "$INSTALL_MARKER" ||
+    die "Web install directory marker is invalid."
 fi
 
 # The shared lock is core lifecycle infrastructure. Web setup reuses the same

@@ -101,7 +101,7 @@ V1 must not add:
 
 ## 5. Architecture
 
-V1 uses three security identities with a narrow privilege split.
+V1 uses three OS identities and a fixed local execution path.
 
 ```text
 Browser / phone
@@ -109,40 +109,63 @@ Browser / phone
 Tailscale Serve
     ↓ loopback HTTP
 github-runner-tools-web.service
-    user: grt-web
-    ↓ typed local IPC
-management controller
+    UID: grt-web
+    ↓ typed Unix socket
+github-runner-tools-dispatch.service
+    UID: root
+    ↓ fixed worker launch with UID/GID drop
+github-runner-tools lifecycle worker
+    UID/GID: actions
     ↓
-    ├── runner-owner lifecycle
-    │     executes as: actions
-    │     registration/configuration/local runner files
-    │
-    └── privileged service helper
-          root-owned
-          system-level dependency/service operations only
+    ordinary runner lifecycle
+    +
+    request-scoped private control channel for narrow host service operations
 ```
 
-The Web frontend must never run as root.
+The roles are frozen as follows.
 
-The normal runner lifecycle must not run wholesale as root.
+### 5.1 Web frontend
 
-The runner owner remains the same normal Linux account used by the existing CLI, for example:
+The Web process runs as `grt-web`.
 
-```text
-actions
-```
+It owns only HTTP, session, CSRF, confirmation, and rendering behavior.
 
-Root privilege is limited to host-level operations that genuinely require it, specifically:
+It must not switch UID, manipulate runner directories directly, execute runner configuration scripts, call system service commands, or receive sudo rights.
 
-- one-time/host-level runner dependency installation when required;
-- systemd service installation;
-- systemd service start/stop/restart/state management;
-- systemd service uninstall/removal;
-- installation of root-owned Web/helper/configuration files during setup.
+### 5.2 Root dispatcher
 
-Runner registration with GitHub, runner directory creation, `.runner` / `.credentials` creation, archive-hook configuration, GitHub unregister, and ordinary runner-directory cleanup must execute as the runner owner, not root.
+The dispatcher runs as root but is not the lifecycle implementation.
 
-The privileged helper must never expose a TCP listener and must never become a general lifecycle executor.
+For an accepted request it may only:
+
+1. authenticate the Web peer;
+2. validate the fixed request schema;
+3. acquire the global mutation lock for mutating requests;
+4. create request-scoped pipes/control channels;
+5. launch one fixed root-owned lifecycle worker;
+6. drop the child process to the configured runner-owner UID/GID before lifecycle logic starts;
+7. handle only the narrow privileged host-service operations defined later in this SPEC;
+8. enforce timeout and collect a sanitized result.
+
+It must not execute repository checkout code or runner-owned lifecycle code as root.
+
+### 5.3 Runner-owner lifecycle worker
+
+The lifecycle worker is installed as root-owned, non-runner-writable code but executes as the configured runner owner, normally `actions`.
+
+It performs the shared lifecycle semantics for List, Create, Normal Remove, and Recover Local.
+
+When a host-level privileged operation is required, the worker uses only the private request-scoped control channel inherited from the dispatcher.
+
+An unrelated process running as `actions` does not have that request-scoped channel.
+
+### 5.4 Privilege boundary
+
+Root privilege is limited to host-level dependency and service-management operations.
+
+Runner registration, runner-directory creation, runner credentials/configuration, archive-hook configuration, GitHub unregister, and verified runner-directory cleanup execute as `actions`, not root.
+
+The whole runner lifecycle must never execute as root.
 
 ## 6. Network exposure
 

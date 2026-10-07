@@ -149,7 +149,13 @@ if [[ "$JSON_MODE" == "1" ]]; then
     else
       repository="$(repo_from_new_dir_residue "$dir" 2>/dev/null || true)"
       if [[ -n "$repository" && -x "$dir/svc.sh" ]]; then
-        runner_name="$(strict_service_name "$dir/.service" 2>/dev/null | sed -E 's/^actions\.runner\.[^.]+\.//; s/\.service$//' || true)"
+        service_name="$(strict_service_name "$dir/.service" 2>/dev/null || true)"
+        scope="$(printf '%s' "${repository/\//-}" | sed -E 's/[^0-9A-Za-z._-]/-/g')"
+        prefix="actions.runner.$scope."
+        suffix=".service"
+        if [[ "$service_name" == "$prefix"*"$suffix" ]]; then
+          runner_name="${service_name:${#prefix}:${#service_name}-${#prefix}-${#suffix}}"
+        fi
         management_state="recoverable_residue"
       elif [[ -n "$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
         management_state="incomplete"

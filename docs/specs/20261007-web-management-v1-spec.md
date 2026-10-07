@@ -346,31 +346,61 @@ The runner owner must not receive access to the privileged-helper socket or anot
 
 Any controller path that performs runner-owner lifecycle work must explicitly execute with the configured runner-owner UID/GID and must not inherit root identity.
 
-## 10. Privileged service helper
+## 10. Privileged dispatcher/helper contract
 
-### 10.1 Purpose
+### 10.1 Public Unix socket
 
-The privileged component exists only for host-level operations that cannot be performed safely as the runner owner.
-
-It is not a general broker for `list/create/remove/recover_local`.
-
-Suggested installed location:
+The persistent privileged IPC endpoint is:
 
 ```text
-/usr/local/lib/github-runner-tools/web/
+/run/github-runner-tools/web-dispatch.sock
 ```
 
-Any privileged IPC endpoint must be a root-controlled Unix-domain socket under:
+Required ownership:
 
 ```text
-/run/github-runner-tools/
+root:grt-web
+mode 0660
 ```
 
-No privileged component may expose TCP.
+The runner owner `actions` must not belong to the `grt-web` group and must not be able to connect to this socket.
 
-### 10.2 Allowed privileged operation classes
+The dispatcher must verify Unix peer credentials and accept requests only from the configured `grt-web` UID.
 
-The helper may expose only narrowly typed host operations required by the lifecycle, such as:
+### 10.2 Request schema
+
+The public socket accepts only typed operations:
+
+```text
+list
+create
+remove
+recover_local
+```
+
+Request data may contain only fields defined for the selected operation.
+
+No request may supply an executable path, shell command, arbitrary path, UID/GID, service name, or systemd unit name.
+
+Unknown operations and unknown fields are rejected before worker launch.
+
+### 10.3 Worker launch
+
+The dispatcher launches exactly one fixed, root-owned lifecycle worker path.
+
+Before lifecycle logic starts, the child must drop supplementary groups and switch to the configured runner-owner UID/GID.
+
+Failure to complete and verify the identity drop is fatal.
+
+The dispatcher must not execute lifecycle logic while retaining root identity.
+
+### 10.4 Private privileged control channel
+
+The lifecycle worker may request privileged host operations only through a private, request-scoped socketpair/file descriptor inherited from its dispatcher parent.
+
+This channel is never exposed through the filesystem and is unavailable to unrelated `actions` processes.
+
+Allowed privileged operation classes are limited to:
 
 ```text
 ensure_runner_dependencies
@@ -382,129 +412,79 @@ service_state
 service_uninstall
 ```
 
-Exact operation names may differ, but the semantic scope may not expand beyond dependency/service management.
+The exact internal names may differ, but the semantic scope may not expand beyond dependency and system-service management.
 
-There is no privileged:
+### 10.5 Root-owned code boundary
 
-```text
-create_runner
-remove_runner
-recover_runner
-exec
-shell
-command
-path
-script
-argv
-```
+Root execution is limited to root-owned, non-runner-writable installed code.
 
-operation.
+Root must never execute:
 
-The helper must reject unknown operations and unknown fields.
+- repository checkout code under the runner owner's home;
+- runner-owned `svc.sh`;
+- runner-owned `config.sh`;
+- runner-owned `runsvc.sh`;
+- another executable writable by `actions` or `grt-web`;
+- a browser-supplied executable/path.
 
-### 10.3 No arbitrary shell execution
-
-The helper must not build shell command strings from Web input.
-
-The implementation must not use:
-
-```text
-shell=True
-os.system
-eval
-bash -c <user-controlled-string>
-```
-
-for Web-supplied values.
-
-### 10.4 Root-owned code boundary
-
-The privileged helper must execute only root-owned, non-runner-writable installed code as root.
-
-It must never execute as root:
-
-- the repository checkout under the runner owner's home;
-- a runner-owned `svc.sh`;
-- a runner-owned `config.sh`;
-- a runner-owned `runsvc.sh`;
-- another executable/script whose contents are writable by `actions`;
-- a path supplied by the browser.
-
-A permanent Web privilege path must not reduce to:
-
-```text
-NOPASSWD sudo /home/actions/.../svc.sh
-```
-
-The Web feature must not grant `actions` any new passwordless root command.
-
-### 10.5 Runner-owner execution
-
-Lifecycle operations that do not require root must execute as the configured runner owner.
-
-Required runner-owner operations include at least:
-
-```text
-create/canonicalize runner directory
-download/verify/extract runner package
-config.sh registration
-write .runner/.credentials/.env
-GitHub unregister through config.sh remove
-remove verified runner-owned directory
-```
-
-If a controller is launched from a privileged context, it must explicitly drop to the configured runner-owner UID/GID before performing these operations.
+No new passwordless sudo permission may be granted to `actions` or `grt-web`.
 
 ### 10.6 Dependency installation
 
-The existing CLI currently invokes the official runner dependency installer through sudo during registration.
+The existing CLI may use the official runner dependency installer interactively with sudo.
 
-For Web V1, dependency handling must not execute a runner-owner-writable installer as root.
+Web V1 must not turn the extracted runner-owned dependency script into a permanent privileged Web path.
 
-Implementation must choose one safe path:
+For Web Create, required host dependencies must be installed during root-controlled platform setup or through a fixed root-owned dependency helper. If dependencies are missing, Web Create fails with a stable error rather than falling back to root execution of runner-owned code.
 
-1. move host dependency installation into one-time root-controlled Web/platform setup; or
-2. provide an equivalent root-owned dependency helper whose inputs are not runner-controlled.
+### 10.7 Full systemd authority validation
 
-A runner-owned extracted `bin/installdependencies.sh` must not become a reusable privileged Web execution path.
+Runner-owned `.service` metadata is not sufficient authority for a privileged service mutation.
 
-### 10.7 systemd unit trust boundary
+For every existing service mutation, root-controlled systemd state must establish the complete managed-unit execution surface.
 
-Runner-owned `.service` metadata is not sufficient authority for a privileged systemd mutation.
-
-Immediately before any privileged service mutation, the helper/controller must cross-check the target against root-controlled systemd state.
-
-For an existing service, validation must establish at least:
+At minimum validate:
 
 ```text
-requested OWNER/REPO
-→ expected canonical runner directory
-→ candidate service name
-→ actual systemd unit exists or is in the expected absent transition state
-→ systemd User == configured runner owner
-→ systemd WorkingDirectory == exact canonical runner directory
-→ systemd ExecStart resolves to the expected runner service entrypoint for that directory
+FragmentPath
+unit file owner and write permissions
+DropInPaths
+User
+WorkingDirectory
+ExecStart
+ExecStartPre
+ExecStartPost
+ExecStop
+ExecStopPost
+ExecReload
 ```
 
-A mismatch or an inability to establish these properties is:
+Required rules:
+
+1. FragmentPath must be the expected root-controlled managed unit location.
+2. The unit file must be root-owned and not writable by `actions` or `grt-web`.
+3. V1 managed runner units must have no unverified drop-ins.
+4. User must equal the configured runner owner.
+5. WorkingDirectory must equal the exact canonical runner directory.
+6. ExecStart must match the canonical managed runner-service schema for that directory.
+7. Unexpected ExecStartPre, ExecStartPost, ExecStop, ExecStopPost, or ExecReload commands are forbidden.
+8. Every command systemd could trigger through the requested mutation must match the managed allowlist/schema.
+
+Any mismatch or inability to prove these properties is:
 
 ```text
-identity unknown
+identity/provenance unknown
 → FAIL CLOSED
-→ no privileged mutation
+→ no privileged service mutation
 ```
 
-The helper must not trust a modified runner-owned `.service` file by itself.
+### 10.8 Service installation
 
-For service installation, the implementation must use a root-owned service-installation mechanism. It must not execute runner-owned `svc.sh` as root.
+Web-created services must be installed through a root-owned canonical unit mechanism.
 
-### 10.8 Peer identity
+The helper must not run runner-owned `svc.sh install` as root.
 
-If a Unix socket is used, its filesystem permissions must deny the runner owner access.
-
-The privileged helper must also verify peer credentials and accept only the intended Web/controller service identity.
-
-Filesystem permissions alone are not the sole peer-identity check.
+The installed unit must pass §10.7 validation before first start.
 
 ## 11. Lifecycle authority and mutation revalidation
 

@@ -146,8 +146,7 @@ PATH="$SETUP_MOCK:$PATH" bash "$ROOT/scripts/setup-web-management.sh" --dry-run 
 # Exercise the real OS credential transition used by the Web worker: root
 # creates the private socket, child drops all groups/UID/GID to the runner
 # owner, and the child must see a root peer on that inherited AF_UNIX socket.
-sudo python3 - "$ROOT" "$(id -u)" "$(id -g)" <<'PY' ||
-  fail "real root-to-runner UID/GID drop and root-peer contract failed"
+sudo python3 - "$ROOT" "$(id -u)" "$(id -g)" <<'PY' || fail "real root-to-runner UID/GID drop and root-peer contract failed"
 import os
 import socket
 import sys

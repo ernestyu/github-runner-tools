@@ -24,6 +24,7 @@ from grt_web_common import (
     recv_json_line,
     secure_random_token,
     validate_repository,
+    validate_temporary_token,
     verify_password,
 )
 
@@ -122,10 +123,9 @@ class Handler(BaseHTTPRequestHandler):
         print(f'{self.client_address[0]} {self.command} {safe_path} {args[1] if len(args)>1 else ""}')
 
     def _source(self) -> str:
-        # Backend is loopback-only behind Tailscale Serve, so this forwarded
-        # value cannot be supplied directly from a LAN/WAN client.
-        xff = self.headers.get("X-Forwarded-For", "")
-        return xff.split(",", 1)[0].strip() or self.client_address[0]
+        # The backend is loopback-only. Do not trust forwarding headers for
+        # rate-limit identity because a local process can spoof them.
+        return self.client_address[0]
 
     def _send(self, status: int, body: bytes, *, cookie: str | None = None) -> None:
         self.send_response(status)
@@ -135,6 +135,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+        )
         if cookie is not None:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
@@ -323,7 +327,9 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 self._send(400, page("Invalid repository", "<h1>Invalid repository</h1>"))
                 return
-            if not token or len(token) > MAX_TOKEN_LEN:
+            try:
+                validate_temporary_token(token)
+            except ValueError:
                 self._send(400, page("Invalid token", "<h1>Invalid registration token</h1>"))
                 return
             result = dispatch(self.app.config, {"op": "create", "repository": repo, "token": token})
@@ -385,7 +391,9 @@ class Handler(BaseHTTPRequestHandler):
             token = ""
             if expected_op == "remove":
                 token = form.get("token", "")
-                if not token or len(token) > MAX_TOKEN_LEN:
+                try:
+                    validate_temporary_token(token)
+                except ValueError:
                     self._send(400, page("Invalid token", "<h1>Invalid removal token</h1>"))
                     return
                 request["token"] = token

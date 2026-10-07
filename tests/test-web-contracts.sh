@@ -180,6 +180,30 @@ if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
     raise SystemExit(1)
 PY
 
+# The real Web lifecycle code path must invoke the official config.sh through
+# the PTY adapter and must not contain a secret --token argument in the Web
+# branch. Normal CLI may still use --token because it is outside Web V1.
+python3 - "$ROOT" <<'PY' || fail "Web final config.sh consumer contract mismatch"
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+reg = (root / "scripts/register-runner.sh").read_text()
+rem = (root / "scripts/remove-runner.sh").read_text()
+
+reg_start = reg.index('if [[ "$WEB_MODE" == "1" ]]; then', reg.index('echo "==> Registering runner'))
+reg_end = reg.index("else", reg_start)
+reg_web = reg[reg_start:reg_end]
+if '--mode create' not in reg_web or './config.sh' not in reg_web or '--token "$TOKEN"' in reg_web:
+    raise SystemExit(1)
+
+rem_start = rem.index('if [[ "$WEB_MODE" == "1" ]]; then', rem.index('echo "==> Removing runner registration'))
+rem_end = rem.index("else", rem_start)
+rem_web = rem[rem_start:rem_end]
+if '--mode remove' not in rem_web or './config.sh remove' not in rem_web or '--token "$TOKEN"' in rem_web:
+    raise SystemExit(1)
+PY
+
 # Internal Web lifecycle context must be bound to a root Unix peer, not merely
 # to caller-controlled environment flags plus a forgeable JSON context reply.
 python3 - "$ROOT" <<'PY' || fail "fake same-UID Web registration context was accepted"

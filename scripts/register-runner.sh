@@ -349,7 +349,6 @@ echo "==> Extracting runner..."
 tar xzf "$ARCHIVE_PATH"; rm -f -- "$ARCHIVE_PATH"; ARCHIVE_PATH=""
 echo "==> Checking/installing official runner dependencies..."
 if [[ "$WEB_MODE" == "1" ]]; then
-  web_priv_request '{"op":"ensure_runner_dependencies"}' || die "Host runner dependencies are not available for Web lifecycle."
   if command -v ldd >/dev/null 2>&1 && ldd ./bin/Runner.Listener 2>/dev/null | grep -q 'not found'; then
     die "Runner dependencies are missing. Re-run Web platform setup before creating a runner."
   fi

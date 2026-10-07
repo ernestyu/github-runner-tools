@@ -38,7 +38,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ ${EUID} -ne 0 ]] || die "Run this script as the normal runner owner, not root."
-for cmd in python3 sudo id getent systemctl tailscale install stat awk; do require_command "$cmd"; done
+for cmd in python3 sudo id getent systemctl tailscale install stat awk ps xargs useradd mktemp; do require_command "$cmd"; done
 
 RUNNER_USER="$(id -un)"
 RUNNER_GROUP="$(id -gn)"

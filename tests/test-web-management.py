@@ -74,13 +74,17 @@ class TokenAdapterTests(unittest.TestCase):
         token = "SECRET_WEB_TOKEN_123456"
         with tempfile.TemporaryDirectory() as td:
             child = pathlib.Path(td) / "child.py"
+            result_file = pathlib.Path(td) / "result.json"
             child.write_text(
-                "import os,sys\n"
+                "import json,os,sys\n"
                 "print('Enter token:', flush=True)\n"
                 "value=input()\n"
-                "print('TOKEN_OK=' + str(value.startswith('SECRET_')), flush=True)\n"
-                "print('ARGV_HAS=' + str(any('SECRET_WEB_TOKEN' in x for x in sys.argv)), flush=True)\n"
-                "print('ENV_HAS=' + str(any('SECRET_WEB_TOKEN' in v for v in os.environ.values())), flush=True)\n",
+                "result={\n"
+                " 'token_ok': value.startswith('SECRET_'),\n"
+                " 'argv_has': any('SECRET_WEB_TOKEN' in x for x in sys.argv),\n"
+                " 'env_has': any('SECRET_WEB_TOKEN' in v for v in os.environ.values()),\n"
+                "}\n"
+                "open(sys.argv[1], 'w', encoding='utf-8').write(json.dumps(result))\n",
                 encoding="utf-8",
             )
             read_fd, write_fd = os.pipe()
@@ -99,6 +103,7 @@ class TokenAdapterTests(unittest.TestCase):
                         "--",
                         sys.executable,
                         str(child),
+                        str(result_file),
                     ],
                     pass_fds=(read_fd,),
                     text=True,
@@ -113,9 +118,11 @@ class TokenAdapterTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertNotIn(token, proc.stdout)
             self.assertNotIn(token, proc.stderr)
-            self.assertIn("TOKEN_OK=True", proc.stdout)
-            self.assertIn("ARGV_HAS=False", proc.stdout)
-            self.assertIn("ENV_HAS=False", proc.stdout)
+            self.assertEqual(proc.stdout, "")
+            result = json.loads(result_file.read_text(encoding="utf-8"))
+            self.assertTrue(result["token_ok"])
+            self.assertFalse(result["argv_has"])
+            self.assertFalse(result["env_has"])
 
 
 class WorkerProtocolTests(unittest.TestCase):

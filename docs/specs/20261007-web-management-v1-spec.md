@@ -526,15 +526,24 @@ control what the UI displays.
 
 They are not authorization for a mutation.
 
-Immediately before every create/remove/recover operation, the request-scoped `actions` lifecycle worker must:
+For Web mutations, the root dispatcher is the sole owner of mutation-lock acquisition and release.
+
+The frozen Web mutation order is:
 
 ```text
-acquire global mutation lock
-→ re-read current filesystem/systemd state
-→ re-resolve repository/runner identity
-→ re-run current eligibility validation
-→ only then begin mutation
+root dispatcher acquires shared mutation lock
+→ dispatcher launches UID/GID-dropped actions lifecycle worker
+→ worker re-reads current filesystem/systemd state
+→ worker re-resolves repository/runner identity
+→ worker re-runs current eligibility validation
+→ worker performs lifecycle mutation
+→ worker returns terminal result
+→ dispatcher releases shared mutation lock
 ```
+
+The `actions` lifecycle worker must not independently acquire the Web mutation lock and must not attempt a second `flock` on the shared lock file.
+
+The worker executes in a request context for which the dispatcher already owns the lock. No lock FD inheritance contract is required for V1.
 
 The lifecycle worker/dispatcher must not trust:
 
@@ -543,7 +552,7 @@ The lifecycle worker/dispatcher must not trust:
 - a previously generated `can_remove` value;
 - a previously generated `can_recover_local` value.
 
-This revalidation must occur while the mutation lock is held.
+Authoritative revalidation must occur after the dispatcher has acquired the lock and before any persistent mutation begins.
 
 ### 11.2 Privileged systemd revalidation
 
@@ -724,9 +733,10 @@ Create sequence:
 authenticated POST
 → CSRF validation
 → repository validation
-→ acquire global mutation lock
-→ re-check target identity/collision state
-→ perform runner-owner lifecycle as actions
+→ root dispatcher acquires shared mutation lock
+→ dispatcher launches UID/GID-dropped actions worker
+→ worker re-checks target identity/collision state
+→ worker performs runner-owner lifecycle as actions
 → pass registration token by anonymous pipe/FD
 → use privileged helper only for allowed host dependency/service operations
 → wait for bounded completion
@@ -843,8 +853,9 @@ user selects Remove for repository R
      confirmation nonce
      removal token
 → server validates and consumes nonce
-→ acquire shared global mutation lock
-→ authoritative identity/state revalidation
+→ root dispatcher acquires shared global mutation lock
+→ dispatcher launches UID/GID-dropped actions worker
+→ worker performs authoritative identity/state revalidation
 → mutation begins
 ```
 
@@ -864,8 +875,9 @@ select Recover
 → one-time nonce
 → confirmation page
 → final POST with CSRF + nonce
-→ acquire shared global mutation lock
-→ authoritative recovery revalidation
+→ root dispatcher acquires shared global mutation lock
+→ dispatcher launches UID/GID-dropped actions worker
+→ worker performs authoritative recovery revalidation
 → mutation
 ```
 
@@ -892,47 +904,85 @@ Required lock path:
 /run/lock/github-runner-tools/mutation.lock
 ```
 
-Setup creates the lock location with permissions that allow:
-
-- the root dispatcher to acquire it for Web mutations;
-- the configured runner owner `actions` to acquire it for CLI mutations;
-- the `grt-web` frontend itself does not acquire it directly.
-
 The lock is concurrency control, not authorization.
 
-The following operations must use this same lock:
+### 18.1 Single Web lock owner
+
+For Web mutations, the root dispatcher is the only process that acquires/releases the shared mutation lock.
+
+Frozen Web order:
+
+```text
+dispatcher acquires lock
+→ dispatcher launches UID/GID-dropped actions worker
+→ worker re-reads/revalidates state while dispatcher still holds lock
+→ worker performs mutation
+→ terminal result
+→ dispatcher releases lock
+```
+
+The worker must not re-acquire the lock.
+
+### 18.2 CLI mutation order
+
+The following CLI operations must acquire the same lock themselves:
 
 ```text
 scripts/register-runner.sh
 scripts/remove-runner.sh
 scripts/remove-runner.sh --recover-local
-Web Create
-Web Normal Remove
-Web Recover Local
 ```
 
-CLI scripts must acquire the lock before authoritative target/state validation and before any persistent mutation.
-
-Web mutation order is:
+Frozen CLI order:
 
 ```text
-dispatcher acquires shared lock
-→ launch actions lifecycle worker
-→ worker re-reads/revalidates current state
-→ perform mutation
+ensure base lock infrastructure exists
+→ CLI acquires shared lock
+→ CLI re-reads/revalidates current state
+→ CLI performs mutation
 → terminal result
-→ dispatcher releases lock
+→ CLI releases lock
 ```
 
-CLI mutation order is:
+### 18.3 Web-independent base lock provisioning
+
+CLI-only mode must not depend on Web Management setup.
+
+The shared lock infrastructure is therefore a base lifecycle facility, not a Web component.
+
+Required ownership:
 
 ```text
-CLI acquires same lock
-→ re-read/revalidate current state
-→ perform mutation
-→ terminal result
-→ release lock
+/run/lock/github-runner-tools/
+    owner: root
+    group: root
+    mode: 0755
+
+/run/lock/github-runner-tools/mutation.lock
+    owner: root
+    group: <configured runner-owner group>
+    mode: 0660
 ```
+
+The runner owner may open/flock the lock file but may not replace, unlink, or recreate the lock file because the parent directory is not runner-writable.
+
+Each mutating CLI command must ensure this fixed lock infrastructure exists before attempting the lock.
+
+If it is absent, the CLI may use its existing interactive sudo authority to create/repair only this fixed root-controlled directory/file with the exact ownership/mode above.
+
+This base lock bootstrap:
+
+- is part of core CLI lifecycle support;
+- is independent of `setup-web-management.sh`;
+- installs no Web account/service/socket/listener/Tailscale configuration;
+- accepts no caller-controlled path;
+- must fail closed if an existing path has unexpected type, owner, group, mode, or symlink/provenance.
+
+A CLI-only host that has never enabled Web Management must therefore still be able to register/remove/recover safely with the shared lock.
+
+When Web Management is later explicitly installed, the dispatcher reuses this same existing lock path and authority. Web setup must not replace it with a different lock or change its semantics.
+
+### 18.4 Busy behavior
 
 If the lock is already held:
 
@@ -956,6 +1006,14 @@ CLI holds lock
 
 Web holds lock
 → CLI register/remove/recover mutation does not start
+
+fresh CLI-only host with no Web components
+→ core lock bootstrap succeeds
+→ CLI mutation can acquire the same shared lock
+
+later Web setup
+→ reuses existing core lock
+→ does not replace lock authority
 ```
 
 ## 19. Timeouts
@@ -1109,7 +1167,7 @@ Apply responsibilities:
 - install the root dispatcher socket/service;
 - create `/run/github-runner-tools/web-dispatch.sock` with the ownership/mode in §10.1;
 - verify `actions` cannot connect to the dispatch socket;
-- create/prepare `/run/lock/github-runner-tools/mutation.lock` for CLI/Web coordination;
+- verify/reuse the existing core lifecycle lock at `/run/lock/github-runner-tools/mutation.lock`; if the base lock infrastructure is absent, invoke the same fixed core lock-bootstrap contract from §18.3 rather than creating a Web-specific lock;
 - install/verify the root-controlled dependency mechanism;
 - install/verify the canonical root-controlled runner unit mechanism;
 - configure or print the exact Tailscale Serve command;
@@ -1134,6 +1192,8 @@ A host that never runs `setup-web-management.sh --apply` remains a complete and 
 CLI-only mode is not a temporary pre-Web state.
 
 Future updates to existing CLI/archive features must not assume that Web Management components are present.
+
+The shared mutation lock is explicitly not a Web component. Its root-controlled base provisioning belongs to core CLI lifecycle support under §18.3 and may exist on CLI-only hosts.
 
 ## 23. Configuration
 
@@ -1490,9 +1550,23 @@ CLI holds shared lock
 
 Web holds shared lock
 → CLI register/remove/recover does not start
+
+Web dispatcher holds lock
+→ actions worker does not attempt second lock acquisition
+
+fresh CLI-only host with no Web components and no existing lock path
+→ fixed core lock bootstrap creates root-controlled lock infrastructure
+→ CLI mutation can acquire lock
+
+unexpected/symlink/wrong-owner lock infrastructure
+→ CLI fails closed
+
+explicit Web setup after CLI lock already exists
+→ reuses same lock
+→ does not replace or change lock authority
 ```
 
-Also verify authoritative identity revalidation happens after lock acquisition.
+Also verify authoritative identity revalidation happens after dispatcher/CLI lock acquisition, according to the unique ownership rules in §18.
 
 ### 28.13 Secret redaction
 
@@ -1567,57 +1641,58 @@ After static/code audit passes, validate on the real Debian host in this order:
 
 ```text
 1. begin from a CLI-only host state and verify no grt-web/Web/dispatcher/Tailscale management endpoint exists
-2. verify normal CLI register/status/remove/recover does not install/enable Web components
-3. bash tests/run-all.sh
-4. setup-web-management.sh --dry-run
-5. verify dry-run caused no persistent host mutation
-6. setup-web-management.sh --apply
-3. inspect generated users/config/services/socket/lock/unit plan
-4. setup-web-management.sh --apply
+2. verify core CLI lock infrastructure can be provisioned without any Web component
+3. verify normal CLI register/status/remove/recover does not install/enable Web components
+4. bash tests/run-all.sh
+5. setup-web-management.sh --dry-run
+6. verify dry-run caused no persistent host mutation
+7. inspect generated users/config/services/socket/lock/unit plan
+8. setup-web-management.sh --apply
+9. verify Web setup reused the same existing core mutation lock
 
-5. verify Web process runs as grt-web
-6. verify dispatcher runs as root
-7. verify lifecycle worker enters lifecycle code as actions
-8. verify actions cannot connect to web-dispatch.sock
-9. verify grt-web has no sudo rights
-10. verify actions received no new passwordless sudo rule
-11. verify installed worker/helper code is root-owned and not writable by actions/grt-web
+10. verify Web process runs as grt-web
+11. verify dispatcher runs as root
+12. verify lifecycle worker enters lifecycle code as actions
+13. verify actions cannot connect to web-dispatch.sock
+14. verify grt-web has no sudo rights
+15. verify actions received no new passwordless sudo rule
+16. verify installed worker/helper code is root-owned and not writable by actions/grt-web
 
-12. verify frontend listens only on 127.0.0.1
-13. verify no direct LAN/WAN listener exists
-14. verify dispatcher/helper has no TCP listener
-15. verify Tailscale Serve HTTPS endpoint
-16. verify no Tailscale Funnel/public endpoint exists
+17. verify frontend listens only on 127.0.0.1
+18. verify no direct LAN/WAN listener exists
+19. verify dispatcher/helper has no TCP listener
+20. verify Tailscale Serve HTTPS endpoint
+21. verify no Tailscale Funnel/public endpoint exists
 
-17. login from phone through Tailnet
-18. list current runners
+22. login from phone through Tailnet
+23. list current runners
 
-19. create a disposable/test repository runner using a temporary registration token
-20. inspect the final configuration process: token absent from argv/environment
-21. verify no token appears in journal, temporary files, or HTTP response
-22. verify runner files are owned by actions
-23. verify runner appears and service is active
-24. verify managed systemd unit provenance and all required unit properties match the canonical schema
+24. create a disposable/test repository runner using a temporary registration token
+25. inspect the final configuration process: token absent from argv/environment
+26. verify no token appears in journal, temporary files, or HTTP response
+27. verify runner files are owned by actions
+28. verify runner appears and service is active
+29. verify managed systemd unit provenance and all required unit properties match the canonical schema
 
-25. normal-remove that disposable runner
-26. enter removal token only on the final confirmation page
-27. inspect final removal process: token absent from argv/environment
-28. verify runner removed
+30. normal-remove that disposable runner
+31. enter removal token only on the final confirmation page
+32. inspect final removal process: token absent from argv/environment
+33. verify runner removed
 
-29. create a second disposable runner
-30. delete it on GitHub first
-31. wait for local .runner/.credentials cleanup
-32. use Web Recover Local
-33. verify systemd unit absent
-34. verify runner directory removed
+34. create a second disposable runner
+35. delete it on GitHub first
+36. wait for local .runner/.credentials cleanup
+37. use Web Recover Local
+38. verify systemd unit absent
+39. verify runner directory removed
 
-35. verify /srv/github-actions-archive is untouched
+40. verify /srv/github-actions-archive is untouched
 
-36. hold the shared lock from CLI and verify Web mutation returns busy/409
-37. hold the shared lock from Web and verify CLI register/remove/recover refuses to start
+41. hold the shared lock from CLI and verify Web mutation returns busy/409
+42. hold the shared lock from Web and verify CLI register/remove/recover refuses to start
 
-38. verify local CLI register/status/remove behavior still works
-39. verify no registration/removal token appears in any channel forbidden by §12
+43. verify local CLI register/status/remove behavior still works
+44. verify no registration/removal token appears in any channel forbidden by §12
 ```
 
 Do not use a production/private research runner as the first Web mutation test.
@@ -1690,31 +1765,34 @@ Web Management V1 is complete only when all of the following are true:
 
 35. `status-runners.sh --json` implements the frozen machine-readable contract.
 36. UI eligibility flags are advisory only.
-37. Every mutation revalidates current identity/state after acquiring the shared mutation lock.
-38. Every privileged service mutation revalidates current root-controlled systemd state immediately before execution.
+37. Every mutation revalidates current identity/state only after the authoritative shared lock owner has acquired the lock.
+38. For Web mutations, the root dispatcher alone acquires/releases the shared lock; the actions worker does not re-acquire it.
+39. Every privileged service mutation revalidates current root-controlled systemd state immediately before execution.
 
-39. CLI register, normal remove, and recover-local use `/run/lock/github-runner-tools/mutation.lock`.
-40. Web Create/Remove/Recover use the same lock.
-41. CLI-held lock blocks Web mutation.
-42. Web-held lock blocks CLI mutation.
-43. Mutations are not queued in V1.
+40. CLI register, normal remove, and recover-local use `/run/lock/github-runner-tools/mutation.lock`.
+41. Web Create/Remove/Recover use that exact same lock through the dispatcher.
+42. CLI-only core lifecycle can safely provision the fixed root-controlled lock infrastructure without Web Management installed.
+43. Web setup reuses the core lock and does not redefine or replace its authority.
+44. CLI-held lock blocks Web mutation.
+45. Web-held lock blocks CLI mutation.
+46. Mutations are not queued in V1.
 
-44. Create accepts only OWNER/REPO + temporary registration token.
-45. Normal Remove requires a temporary removal token.
-46. Recover Local requires no GitHub token and preserves the frozen recovery semantics.
-47. Mutation timeout is bounded.
-48. Local artifact archive is never deleted by Web runner removal/recovery.
-49. Existing CLI lifecycle remains functional and semantically aligned with the Web worker.
-50. Web Management is not installed or enabled by default.
-51. Normal CLI register/status/remove/recover and archive setup do not create or enable Web components.
-52. `setup-web-management.sh --dry-run` performs no persistent host mutation.
-53. Only explicit `setup-web-management.sh --apply` may install/enable Web Management.
-54. CLI-only mode remains a complete, supported operating mode when all Web components are absent.
+47. Create accepts only OWNER/REPO + temporary registration token.
+48. Normal Remove requires a temporary removal token.
+49. Recover Local requires no GitHub token and preserves the frozen recovery semantics.
+50. Mutation timeout is bounded.
+51. Local artifact archive is never deleted by Web runner removal/recovery.
+52. Existing CLI lifecycle remains functional and semantically aligned with the Web worker.
+53. Web Management is not installed or enabled by default.
+54. Normal CLI register/status/remove/recover and archive setup do not create or enable Web components.
+55. `setup-web-management.sh --dry-run` performs no persistent host mutation.
+56. Only explicit `setup-web-management.sh --apply` may install/enable Web Management.
+57. CLI-only mode remains a complete, supported operating mode when all Web components are absent.
 
-55. Automated tests cover §28.
-56. Full repository test suite passes.
-57. Live Debian acceptance sequence in §29 passes before release.
-58. README, Chinese README, and CHANGELOG are updated only after implementation passes audit.
+58. Automated tests cover §28.
+59. Full repository test suite passes.
+60. Live Debian acceptance sequence in §29 passes before release.
+61. README, Chinese README, and CHANGELOG are updated only after implementation passes audit.
 
 ## 32. Implementation boundary
 

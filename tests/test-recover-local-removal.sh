@@ -5,6 +5,8 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 TMP="$(mktemp -d)"
+export GRT_TEST_MODE=1
+export GRT_TEST_LOCK_DIR="$TMP/mutation-lock"
 cleanup_test() {
   chmod -R u+rwX "$TMP" 2>/dev/null || true
   rm -rf -- "$TMP"

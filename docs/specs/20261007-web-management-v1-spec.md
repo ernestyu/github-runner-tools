@@ -820,57 +820,143 @@ systemd stop/uninstall                privileged helper
 verified local directory deletion     actions
 ```
 
-## 17. Destructive confirmation
+## 17. Destructive confirmation and removal-token timing
 
 A destructive action requires a second server-generated confirmation step.
 
-Required flow:
+### 17.1 Normal Remove
+
+Normal Remove uses this exact two-stage flow:
 
 ```text
-user selects Remove / Recover
-→ server renders confirmation page with exact repository
-→ server generates one-time confirmation nonce
-→ user confirms
-→ POST nonce + CSRF
-→ server consumes nonce once
+user selects Remove for repository R
+→ authenticated POST + CSRF
+→ server creates one-time confirmation nonce bound to:
+     session
+     operation=remove
+     repository=R
+→ server renders confirmation page
+→ confirmation page contains an EMPTY removal-token password field
+→ user enters the temporary removal token
+→ final POST contains:
+     CSRF
+     confirmation nonce
+     removal token
+→ server validates and consumes nonce
+→ acquire shared global mutation lock
+→ authoritative identity/state revalidation
 → mutation begins
 ```
+
+The removal token is not submitted before the final POST.
+
+It is not stored in session state, nonce state, temporary files, redirects, or another server-side cache.
+
+Cancel, expiry, logout, or Web restart therefore leaves no removal token to destroy.
+
+### 17.2 Recover Local
+
+Recover Local uses the same confirmation structure without a GitHub token:
+
+```text
+select Recover
+→ authenticated POST + CSRF
+→ one-time nonce
+→ confirmation page
+→ final POST with CSRF + nonce
+→ acquire shared global mutation lock
+→ authoritative recovery revalidation
+→ mutation
+```
+
+### 17.3 Nonce contract
 
 A confirmation nonce:
 
 - expires after 5 minutes;
 - is single-use;
 - is bound to the authenticated session;
-- is bound to the exact operation and repository.
+- is bound to the exact operation;
+- is bound to the exact repository;
+- contains no GitHub token or other secret.
 
-The browser must not be able to submit a different repository by editing a hidden field after confirmation.
+The browser must not be able to change repository or operation by editing hidden fields after confirmation.
 
-## 18. Mutation serialization
+## 18. Global CLI/Web mutation serialization
 
-Only one mutating lifecycle operation may execute at a time.
+All runner lifecycle mutations on the host must use one shared host-level advisory lock.
 
-Required operations covered by the lock:
-
-```text
-create
-remove
-recover_local
-```
-
-Use one host-level lock stored in a root-/service-controlled location that is not writable by runner workflow code.
-
-The lock must be acquired before the authoritative mutation revalidation in §11.1 and held until the mutation reaches a terminal result.
-
-If another mutation is in progress, V1 returns:
+Required lock path:
 
 ```text
-409 Conflict
-operation already in progress
+/run/lock/github-runner-tools/mutation.lock
 ```
 
-Do not queue multiple destructive operations in V1.
+Setup creates the lock location with permissions that allow:
 
-List/status requests may continue, but their eligibility data remains advisory and must be revalidated before any later mutation.
+- the root dispatcher to acquire it for Web mutations;
+- the configured runner owner `actions` to acquire it for CLI mutations;
+- the `grt-web` frontend itself does not acquire it directly.
+
+The lock is concurrency control, not authorization.
+
+The following operations must use this same lock:
+
+```text
+scripts/register-runner.sh
+scripts/remove-runner.sh
+scripts/remove-runner.sh --recover-local
+Web Create
+Web Normal Remove
+Web Recover Local
+```
+
+CLI scripts must acquire the lock before authoritative target/state validation and before any persistent mutation.
+
+Web mutation order is:
+
+```text
+dispatcher acquires shared lock
+→ launch actions lifecycle worker
+→ worker re-reads/revalidates current state
+→ perform mutation
+→ terminal result
+→ dispatcher releases lock
+```
+
+CLI mutation order is:
+
+```text
+CLI acquires same lock
+→ re-read/revalidate current state
+→ perform mutation
+→ terminal result
+→ release lock
+```
+
+If the lock is already held:
+
+```text
+Web
+→ 409 Conflict / operation already in progress
+
+CLI
+→ non-zero exit / stable "operation already in progress" error
+```
+
+V1 does not queue mutations.
+
+List/status requests may continue without the mutation lock, but their eligibility result is advisory and must be revalidated under the lock before any later mutation.
+
+Required cross-path tests:
+
+```text
+CLI holds lock
+→ Web mutation does not start
+
+Web holds lock
+→ CLI register/remove/recover mutation does not start
+```
 
 ## 19. Timeouts
 

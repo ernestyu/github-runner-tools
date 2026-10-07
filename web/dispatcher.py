@@ -36,6 +36,7 @@ from grt_web_common import (
     recv_json_line,
     sanitize_component,
     validate_repository,
+    validate_temporary_token,
 )
 
 ALLOWED_PUBLIC = {
@@ -343,9 +344,12 @@ class DispatchHandler(socketserver.BaseRequestHandler):
             if op != "list":
                 validate_repository(str(request.get("repository", "")))
             token = request.get("token")
-            if token is not None and (not isinstance(token, str) or not token or len(token) > 1024):
-                self.request.sendall(encode_json_line(stable_error("invalid_token")))
-                return
+            if token is not None:
+                try:
+                    validate_temporary_token(token)
+                except ValueError:
+                    self.request.sendall(encode_json_line(stable_error("invalid_token")))
+                    return
             result = server.execute(request)
             if isinstance(token, str):
                 # Avoid returning descendant output; still scrub the stable

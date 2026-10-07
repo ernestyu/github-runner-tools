@@ -80,12 +80,52 @@ class Runtime:
         self.lock_file = cfg.get("MUTATION_LOCK_FILE", DEFAULT_LOCK_FILE)
         self.timeout = int(cfg.get("MUTATION_TIMEOUT_SECONDS", "900"))
         self.runner_pw = pwd.getpwnam(self.runner_user)
+        self.runner_gr = grp.getgrnam(self.runner_group)
         self.web_pw = pwd.getpwnam(self.web_user)
 
     def validate_fixed_worker(self) -> None:
         st = os.stat(self.worker_path, follow_symlinks=False)
         if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
             raise DispatchError("worker_not_root_controlled")
+
+    def ensure_lock_infrastructure(self) -> None:
+        lock_path = Path(self.lock_file)
+        lock_dir = lock_path.parent
+
+        if lock_dir.is_symlink():
+            raise DispatchError("lock_directory_symlink")
+        if lock_dir.exists():
+            st = os.stat(lock_dir, follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(st.st_mode)
+                or st.st_uid != 0
+                or st.st_gid != 0
+                or stat.S_IMODE(st.st_mode) != 0o755
+            ):
+                raise DispatchError("lock_directory_invalid")
+        else:
+            lock_dir.mkdir(mode=0o755, parents=True, exist_ok=False)
+            os.chown(lock_dir, 0, 0)
+            os.chmod(lock_dir, 0o755)
+
+        if lock_path.is_symlink():
+            raise DispatchError("lock_file_symlink")
+        if not lock_path.exists():
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o660)
+            try:
+                os.fchown(fd, 0, self.runner_gr.gr_gid)
+                os.fchmod(fd, 0o660)
+            finally:
+                os.close(fd)
+
+        st = os.stat(lock_path, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(st.st_mode)
+            or st.st_uid != 0
+            or st.st_gid != self.runner_gr.gr_gid
+            or stat.S_IMODE(st.st_mode) != 0o660
+        ):
+            raise DispatchError("lock_file_invalid")
 
     def validate_runner_dir(self, repository: str, path: str, *, allow_legacy: bool = True) -> str:
         repository = validate_repository(repository)
@@ -515,6 +555,7 @@ def main() -> int:
         return 1
     runtime = Runtime(args.config)
     runtime.validate_fixed_worker()
+    runtime.ensure_lock_infrastructure()
     socket_path = Path(runtime.socket_path)
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     if socket_path.exists() or socket_path.is_symlink():

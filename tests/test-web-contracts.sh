@@ -143,6 +143,43 @@ chmod +x "$SETUP_MOCK/systemctl" "$SETUP_MOCK/tailscale" "$SETUP_MOCK/sudo"
 PATH="$SETUP_MOCK:$PATH" bash "$ROOT/scripts/setup-web-management.sh" --dry-run >/dev/null
 [[ ! -e "$MARKER" ]] || fail "Web dry-run invoked privileged persistent mutation"
 
+# Exercise the real OS credential transition used by the Web worker: root
+# creates the private socket, child drops all groups/UID/GID to the runner
+# owner, and the child must see a root peer on that inherited AF_UNIX socket.
+sudo python3 - "$ROOT" "$(id -u)" "$(id -g)" <<'PY' ||
+  fail "real root-to-runner UID/GID drop and root-peer contract failed"
+import os
+import socket
+import sys
+
+root, uid_s, gid_s = sys.argv[1:4]
+uid, gid = int(uid_s), int(gid_s)
+sys.path.insert(0, os.path.join(root, "web"))
+import lifecycle_worker
+
+parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+pid = os.fork()
+if pid == 0:
+    try:
+        parent.close()
+        os.setgroups([])
+        os.setgid(gid)
+        os.setuid(uid)
+        if not lifecycle_worker.verify_unprivileged_identity(uid, gid):
+            os._exit(2)
+        if lifecycle_worker.privileged_peer_uid(child.fileno()) != 0:
+            os._exit(3)
+        os._exit(0)
+    except BaseException:
+        os._exit(4)
+
+child.close()
+_, status = os.waitpid(pid, 0)
+parent.close()
+if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+    raise SystemExit(1)
+PY
+
 # Internal Web lifecycle context must be bound to a root Unix peer, not merely
 # to caller-controlled environment flags plus a forgeable JSON context reply.
 python3 - "$ROOT" <<'PY' || fail "fake same-UID Web registration context was accepted"
@@ -242,6 +279,23 @@ for name, text, target in [
     if lock < 0 or validation < 0 or lock >= validation:
         raise SystemExit(f"{name} does not lock before target validation")
 PY
+
+# CLI/Web parity: the status surface and CLI recovery authority must both
+# reject a mismatched service scope rather than inventing repository identity.
+PARITY_BASE="$TMP/parity-runners"
+mkdir -p "$PARITY_BASE/actions-runner-owner--repo"
+printf '%s\n' 'actions.runner.other-repo.custom.service' > "$PARITY_BASE/actions-runner-owner--repo/.service"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$PARITY_BASE/actions-runner-owner--repo/svc.sh"
+chmod +x "$PARITY_BASE/actions-runner-owner--repo/svc.sh"
+PARITY_JSON="$(PATH="$MOCKBIN:$PATH" RUNNER_BASE_DIR="$PARITY_BASE" bash "$ROOT/scripts/status-runners.sh" --json)"
+jq -e '.[0].can_recover_local == false and (.[0].management_state == "ambiguous" or .[0].repository == null)' <<<"$PARITY_JSON" >/dev/null ||
+  fail "Web status accepted mismatched recovery service identity"
+if (
+  RUNNER_TOOLS_LIB_ONLY=1 source "$ROOT/scripts/remove-runner.sh"
+  validate_recovery_identity     "$PARITY_BASE/actions-runner-owner--repo"     "$PARITY_BASE/actions-runner-owner--repo"     owner repo
+) >/dev/null 2>&1; then
+  fail "CLI recovery authority accepted mismatched service identity"
+fi
 
 # Authoritative removal/recovery state is revalidated after lock acquisition.
 # A stale UI decision must therefore fail before any destructive step.

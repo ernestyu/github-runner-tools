@@ -243,6 +243,42 @@ for name, text, target in [
         raise SystemExit(f"{name} does not lock before target validation")
 PY
 
+# Authoritative removal/recovery state is revalidated after lock acquisition.
+# A stale UI decision must therefore fail before any destructive step.
+STALE_BASE="$TMP/stale-runners"
+STALE_LOCK="$TMP/stale-lock"
+mkdir -p "$STALE_BASE" "$STALE_LOCK"
+STALE_DIR="$STALE_BASE/actions-runner-owner--repo"
+mkdir -p "$STALE_DIR"
+printf '%s\n' 'actions.runner.owner-repo.test-runner.service' > "$STALE_DIR/.service"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STALE_DIR/svc.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STALE_DIR/config.sh"
+chmod +x "$STALE_DIR/svc.sh" "$STALE_DIR/config.sh"
+
+# Stale can_remove=true: configured metadata disappeared before mutation.
+if (
+  export GRT_TEST_MODE=1
+  export GRT_TEST_LOCK_DIR="$STALE_LOCK"
+  RUNNER_TOOLS_LIB_ONLY=1 source "$ROOT/scripts/remove-runner.sh"
+  main --base-dir "$STALE_BASE" owner/repo
+) >/dev/null 2>&1; then
+  fail "stale normal-removal eligibility was not rejected"
+fi
+[[ -d "$STALE_DIR" ]] || fail "stale normal-removal rejection mutated runner directory"
+
+# Stale can_recover_local=true: .runner appeared before mutation.
+printf '%s\n' '{"gitHubUrl":"https://github.com/owner/repo"}' > "$STALE_DIR/.runner"
+if (
+  export GRT_TEST_MODE=1
+  export GRT_TEST_LOCK_DIR="$STALE_LOCK"
+  RUNNER_TOOLS_LIB_ONLY=1 source "$ROOT/scripts/remove-runner.sh"
+  main --base-dir "$STALE_BASE" --recover-local owner/repo
+) >/dev/null 2>&1; then
+  fail "stale recovery eligibility was not rejected"
+fi
+[[ -d "$STALE_DIR" && -f "$STALE_DIR/.runner" ]] ||
+  fail "stale recovery rejection mutated runner state"
+
 # Shared lock: a CLI mutation must fail busy when another process owns the same
 # core lock. Test against the removal implementation in isolated test mode.
 LOCKDIR="$TMP/shared-lock"

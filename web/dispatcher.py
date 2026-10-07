@@ -635,7 +635,23 @@ def main() -> int:
     runtime.validate_fixed_worker()
     runtime.ensure_lock_infrastructure()
     socket_path = Path(runtime.socket_path)
-    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    socket_dir = socket_path.parent
+    if socket_dir.is_symlink():
+        raise DispatchError("dispatch_socket_directory_symlink")
+    if socket_dir.exists():
+        st = os.stat(socket_dir, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(st.st_mode)
+            or st.st_uid != 0
+            or st.st_gid != 0
+            or stat.S_IMODE(st.st_mode) != 0o755
+        ):
+            raise DispatchError("dispatch_socket_directory_invalid")
+    else:
+        socket_dir.mkdir(parents=True, mode=0o755, exist_ok=False)
+        os.chown(socket_dir, 0, 0)
+        os.chmod(socket_dir, 0o755)
+
     if socket_path.is_symlink():
         raise DispatchError("dispatch_socket_symlink")
     if socket_path.exists():

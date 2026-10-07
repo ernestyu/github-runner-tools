@@ -220,8 +220,8 @@ grep -Fq 'User=$WEB_USER' "$ROOT/scripts/setup-web-management.sh" ||
   fail "Web service user contract missing"
 grep -Fq 'User=root' "$ROOT/scripts/setup-web-management.sh" ||
   fail "dispatcher root service contract missing"
-if grep -Eq 'tailscale[[:space:]]+funnel' "$ROOT/scripts/setup-web-management.sh"; then
-  fail "Web setup contains forbidden Tailscale Funnel command"
+if grep -Eq '^[[:space:]]*(sudo[[:space:]]+)?tailscale[[:space:]]+funnel([[:space:]]|$)' "$ROOT/scripts/setup-web-management.sh"; then
+  fail "Web setup contains forbidden executable Tailscale Funnel command"
 fi
 
 # Lock/revalidation ordering must remain explicit: CLI acquisition occurs

@@ -46,15 +46,14 @@ ALLOWED_PUBLIC = {
     "remove": {"op", "repository", "token"},
     "recover_local": {"op", "repository"},
 }
-ALLOWED_PRIV = {
-    "context_check",
-    "service_install",
-    "service_start",
-    "service_stop",
-    "service_restart",
-    "service_state",
-    "service_uninstall",
-    "ensure_runner_dependencies",
+PRIV_FIELDS = {
+    "context_check": {"op"},
+    "service_install": {"op", "repository", "runner_dir", "runner_name"},
+    "service_start": {"op", "repository", "runner_dir", "runner_name", "service"},
+    "service_stop": {"op", "repository", "runner_dir", "runner_name", "service"},
+    "service_restart": {"op", "repository", "runner_dir", "runner_name", "service"},
+    "service_state": {"op", "repository", "runner_dir", "runner_name", "service"},
+    "service_uninstall": {"op", "repository", "runner_dir", "runner_name", "service"},
 }
 
 
@@ -349,20 +348,14 @@ class Runtime:
 
     def privileged(self, request: dict[str, Any], deadline: float | None = None) -> dict[str, Any]:
         op = request.get("op")
-        if op not in ALLOWED_PRIV:
+        expected_fields = PRIV_FIELDS.get(op)
+        if expected_fields is None:
             return stable_error("unknown_privileged_operation")
+        if set(request) != expected_fields:
+            return stable_error("invalid_privileged_fields")
         if op == "context_check":
             return {"ok": True, "context": "dispatcher"}
 
-        if op == "ensure_runner_dependencies":
-            # Web setup is responsible for host dependencies. The worker asks
-            # only for a bounded verification point; there is no runner-owned
-            # root installer fallback.
-            return {"ok": True}
-
-        allowed = {"op", "repository", "runner_dir", "runner_name", "service"}
-        if set(request) - allowed:
-            return stable_error("unknown_privileged_field")
         try:
             repository = validate_repository(str(request["repository"]))
             runner_dir = self.validate_runner_dir(repository, str(request["runner_dir"]))

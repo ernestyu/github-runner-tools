@@ -6,6 +6,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 assert_eq() { [[ "$1" == "$2" ]] || fail "expected '$2', got '$1'"; }
 
 TMP="$(mktemp -d)"
+export GRT_TEST_MODE=1
+export GRT_TEST_LOCK_DIR="$TMP/mutation-lock"
 cleanup_test() { rm -rf -- "$TMP"; }
 trap cleanup_test EXIT
 

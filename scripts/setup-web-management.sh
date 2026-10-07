@@ -14,6 +14,7 @@ LOCK_DIR="/run/lock/github-runner-tools"
 LOCK_FILE="$LOCK_DIR/mutation.lock"
 MANAGED_MARKER="# managed-by=github-runner-tools-web-v1"
 INSTALL_MARKER="$INSTALL_ROOT/.managed-by-github-runner-tools-web-v1"
+TMPFILES_CONFIG="/etc/tmpfiles.d/github-runner-tools-web.conf"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 require_command() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
@@ -40,7 +41,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ ${EUID} -ne 0 ]] || die "Run this script as the normal runner owner, not root."
-for cmd in python3 sudo id getent systemctl tailscale install stat awk ps xargs useradd mktemp; do require_command "$cmd"; done
+for cmd in python3 sudo id getent systemctl systemd-tmpfiles tailscale install stat awk ps xargs useradd mktemp; do require_command "$cmd"; done
 
 RUNNER_USER="$(id -un)"
 RUNNER_GROUP="$(id -gn)"
@@ -82,7 +83,7 @@ fi
 sudo -v || die "sudo access is required for explicit Web setup."
 
 # Refuse to replace unmanaged Web components.
-for managed_file in "$CONFIG_FILE" "$AUTH_FILE"   /etc/systemd/system/github-runner-tools-web.service   /etc/systemd/system/github-runner-tools-dispatch.service; do
+for managed_file in "$CONFIG_FILE" "$AUTH_FILE"   /etc/systemd/system/github-runner-tools-web.service   /etc/systemd/system/github-runner-tools-dispatch.service   "$TMPFILES_CONFIG"; do
   if sudo test -L "$managed_file"; then
     die "Refusing symlinked Web Management file: $managed_file"
   fi
@@ -124,6 +125,16 @@ else
   sudo chown root:"$RUNNER_GROUP" "$LOCK_FILE"
   sudo chmod 0660 "$LOCK_FILE"
 fi
+
+TMP_TMPFILES="$(mktemp)"
+cat > "$TMP_TMPFILES" <<TMPFILES
+$MANAGED_MARKER
+d /run/lock/github-runner-tools 0755 root root -
+f /run/lock/github-runner-tools/mutation.lock 0660 root $RUNNER_GROUP -
+TMPFILES
+sudo install -o root -g root -m 0644 "$TMP_TMPFILES" "$TMPFILES_CONFIG"
+rm -f -- "$TMP_TMPFILES"
+sudo systemd-tmpfiles --create "$TMPFILES_CONFIG"
 
 if ! getent passwd "$WEB_USER" >/dev/null; then
   sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$WEB_USER"
@@ -233,13 +244,15 @@ cat > "$TMP_DISPATCH_UNIT" <<UNIT
 $MANAGED_MARKER
 [Unit]
 Description=github-runner-tools privileged Web dispatcher
-After=network-online.target
+After=network-online.target systemd-tmpfiles-setup.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
 Group=root
+RuntimeDirectory=github-runner-tools
+RuntimeDirectoryMode=0755
 ExecStart=/usr/bin/python3 $INSTALL_ROOT/dispatcher.py --config $CONFIG_FILE
 Restart=on-failure
 RestartSec=2

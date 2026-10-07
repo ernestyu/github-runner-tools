@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import contextlib
+import http.client
 import importlib.util
 import io
 import json
@@ -13,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -353,6 +356,275 @@ class FrozenSessionContractTests(unittest.TestCase):
         ):
             self.assertFalse(handler._listed_eligible("owner/repo", "remove"))
             self.assertFalse(handler._listed_eligible("owner/repo", "recover_local"))
+
+
+class WebHTTPContractTests(unittest.TestCase):
+    def setUp(self):
+        web_app.SESSIONS.clear()
+        web_app.LOGIN_ATTEMPTS.clear()
+        self.tmp = tempfile.TemporaryDirectory()
+        base = pathlib.Path(self.tmp.name)
+        config = base / "web.conf"
+        auth = base / "web-auth.conf"
+        config.write_text(
+            "WEB_BIND_ADDRESS=127.0.0.1\n"
+            "WEB_PORT=0\n"
+            "DISPATCH_SOCKET=/nonexistent/web-dispatch.sock\n"
+            "MUTATION_TIMEOUT_SECONDS=1\n",
+            encoding="utf-8",
+        )
+        auth.write_text(
+            "PASSWORD_HASH=" + common.password_hash("correct-password", n=2**10) + "\n",
+            encoding="utf-8",
+        )
+        self.app = web_app.App(str(config), str(auth))
+        web_app.Handler.app = self.app
+        self.server = web_app.ThreadingHTTPServer(("127.0.0.1", 0), web_app.Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.port = self.server.server_address[1]
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self.tmp.cleanup()
+        web_app.SESSIONS.clear()
+        web_app.LOGIN_ATTEMPTS.clear()
+
+    def request(self, method, path, fields=None, cookie=None, raw_body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        headers = {}
+        if cookie:
+            headers["Cookie"] = cookie
+        if raw_body is None and fields is not None:
+            raw_body = urllib.parse.urlencode(fields).encode()
+        if raw_body is not None:
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+            headers["Content-Length"] = str(len(raw_body))
+        conn.request(method, path, body=raw_body, headers=headers)
+        response = conn.getresponse()
+        body = response.read()
+        result = (response.status, dict(response.getheaders()), body)
+        conn.close()
+        return result
+
+    def new_cookie_session(self):
+        sid, sess = self.app.new_session()
+        return f"{web_app.COOKIE_NAME}={sid}", sess
+
+    def test_unauthenticated_management_redirects_to_login(self):
+        status, headers, _body = self.request("GET", "/")
+        self.assertEqual(status, 303)
+        self.assertEqual(headers.get("Location"), "/login")
+
+    def test_actual_login_rate_limit(self):
+        for _ in range(8):
+            status, _headers, _body = self.request(
+                "POST", "/login", {"password": "wrong-password"}
+            )
+            self.assertEqual(status, 403)
+        status, _headers, _body = self.request(
+            "POST", "/login", {"password": "wrong-password"}
+        )
+        self.assertEqual(status, 429)
+
+    def test_expired_and_restart_invalidated_cookie_rejected(self):
+        cookie, sess = self.new_cookie_session()
+        sess["last"] = web_app.now() - web_app.SESSION_IDLE - 1
+        status, headers, _body = self.request("GET", "/", cookie=cookie)
+        self.assertEqual(status, 303)
+        self.assertEqual(headers.get("Location"), "/login")
+
+        cookie2, _sess2 = self.new_cookie_session()
+        web_app.SESSIONS.clear()  # restart semantics
+        status, headers, _body = self.request("GET", "/", cookie=cookie2)
+        self.assertEqual(status, 303)
+        self.assertEqual(headers.get("Location"), "/login")
+
+    def test_state_change_requires_csrf(self):
+        cookie, _sess = self.new_cookie_session()
+        status, _headers, _body = self.request(
+            "POST", "/logout", {"csrf": "wrong"}, cookie=cookie
+        )
+        self.assertEqual(status, 403)
+
+    def test_confirmation_nonce_missing_expired_wrong_operation_and_reuse(self):
+        cookie, sess = self.new_cookie_session()
+        eligible = {
+            "ok": True,
+            "runners": [
+                {
+                    "repository": "owner/repo",
+                    "can_remove": True,
+                    "can_recover_local": True,
+                }
+            ],
+        }
+        with mock.patch("app.dispatch", return_value=eligible):
+            status, _headers, body = self.request(
+                "POST",
+                "/remove/prepare",
+                {"csrf": sess["csrf"], "repository": "owner/repo"},
+                cookie=cookie,
+            )
+        self.assertEqual(status, 200)
+        self.assertNotIn(b"temporary-secret", body)
+        nonce = next(iter(sess["confirm"]))
+
+        status, _headers, _body = self.request(
+            "POST",
+            "/remove/confirm",
+            {"csrf": sess["csrf"], "nonce": "missing", "token": "temporary-secret"},
+            cookie=cookie,
+        )
+        self.assertEqual(status, 403)
+
+        # Wrong operation consumes and rejects its own nonce.
+        sess["confirm"]["recover-only"] = {
+            "op": "recover_local",
+            "repository": "owner/repo",
+            "expires": web_app.now() + 60,
+        }
+        status, _headers, _body = self.request(
+            "POST",
+            "/remove/confirm",
+            {"csrf": sess["csrf"], "nonce": "recover-only", "token": "temporary-secret"},
+            cookie=cookie,
+        )
+        self.assertEqual(status, 403)
+
+        sess["confirm"]["expired"] = {
+            "op": "remove",
+            "repository": "owner/repo",
+            "expires": web_app.now() - 1,
+        }
+        status, _headers, _body = self.request(
+            "POST",
+            "/remove/confirm",
+            {"csrf": sess["csrf"], "nonce": "expired", "token": "temporary-secret"},
+            cookie=cookie,
+        )
+        self.assertEqual(status, 403)
+
+        with mock.patch("app.dispatch", return_value={"ok": True}):
+            status, _headers, _body = self.request(
+                "POST",
+                "/remove/confirm",
+                {"csrf": sess["csrf"], "nonce": nonce, "token": "temporary-secret"},
+                cookie=cookie,
+            )
+        self.assertEqual(status, 303)
+        self.assertNotIn(nonce, sess["confirm"])
+        status, _headers, _body = self.request(
+            "POST",
+            "/remove/confirm",
+            {"csrf": sess["csrf"], "nonce": nonce, "token": "temporary-secret"},
+            cookie=cookie,
+        )
+        self.assertEqual(status, 403)
+
+    def test_confirmation_is_repository_bound_server_side(self):
+        cookie, sess = self.new_cookie_session()
+        eligible = {
+            "ok": True,
+            "runners": [
+                {"repository": "owner/repo", "can_remove": True, "can_recover_local": False}
+            ],
+        }
+        with mock.patch("app.dispatch", return_value=eligible):
+            status, _headers, body = self.request(
+                "POST",
+                "/remove/prepare",
+                {"csrf": sess["csrf"], "repository": "owner/repo"},
+                cookie=cookie,
+            )
+        self.assertEqual(status, 200)
+        nonce, pending = next(iter(sess["confirm"].items()))
+        self.assertEqual(pending["repository"], "owner/repo")
+        html_text = body.decode("utf-8")
+        self.assertIn(f'name="nonce" value="{nonce}"', html_text)
+        self.assertNotIn('name="repository"', html_text)
+
+    def test_stale_list_eligibility_rejects_prepare(self):
+        cookie, sess = self.new_cookie_session()
+        stale = {
+            "ok": True,
+            "runners": [
+                {
+                    "repository": "owner/repo",
+                    "can_remove": False,
+                    "can_recover_local": False,
+                }
+            ],
+        }
+        with mock.patch("app.dispatch", return_value=stale):
+            status, _headers, _body = self.request(
+                "POST",
+                "/remove/prepare",
+                {"csrf": sess["csrf"], "repository": "owner/repo"},
+                cookie=cookie,
+            )
+            self.assertEqual(status, 409)
+            status, _headers, _body = self.request(
+                "POST",
+                "/recover/prepare",
+                {"csrf": sess["csrf"], "repository": "owner/repo"},
+                cookie=cookie,
+            )
+            self.assertEqual(status, 409)
+
+    def test_oversized_body_repository_and_token_rejected_before_dispatch(self):
+        cookie, sess = self.new_cookie_session()
+
+        status, _headers, _body = self.request(
+            "POST", "/create", cookie=cookie, raw_body=b"x" * (common.MAX_REQUEST_BYTES + 1)
+        )
+        self.assertEqual(status, 413)
+
+        with mock.patch("app.dispatch") as call:
+            status, _headers, _body = self.request(
+                "POST",
+                "/create",
+                {
+                    "csrf": sess["csrf"],
+                    "repository": "o/" + "r" * common.MAX_REPOSITORY_LEN,
+                    "token": "short",
+                },
+                cookie=cookie,
+            )
+            self.assertEqual(status, 413)
+            self.assertFalse(call.called)
+
+            status, _headers, _body = self.request(
+                "POST",
+                "/create",
+                {
+                    "csrf": sess["csrf"],
+                    "repository": "owner/repo",
+                    "token": "x" * (common.MAX_TOKEN_LEN + 1),
+                },
+                cookie=cookie,
+            )
+            self.assertEqual(status, 413)
+            self.assertFalse(call.called)
+
+    def test_secret_not_reflected_in_error_response_log_or_confirmation_state(self):
+        cookie, sess = self.new_cookie_session()
+        token = "DO_NOT_LEAK_TEMP_TOKEN"
+        log = io.StringIO()
+        with mock.patch("app.dispatch", return_value={"ok": False, "error": "lifecycle_failed"}), \
+             contextlib.redirect_stdout(log):
+            status, _headers, body = self.request(
+                "POST",
+                "/create",
+                {"csrf": sess["csrf"], "repository": "owner/repo", "token": token},
+                cookie=cookie,
+            )
+        self.assertEqual(status, 500)
+        self.assertNotIn(token, body.decode("utf-8"))
+        self.assertNotIn(token, log.getvalue())
+        self.assertNotIn(token, json.dumps(sess))
 
 
 class DispatcherAndWorkerAuthorityTests(unittest.TestCase):

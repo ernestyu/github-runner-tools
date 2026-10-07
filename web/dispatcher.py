@@ -32,7 +32,9 @@ from grt_web_common import (
     canonical_service_name,
     encode_json_line,
     load_key_value,
+    make_local_id,
     recv_json_line,
+    sanitize_component,
     validate_repository,
 )
 
@@ -84,12 +86,20 @@ class Runtime:
         if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
             raise DispatchError("worker_not_root_controlled")
 
-    def validate_runner_dir(self, path: str) -> str:
+    def validate_runner_dir(self, repository: str, path: str, *, allow_legacy: bool = True) -> str:
+        repository = validate_repository(repository)
+        owner, repo = repository.split("/", 1)
         real = os.path.realpath(path)
-        prefix = self.runner_home.rstrip("/") + "/actions-runner-"
-        if not real.startswith(prefix):
-            raise DispatchError("invalid_runner_dir")
-        if os.path.islink(path):
+        new_dir = os.path.realpath(
+            os.path.join(self.runner_home, "actions-runner-" + make_local_id(owner, repo))
+        )
+        allowed = {new_dir}
+        if allow_legacy:
+            legacy = os.path.realpath(
+                os.path.join(self.runner_home, "actions-runner-" + sanitize_component(repo))
+            )
+            allowed.add(legacy)
+        if real not in allowed or os.path.islink(path):
             raise DispatchError("invalid_runner_dir")
         return real
 
@@ -136,7 +146,7 @@ class Runtime:
         allow_absent: bool = False,
     ) -> tuple[str, dict[str, str]]:
         validate_repository(repository)
-        runner_dir = self.validate_runner_dir(runner_dir)
+        runner_dir = self.validate_runner_dir(repository, runner_dir)
         expected = canonical_service_name(repository, runner_name)
         if service != expected:
             raise DispatchError("service_identity_mismatch")
@@ -186,7 +196,9 @@ class Runtime:
 
     def install_service(self, request: dict[str, Any]) -> dict[str, Any]:
         repository = validate_repository(str(request["repository"]))
-        runner_dir = self.validate_runner_dir(str(request["runner_dir"]))
+        runner_dir = self.validate_runner_dir(
+            repository, str(request["runner_dir"]), allow_legacy=False
+        )
         runner_name = str(request["runner_name"])
         service = canonical_service_name(repository, runner_name)
         runsvc = os.path.join(runner_dir, "runsvc.sh")
@@ -285,6 +297,11 @@ class Runtime:
                 self.validate_unit(repository, runner_dir, runner_name, service)
                 os.unlink(f"/etc/systemd/system/{service}")
                 subprocess.run(["systemctl", "daemon-reload"], check=True)
+                final_state, _ = self.validate_unit(
+                    repository, runner_dir, runner_name, service, allow_absent=True
+                )
+                if final_state != "absent":
+                    raise DispatchError("service_uninstall_not_final")
             else:
                 return stable_error("unknown_privileged_operation")
             return {"ok": True}
@@ -385,7 +402,10 @@ class DispatchServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
                 "GRT_REQUEST_FD": str(request_r),
                 "GRT_TOKEN_FD": str(token_r),
                 "GRT_PRIVILEGED_FD": str(ctrl_child.fileno()),
-                "GRT_WEB_CONFIG": runtime.config_path,
+                "GRT_RUNNER_USER": runtime.runner_user,
+                "GRT_RUNNER_HOME": runtime.runner_home,
+                "GRT_CLI_DIR": "/usr/local/lib/github-runner-tools/web/cli",
+                "GRT_PTY_ADAPTER": "/usr/local/lib/github-runner-tools/web/pty_token_adapter.py",
             }
             proc = subprocess.Popen(
                 ["/usr/bin/python3", runtime.worker_path],

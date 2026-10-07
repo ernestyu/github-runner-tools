@@ -16,6 +16,7 @@ import threading
 import time
 import unittest
 import urllib.parse
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -671,6 +672,60 @@ class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
         finally:
             left.close()
             right.close()
+
+    def test_dispatch_handler_rejects_wrong_peer_uid_before_request_parse(self):
+        sent = []
+        fake_request = mock.Mock()
+        fake_request.sendall.side_effect = sent.append
+        runtime = SimpleNamespace(web_pw=SimpleNamespace(pw_uid=4242))
+        handler = object.__new__(dispatcher.DispatchHandler)
+        handler.request = fake_request
+        handler.server = SimpleNamespace(runtime=runtime)
+        with mock.patch("dispatcher.unix_peer_uid", return_value=31337):
+            handler.handle()
+        self.assertTrue(sent)
+        reply = json.loads(sent[0].decode("utf-8").strip())
+        self.assertEqual(reply, {"ok": False, "error": "peer_not_authorized"})
+
+    def test_dispatcher_launches_worker_with_exact_runner_identity_drop(self):
+        class FakeProc:
+            returncode = 0
+            pid = 999999
+
+            def communicate(self, timeout=None):
+                return ('{"ok":true}', "")
+
+        with tempfile.TemporaryDirectory() as td:
+            lock_path = pathlib.Path(td) / "mutation.lock"
+            lock_path.touch()
+            runtime = SimpleNamespace(
+                lock_file=str(lock_path),
+                timeout=5,
+                runner_user="actions",
+                runner_home="/home/actions",
+                worker_path="/root-owned/lifecycle_worker.py",
+                runner_pw=SimpleNamespace(pw_uid=1234, pw_gid=2345),
+                validate_fixed_worker=mock.Mock(),
+                privileged=mock.Mock(return_value={"ok": True, "context": "dispatcher"}),
+            )
+            server = object.__new__(dispatcher.DispatchServer)
+            server.runtime = runtime
+            captured = {}
+
+            def fake_popen(args, **kwargs):
+                captured["args"] = args
+                captured["kwargs"] = kwargs
+                return FakeProc()
+
+            with mock.patch("dispatcher.subprocess.Popen", side_effect=fake_popen):
+                result = dispatcher.DispatchServer.execute(server, {"op": "list"})
+
+            self.assertEqual(result, {"ok": True})
+            self.assertEqual(captured["args"], ["/usr/bin/python3", runtime.worker_path])
+            self.assertEqual(captured["kwargs"]["user"], 1234)
+            self.assertEqual(captured["kwargs"]["group"], 2345)
+            self.assertEqual(captured["kwargs"]["extra_groups"], [])
+            self.assertTrue(captured["kwargs"]["start_new_session"])
 
     def test_cli_held_lock_makes_web_dispatcher_return_busy_before_worker_launch(self):
         import fcntl

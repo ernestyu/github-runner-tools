@@ -5,7 +5,7 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 required_commands=(
   bash jq rsync find du sha256sum df timeout date awk sed tr wc
-  mkdir mv rm sleep grep stat flock mktemp sort python3 base64 sudo
+  mkdir mv rm sleep grep stat flock mktemp sort python3 base64 sudo script
 )
 
 for cmd in "${required_commands[@]}"; do
@@ -28,6 +28,7 @@ tests=(
   tests/test-failure-paths.sh
   tests/test-recover-local-removal.sh
   tests/test-web-contracts.sh
+  tests/test-web-setup-apply.sh
   tests/test-archive-common.sh
   tests/test-register-archive.sh
   tests/test-archive-hook.sh

@@ -145,7 +145,18 @@ def password_hash(password: str, *, n: int = 2**15, r: int = 8, p: int = 1) -> s
     if not password:
         raise ValueError("password cannot be empty")
     salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p, dklen=32)
+    # OpenSSL's implicit default memory ceiling can be slightly below the
+    # working set required by n=2**15,r=8. Set an explicit bounded ceiling so
+    # the frozen scrypt parameters behave consistently across supported hosts.
+    digest = hashlib.scrypt(
+        password.encode("utf-8"),
+        salt=salt,
+        n=n,
+        r=r,
+        p=p,
+        dklen=32,
+        maxmem=64 * 1024 * 1024,
+    )
     parts = [
         "scrypt",
         str(n),
@@ -170,6 +181,7 @@ def verify_password(password: str, encoded: str) -> bool:
             r=int(r_s),
             p=int(p_s),
             dklen=len(expected),
+            maxmem=64 * 1024 * 1024,
         )
         return secrets.compare_digest(actual, expected)
     except (ValueError, TypeError):

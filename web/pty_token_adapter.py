@@ -111,8 +111,9 @@ def main() -> int:
                 if any(p in low for p in safe_prompts):
                     os.write(master, b"\n")
 
-            sys.stdout.buffer.write(redact(chunk, token))
-            sys.stdout.buffer.flush()
+            # Raw PTY output is intentionally not forwarded. The Web path
+            # needs only the exit status; suppressing the transcript prevents
+            # an echoed or transformed secret from reaching logs/responses.
 
         rc = proc.wait(timeout=5)
         if not token_sent:

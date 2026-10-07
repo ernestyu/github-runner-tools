@@ -24,8 +24,8 @@ if [[ "${1:-}" == "show" ]]; then
     fi
   done
   case "$property" in
-    LoadState) printf '%s\n' "${MOCK_LOAD_STATE:-loaded}" ;;
-    ActiveState) printf '%s\n' "${MOCK_ACTIVE_STATE:-active}" ;;
+    LoadState) printf '%s\n' "${MOCK_LOAD_STATE-loaded}" ;;
+    ActiveState) printf '%s\n' "${MOCK_ACTIVE_STATE-active}" ;;
     *) printf '%s\n' "" ;;
   esac
   exit 0

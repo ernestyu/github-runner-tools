@@ -20,6 +20,7 @@ sys.path.insert(0, str(WEB))
 import grt_web_common as common
 import app as web_app
 import dispatcher
+import lifecycle_worker
 
 
 class CommonTests(unittest.TestCase):
@@ -115,6 +116,20 @@ class TokenAdapterTests(unittest.TestCase):
             self.assertIn("TOKEN_OK=True", proc.stdout)
             self.assertIn("ARGV_HAS=False", proc.stdout)
             self.assertIn("ENV_HAS=False", proc.stdout)
+
+
+class WorkerProtocolTests(unittest.TestCase):
+    def test_worker_reads_dispatch_request_from_pipe(self):
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, b'{"op":"list"}\n')
+            os.close(write_fd)
+            write_fd = -1
+            self.assertEqual(lifecycle_worker.read_request(read_fd), {"op": "list"})
+        finally:
+            os.close(read_fd)
+            if write_fd >= 0:
+                os.close(write_fd)
 
 
 class DispatcherAuthorityTests(unittest.TestCase):

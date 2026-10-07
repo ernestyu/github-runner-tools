@@ -1192,29 +1192,43 @@ The implementation must preserve all of these:
 ```text
 Web frontend is never root.
 
+Root dispatcher only authenticates Web IPC, holds the mutation lock,
+launches the fixed worker, enforces timeout, and services narrow host operations.
+
+Lifecycle worker drops to actions before lifecycle logic.
+
 Whole runner lifecycle is never executed as root.
 
 Runner registration/configuration/unregister/directory operations execute as actions.
 
-Root privilege is limited to host dependency/service management.
+Root privilege is limited to root-controlled dependency/systemd management.
 
 Runner workflow user cannot read Web auth secrets.
 
-Runner workflow user cannot invoke privileged helper IPC.
+Runner workflow user cannot connect to the public privileged dispatch socket.
 
-No NOPASSWD path to runner-user-writable svc.sh.
+Runner workflow user cannot obtain the request-scoped private privileged control FD.
 
-Privileged helper never executes runner-user-writable code as root.
+No NOPASSWD path is added for actions or grt-web.
 
-Privileged service mutation cross-checks root-controlled systemd properties.
+Privileged root code never executes runner-user-writable code as root.
+
+Privileged service mutation validates full root-controlled unit provenance and Exec* surface.
 
 Frontend eligibility flags are advisory only.
 
-Every mutation revalidates current identity/state under the mutation lock.
+Every mutation revalidates current identity/state under the shared mutation lock.
+
+CLI and Web mutations use the same host-level lock.
+
+Temporary GitHub tokens never enter argv/env/file/URL/log/response/session/nonce state,
+including at the final config.sh/config.sh remove consumer.
+
+actions UID is explicitly inside the temporary-token trust boundary.
+
+Hosts executing public/untrusted workflows as actions are outside Web V1 security support.
 
 No arbitrary shell input.
-
-No token in argv/env/file/log/URL.
 
 No request-body or form-value secret logging.
 

@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -424,6 +425,7 @@ class DispatchServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
                     lock_handle.close()
                 return stable_error("operation_in_progress")
 
+        deadline = time.monotonic() + runtime.timeout
         request_r, request_w = os.pipe()
         token_r, token_w = os.pipe()
         ctrl_parent, ctrl_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -462,6 +464,7 @@ class DispatchServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
                 user=runtime.runner_pw.pw_uid,
                 group=runtime.runner_pw.pw_gid,
                 extra_groups=[],
+                start_new_session=True,
             )
             os.close(request_r)
             request_r = -1
@@ -484,7 +487,7 @@ class DispatchServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
                             msg = json.loads(line.decode("utf-8"))
                             if not isinstance(msg, dict):
                                 raise ValueError
-                            response = runtime.privileged(msg)
+                            response = runtime.privileged(msg, deadline=deadline)
                         except Exception:
                             response = stable_error("invalid_privileged_request")
                         file.write(encode_json_line(response))
@@ -499,11 +502,17 @@ class DispatchServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
             try:
                 stdout, stderr = proc.communicate(timeout=runtime.timeout)
             except subprocess.TimeoutExpired:
-                proc.terminate()
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     proc.wait(timeout=5)
                 return stable_error("operation_timed_out")
             finally:
@@ -513,7 +522,10 @@ class DispatchServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
                 except OSError:
                     pass
                 ctrl_parent.close()
-                thread.join(timeout=1)
+                # Privileged operations are bounded by the same request
+                # deadline; do not release the mutation lock while one is
+                # still executing.
+                thread.join()
 
             if proc.returncode != 0:
                 return stable_error("lifecycle_failed")

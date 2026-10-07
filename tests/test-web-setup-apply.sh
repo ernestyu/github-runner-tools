@@ -64,7 +64,7 @@ case "\${1:-}" in
     ;;
   stat)
     fmt="\${3:-}"
-    case "$fmt" in
+    case "\$fmt" in
       %U:%G:%a:%F) printf '%s\n' 'root:grt-web:640:regular file' ;;
       %U:%a) printf '%s\n' 'root:755' ;;
       %a) printf '%s\n' '755' ;;

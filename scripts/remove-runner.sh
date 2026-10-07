@@ -4,6 +4,12 @@ set -Eeuo pipefail
 MAX_LOCAL_ID_LENGTH=64
 HASH_LENGTH=8
 TOKEN=""
+MUTATION_LOCK_DIR="/run/lock/github-runner-tools"
+MUTATION_LOCK_FILE="$MUTATION_LOCK_DIR/mutation.lock"
+WEB_MODE=0
+TOKEN_FD=""
+PRIVILEGED_FD=""
+LOCK_ALREADY_HELD=0
 
 usage() {
   cat <<'USAGE'
@@ -143,6 +149,87 @@ validate_recovery_identity() {
   printf '%s' "$service_name"
 }
 
+web_priv_request() {
+  local payload="$1" response
+  [[ "$WEB_MODE" == "1" && "$PRIVILEGED_FD" =~ ^[0-9]+$ ]] || die "Invalid Web privileged context."
+  printf '%s\n' "$payload" >&"$PRIVILEGED_FD" || die "Privileged dispatcher channel write failed."
+  IFS= read -r response <&"$PRIVILEGED_FD" || die "Privileged dispatcher channel closed."
+  WEB_PRIV_RESPONSE="$response"
+  jq -e '.ok == true' <<<"$response" >/dev/null 2>&1
+}
+
+web_context_check() {
+  web_priv_request '{"op":"context_check"}' || die "Web lifecycle context is not authorized by dispatcher."
+}
+
+ensure_mutation_lock() {
+  local group gid
+  if [[ "${GRT_TEST_MODE:-0}" == "1" ]]; then
+    MUTATION_LOCK_DIR="${GRT_TEST_LOCK_DIR:-${TMPDIR:-/tmp}/github-runner-tools-test-lock-$(id -u)}"
+    MUTATION_LOCK_FILE="$MUTATION_LOCK_DIR/mutation.lock"
+    mkdir -p -- "$MUTATION_LOCK_DIR"
+    : > "$MUTATION_LOCK_FILE"
+    chmod 0660 "$MUTATION_LOCK_FILE"
+    return 0
+  fi
+
+  group="$(id -gn)"
+  gid="$(id -g)"
+  if [[ ! -e "$MUTATION_LOCK_DIR" ]]; then
+    sudo install -d -o root -g root -m 0755 "$MUTATION_LOCK_DIR"
+  fi
+  [[ -d "$MUTATION_LOCK_DIR" && ! -L "$MUTATION_LOCK_DIR" ]] || die "Mutation lock directory has invalid type."
+  [[ "$(stat -c '%u' "$MUTATION_LOCK_DIR")" == "0" && "$(stat -c '%a' "$MUTATION_LOCK_DIR")" == "755" ]] ||
+    die "Mutation lock directory has invalid ownership/mode."
+
+  if [[ ! -e "$MUTATION_LOCK_FILE" ]]; then
+    sudo install -o root -g "$group" -m 0660 /dev/null "$MUTATION_LOCK_FILE"
+  fi
+  [[ -f "$MUTATION_LOCK_FILE" && ! -L "$MUTATION_LOCK_FILE" ]] || die "Mutation lock file has invalid type."
+  [[ "$(stat -c '%u' "$MUTATION_LOCK_FILE")" == "0" &&
+     "$(stat -c '%g' "$MUTATION_LOCK_FILE")" == "$gid" &&
+     "$(stat -c '%a' "$MUTATION_LOCK_FILE")" == "660" ]] ||
+    die "Mutation lock file has invalid ownership/mode."
+}
+
+acquire_mutation_lock() {
+  if [[ "$WEB_MODE" == "1" ]]; then
+    [[ "$LOCK_ALREADY_HELD" == "1" ]] || die "Web lifecycle requires dispatcher-held mutation lock."
+    web_context_check
+    return 0
+  fi
+  ensure_mutation_lock
+  exec {MUTATION_LOCK_FD}<>"$MUTATION_LOCK_FILE"
+  flock -n "$MUTATION_LOCK_FD" || die "Another runner lifecycle operation is already in progress."
+}
+
+runner_name_from_service() {
+  local service_name="$1" owner="$2" repo="$3" scope lower prefix suffix rest
+  scope="$(normalize_service_repo_scope "$owner" "$repo" | tr '[:upper:]' '[:lower:]')"
+  lower="$(printf '%s' "$service_name" | tr '[:upper:]' '[:lower:]')"
+  prefix="actions.runner.$scope."
+  suffix=".service"
+  [[ "$lower" == "$prefix"*"$suffix" ]] || return 1
+  rest="${service_name:${#prefix}:${#service_name}-${#prefix}-${#suffix}}"
+  [[ -n "$rest" ]] || return 1
+  printf '%s' "$rest"
+}
+
+web_service_state() {
+  local repo="$1" runner_dir="$2" runner_name="$3" service="$4" req
+  req="$(jq -nc --arg repository "$repo" --arg runner_dir "$runner_dir" --arg runner_name "$runner_name" --arg service "$service" \
+    '{op:"service_state",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,service:$service}')"
+  web_priv_request "$req" || return 1
+  jq -er '.state' <<<"$WEB_PRIV_RESPONSE"
+}
+
+web_service_operation() {
+  local op="$1" repo="$2" runner_dir="$3" runner_name="$4" service="$5" req
+  req="$(jq -nc --arg op "$op" --arg repository "$repo" --arg runner_dir "$runner_dir" --arg runner_name "$runner_name" --arg service "$service" \
+    '{op:$op,repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,service:$service}')"
+  web_priv_request "$req"
+}
+
 read_tty_line() {
   local prompt="$1" secret="${2:-0}" value
   [[ -r /dev/tty && -w /dev/tty ]] || die "Interactive input requires a TTY."
@@ -219,13 +306,18 @@ uninstall_service_safely() {
 
 main() {
 if [[ ${EUID} -eq 0 ]]; then die "Do not run this script as root. Run it as the runner owner."; fi
-for cmd in jq sudo id awk tr sed sha256sum cut find systemctl; do require_command "$cmd"; done
+for cmd in jq id awk tr sed sha256sum cut find systemctl flock stat python3; do require_command "$cmd"; done
+if [[ "$WEB_MODE" != "1" ]]; then require_command sudo; fi
 
 CLI_BASE_DIR=""; RECOVER_LOCAL=0; POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base-dir) [[ $# -ge 2 ]] || die "--base-dir requires a value"; CLI_BASE_DIR="$2"; shift 2 ;;
     --recover-local) RECOVER_LOCAL=1; shift ;;
+    --web-worker) WEB_MODE=1; shift ;;
+    --token-fd) [[ $# -ge 2 ]] || die "--token-fd requires a value"; TOKEN_FD="$2"; shift 2 ;;
+    --privileged-fd) [[ $# -ge 2 ]] || die "--privileged-fd requires a value"; PRIVILEGED_FD="$2"; shift 2 ;;
+    --lock-already-held) LOCK_ALREADY_HELD=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; POSITIONAL+=("$@"); break ;;
     -*) die "Unknown option: $1" ;;
@@ -234,6 +326,18 @@ while [[ $# -gt 0 ]]; do
 done
 set -- "${POSITIONAL[@]}"
 [[ $# -eq 1 ]] || { usage; exit 1; }
+
+if [[ "$WEB_MODE" == "1" ]]; then
+  [[ "${GRT_WEB_CONTEXT:-0}" == "1" ]] || die "Internal Web mode requires dispatcher context."
+  [[ "$PRIVILEGED_FD" =~ ^[0-9]+$ && "$LOCK_ALREADY_HELD" == "1" ]] || die "Incomplete internal Web lifecycle context."
+  if [[ "$RECOVER_LOCAL" != "1" ]]; then
+    [[ "$TOKEN_FD" =~ ^[0-9]+$ ]] || die "Normal Web removal requires token FD."
+  fi
+  web_context_check
+elif [[ -n "$TOKEN_FD" || -n "$PRIVILEGED_FD" || "$LOCK_ALREADY_HELD" == "1" ]]; then
+  die "Internal Web options are not available in normal CLI mode."
+fi
+
 REPO="$1"
 [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "Repository must be in OWNER/REPO form."
 OWNER="${REPO%%/*}"; REPO_NAME="${REPO##*/}"
@@ -243,6 +347,8 @@ RUNNER_USER="$(id -un)"; USER_HOME="$(resolve_home "$RUNNER_USER")" || die "Coul
 RUNNER_BASE_DIR="${CLI_BASE_DIR:-${RUNNER_BASE_DIR:-$USER_HOME}}"
 [[ -d "$RUNNER_BASE_DIR" && -x "$RUNNER_BASE_DIR" && -r "$RUNNER_BASE_DIR" && -w "$RUNNER_BASE_DIR" ]] || die "RUNNER_BASE_DIR is not accessible and writable: $RUNNER_BASE_DIR"
 RUNNER_BASE_DIR="$(canonicalize_existing_dir "$RUNNER_BASE_DIR")" || die "Could not canonicalize RUNNER_BASE_DIR: $RUNNER_BASE_DIR"
+
+acquire_mutation_lock
 
 NEW_DIR="$RUNNER_BASE_DIR/actions-runner-$LOCAL_ID"
 LEGACY_DIR="$RUNNER_BASE_DIR/actions-runner-$SAFE_REPO"
@@ -265,9 +371,16 @@ if [[ "$RECOVER_LOCAL" == "1" ]]; then
     die "Recovery identity validation failed. No local service mutation or directory deletion was performed."
 
   cd "$RUNNER_DIR"
-  SERVICE_STATE="$(runner_service_state)"
+  if [[ "$WEB_MODE" == "1" ]]; then
+    RUNNER_NAME="$(runner_name_from_service "$SERVICE_NAME" "$OWNER" "$REPO_NAME")" ||
+      die "Could not establish runner name from verified recovery service identity."
+    SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
+      die "Cannot determine privileged systemd service state."
+  else
+    SERVICE_STATE="$(runner_service_state)"
+  fi
   case "$SERVICE_STATE" in
-    present|absent) ;;
+    present|active|inactive|absent) ;;
     unknown)
       die "Cannot determine systemd service state. Local runner directory will not be deleted."
       ;;
@@ -288,22 +401,35 @@ It will not request a GitHub removal token and will not call config.sh remove.
 Local artifact archives are not deleted.
 INFO
 
-  CONFIRM="$(read_tty_line "Type RECOVER-REMOVE to uninstall local residue and delete this runner directory: ")"
-  [[ "$CONFIRM" == "RECOVER-REMOVE" ]] || die "Cancelled."
+  if [[ "$WEB_MODE" != "1" ]]; then
+    CONFIRM="$(read_tty_line "Type RECOVER-REMOVE to uninstall local residue and delete this runner directory: ")"
+    [[ "$CONFIRM" == "RECOVER-REMOVE" ]] || die "Cancelled."
+  fi
 
-  if [[ "$SERVICE_STATE" == "present" ]]; then
+  if [[ "$SERVICE_STATE" != "absent" ]]; then
     echo "==> Stopping service..."
-    if ! sudo ./svc.sh stop; then
-      echo "WARNING: Service stop failed; continuing to service uninstall so the final systemd state can be checked." >&2
+    if [[ "$WEB_MODE" == "1" ]]; then
+      web_service_operation service_stop "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME" ||
+        die "Privileged service stop failed."
+      web_service_operation service_uninstall "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME" ||
+        die "Privileged service uninstall failed."
+    else
+      if ! sudo ./svc.sh stop; then
+        echo "WARNING: Service stop failed; continuing to service uninstall so the final systemd state can be checked." >&2
+      fi
+      echo "==> Uninstalling service..."
+      uninstall_service_safely
     fi
-
-    echo "==> Uninstalling service..."
-    uninstall_service_safely
   else
     echo "==> Systemd service is already absent; continuing."
   fi
 
-  FINAL_SERVICE_STATE="$(runner_service_state)"
+  if [[ "$WEB_MODE" == "1" ]]; then
+    FINAL_SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
+      die "Could not verify final privileged service state."
+  else
+    FINAL_SERVICE_STATE="$(runner_service_state)"
+  fi
   [[ "$FINAL_SERVICE_STATE" == "absent" ]] ||
     die "Systemd service is not confirmed absent after recovery cleanup. Local runner directory will not be deleted."
 
@@ -368,23 +494,44 @@ Before continuing, open:
 Select the runner, choose Remove, and copy the temporary removal token.
 INFO
 
-TOKEN="$(read_tty_line "Paste GitHub removal token: " 1)"
-[[ -n "$TOKEN" ]] || die "Removal token cannot be empty."
-CONFIRM="$(read_tty_line "Type REMOVE to unregister and delete this runner: ")"
-[[ "$CONFIRM" == "REMOVE" ]] || die "Cancelled."
-
-cd "$RUNNER_DIR"
-echo "==> Stopping service..."
-if ! sudo ./svc.sh stop; then
-  echo "WARNING: Service stop failed; continuing to service uninstall in case it is already stopped." >&2
+if [[ "$WEB_MODE" != "1" ]]; then
+  TOKEN="$(read_tty_line "Paste GitHub removal token: " 1)"
+  [[ -n "$TOKEN" ]] || die "Removal token cannot be empty."
+  CONFIRM="$(read_tty_line "Type REMOVE to unregister and delete this runner: ")"
+  [[ "$CONFIRM" == "REMOVE" ]] || die "Cancelled."
 fi
 
-echo "==> Uninstalling service..."
-uninstall_service_safely
+cd "$RUNNER_DIR"
+if [[ "$WEB_MODE" == "1" ]]; then
+  RUNNER_NAME="$(jq -er '.agentName' "$RUNNER_DIR/.runner")" || die "Configured runner name is unavailable."
+  SERVICE_NAME="$(read_service_name_strict "$RUNNER_DIR/.service")" || die "Configured service identity is unavailable."
+  SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
+    die "Could not validate privileged systemd service state."
+  if [[ "$SERVICE_STATE" != "absent" ]]; then
+    web_service_operation service_stop "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME" ||
+      die "Privileged service stop failed."
+    web_service_operation service_uninstall "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME" ||
+      die "Privileged service uninstall failed."
+  fi
+else
+  echo "==> Stopping service..."
+  if ! sudo ./svc.sh stop; then
+    echo "WARNING: Service stop failed; continuing to service uninstall in case it is already stopped." >&2
+  fi
+  echo "==> Uninstalling service..."
+  uninstall_service_safely
+fi
 
 echo "==> Removing runner registration from GitHub..."
-./config.sh remove --token "$TOKEN"
-unset TOKEN
+if [[ "$WEB_MODE" == "1" ]]; then
+  PTY_ADAPTER="${GRT_PTY_ADAPTER:-/usr/local/lib/github-runner-tools/web/pty_token_adapter.py}"
+  [[ -x "$PTY_ADAPTER" ]] || die "Web PTY token adapter is unavailable."
+  python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode remove -- ./config.sh remove ||
+    die "Runner removal failed or runner version does not support secure interactive token input."
+else
+  ./config.sh remove --token "$TOKEN"
+  unset TOKEN
+fi
 
 cd "$RUNNER_BASE_DIR"
 case "$RUNNER_DIR" in "$RUNNER_BASE_DIR"/actions-runner-*) ;; *) die "Safety check failed; refusing to delete unexpected path: $RUNNER_DIR" ;; esac

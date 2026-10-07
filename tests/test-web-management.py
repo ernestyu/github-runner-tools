@@ -182,10 +182,43 @@ class DispatcherAuthorityTests(unittest.TestCase):
         with self.assertRaises(dispatcher.DispatchError):
             self.validate_with(props)
 
+    def test_wrong_fragment_fails_closed(self):
+        props = self.base_props()
+        props["FragmentPath"] = "/tmp/unmanaged.service"
+        with self.assertRaises(dispatcher.DispatchError):
+            self.validate_with(props)
+
+    def test_wrong_working_directory_fails_closed(self):
+        props = self.base_props()
+        props["WorkingDirectory"] = "/home/actions/actions-runner-other--repo"
+        with self.assertRaises(dispatcher.DispatchError):
+            self.validate_with(props)
+
+    def test_wrong_execstart_fails_closed(self):
+        props = self.base_props()
+        props["ExecStart"] = "{ path=/tmp/evil ; argv[]=/tmp/evil ; }"
+        with self.assertRaises(dispatcher.DispatchError):
+            self.validate_with(props)
+
+    def test_repository_directory_binding_fails_closed(self):
+        rt = self.runtime()
+        with mock.patch("dispatcher.os.path.realpath", side_effect=lambda p: p), \
+             mock.patch("dispatcher.os.path.islink", return_value=False):
+            with self.assertRaises(dispatcher.DispatchError):
+                rt.validate_runner_dir(
+                    "owner/repo",
+                    "/home/actions/actions-runner-someone--else",
+                )
+
     def test_public_schema_has_no_command_path_fields(self):
         forbidden = {"exec", "shell", "command", "path", "script", "argv", "uid", "gid", "service_name", "systemd_unit"}
         for fields in dispatcher.ALLOWED_PUBLIC.values():
             self.assertTrue(forbidden.isdisjoint(fields))
+
+    def test_worker_hardens_same_uid_fd_boundary(self):
+        source = (WEB / "lifecycle_worker.py").read_text(encoding="utf-8")
+        self.assertIn("PR_SET_DUMPABLE", source)
+        self.assertIn("disable_ptrace_dumpability()", source)
 
 
 if __name__ == "__main__":

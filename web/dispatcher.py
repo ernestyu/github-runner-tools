@@ -643,7 +643,17 @@ def main() -> int:
     runtime.ensure_lock_infrastructure()
     socket_path = Path(runtime.socket_path)
     socket_path.parent.mkdir(parents=True, exist_ok=True)
-    if socket_path.exists() or socket_path.is_symlink():
+    if socket_path.is_symlink():
+        raise DispatchError("dispatch_socket_symlink")
+    if socket_path.exists():
+        st = os.stat(socket_path, follow_symlinks=False)
+        if (
+            not stat.S_ISSOCK(st.st_mode)
+            or st.st_uid != 0
+            or st.st_gid != runtime.web_pw.pw_gid
+            or stat.S_IMODE(st.st_mode) != 0o660
+        ):
+            raise DispatchError("dispatch_socket_conflict")
         socket_path.unlink()
     server = DispatchServer(runtime)
     try:

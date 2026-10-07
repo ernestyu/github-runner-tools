@@ -20,10 +20,14 @@ while IFS= read -r script; do
   bash -n "$script"
 done < <(find "$ROOT/scripts" "$ROOT/hooks" "$ROOT/tests" "$ROOT/.github/actions" -type f -name '*.sh' -print | sort)
 
+echo "Checking Python syntax..."
+python3 -m py_compile "$ROOT"/web/*.py "$ROOT"/tests/test-web-management.py
+
 tests=(
   tests/test-pure.sh
   tests/test-failure-paths.sh
   tests/test-recover-local-removal.sh
+  tests/test-web-contracts.sh
   tests/test-archive-common.sh
   tests/test-register-archive.sh
   tests/test-archive-hook.sh
@@ -34,6 +38,11 @@ tests=(
   tests/test-migrate-artifact-safety.sh
   tests/test-summary-action.sh
 )
+
+echo
+echo "============================================================"
+echo "RUN: tests/test-web-management.py"
+python3 "$ROOT/tests/test-web-management.py"
 
 for test_script in "${tests[@]}"; do
   echo

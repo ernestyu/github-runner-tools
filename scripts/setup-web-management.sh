@@ -81,13 +81,22 @@ sudo -v || die "sudo access is required for explicit Web setup."
 
 # The shared lock is core lifecycle infrastructure. Web setup reuses the same
 # root-controlled path and does not create a Web-specific lock authority.
-sudo install -d -o root -g root -m 0755 "$LOCK_DIR"
-if sudo test -L "$LOCK_FILE"; then die "Shared mutation lock must not be a symlink."; fi
-if ! sudo test -e "$LOCK_FILE"; then
-  sudo install -o root -g "$RUNNER_GROUP" -m 0660 /dev/null "$LOCK_FILE"
+if sudo test -L "$LOCK_DIR"; then die "Shared mutation lock directory must not be a symlink."; fi
+if sudo test -e "$LOCK_DIR"; then
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$LOCK_DIR")" == "root:root:755:directory" ]] ||
+    die "Existing shared mutation lock directory has unexpected ownership/mode/type."
 else
-  [[ "$(sudo stat -c '%U:%G:%a:%F' "$LOCK_FILE")" == "root:$RUNNER_GROUP:660:regular empty file" ||      "$(sudo stat -c '%U:%G:%a:%F' "$LOCK_FILE")" == "root:$RUNNER_GROUP:660:regular file" ]] ||
+  sudo install -d -o root -g root -m 0755 "$LOCK_DIR"
+fi
+
+if sudo test -L "$LOCK_FILE"; then die "Shared mutation lock must not be a symlink."; fi
+if sudo test -e "$LOCK_FILE"; then
+  LOCK_META="$(sudo stat -c '%U:%G:%a:%F' "$LOCK_FILE")"
+  [[ "$LOCK_META" == "root:$RUNNER_GROUP:660:regular empty file" ||
+     "$LOCK_META" == "root:$RUNNER_GROUP:660:regular file" ]] ||
     die "Existing shared mutation lock has unexpected ownership/mode/type."
+else
+  sudo install -o root -g "$RUNNER_GROUP" -m 0660 /dev/null "$LOCK_FILE"
 fi
 
 if ! getent passwd "$WEB_USER" >/dev/null; then
@@ -106,7 +115,13 @@ for file in register-runner.sh remove-runner.sh status-runners.sh; do
   sudo install -o root -g root -m 0755 "$ROOT/scripts/$file" "$INSTALL_ROOT/cli/$file"
 done
 
-sudo install -d -o root -g "$WEB_USER" -m 0750 "$CONFIG_DIR"
+if sudo test -L "$CONFIG_DIR"; then die "Configuration directory must not be a symlink."; fi
+if sudo test -e "$CONFIG_DIR"; then
+  [[ "$(sudo stat -c '%U:%a:%F' "$CONFIG_DIR")" == "root:755:directory" ]] ||
+    die "Existing configuration directory must be root-owned mode 0755; refusing to change shared archive configuration access."
+else
+  sudo install -d -o root -g root -m 0755 "$CONFIG_DIR"
+fi
 TMP_CONFIG="$(mktemp)"
 cat > "$TMP_CONFIG" <<CFG
 WEB_BIND_ADDRESS=127.0.0.1
@@ -133,14 +148,10 @@ if [[ ! -f "$AUTH_FILE" ]]; then
   printf '\n' > /dev/tty
   [[ -n "$PASSWORD" && "$PASSWORD" == "$PASSWORD2" ]] || { unset PASSWORD PASSWORD2; die "Passwords do not match or are empty."; }
   PASSWORD_HASH="$(printf '%s' "$PASSWORD" | PYTHONPATH="$ROOT/web" python3 -c 'import sys; from grt_web_common import password_hash; print(password_hash(sys.stdin.read()))')"
-  SESSION_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
   unset PASSWORD PASSWORD2
   TMP_AUTH="$(mktemp)"
-  {
-    printf 'PASSWORD_HASH=%s\n' "$PASSWORD_HASH"
-    printf 'SESSION_SECRET=%s\n' "$SESSION_SECRET"
-  } > "$TMP_AUTH"
-  unset PASSWORD_HASH SESSION_SECRET
+  printf 'PASSWORD_HASH=%s\n' "$PASSWORD_HASH" > "$TMP_AUTH"
+  unset PASSWORD_HASH
   sudo install -o root -g "$WEB_USER" -m 0640 "$TMP_AUTH" "$AUTH_FILE"
   rm -f -- "$TMP_AUTH"
 else
@@ -202,7 +213,7 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-ReadWritePaths=/etc/systemd/system /run/github-runner-tools /run/lock/github-runner-tools
+ReadWritePaths=$RUNNER_HOME /etc/systemd/system /run/github-runner-tools /run/lock/github-runner-tools
 
 [Install]
 WantedBy=multi-user.target

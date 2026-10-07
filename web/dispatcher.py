@@ -145,7 +145,33 @@ class Runtime:
             raise DispatchError("invalid_runner_dir")
         return real
 
-    def _systemctl_show(self, service: str) -> dict[str, str]:
+    @staticmethod
+    def _remaining_timeout(deadline: float | None) -> float | None:
+        if deadline is None:
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise DispatchError("operation_deadline_exceeded")
+        return remaining
+
+    def _run(
+        self,
+        cmd: list[str],
+        *,
+        deadline: float | None = None,
+        check: bool = False,
+        text: bool = False,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            cmd,
+            timeout=self._remaining_timeout(deadline),
+            check=check,
+            text=text,
+            capture_output=capture_output,
+        )
+
+    def _systemctl_show(self, service: str, deadline: float | None = None) -> dict[str, str]:
         props = [
             "LoadState",
             "FragmentPath",
@@ -162,7 +188,7 @@ class Runtime:
         cmd = ["systemctl", "show", service]
         for prop in props:
             cmd += ["-p", prop]
-        proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
+        proc = self._run(cmd, deadline=deadline, text=True, capture_output=True, check=False)
         if proc.returncode != 0:
             raise DispatchError("systemd_query_failed")
         out: dict[str, str] = {}
@@ -186,6 +212,7 @@ class Runtime:
         runner_name: str,
         service: str,
         allow_absent: bool = False,
+        deadline: float | None = None,
     ) -> tuple[str, dict[str, str]]:
         validate_repository(repository)
         runner_dir = self.validate_runner_dir(repository, runner_dir)
@@ -193,7 +220,7 @@ class Runtime:
         if service != expected:
             raise DispatchError("service_identity_mismatch")
 
-        props = self._systemctl_show(service)
+        props = self._systemctl_show(service, deadline=deadline)
         if props["LoadState"] == "not-found":
             if allow_absent:
                 unit_path = f"/etc/systemd/system/{service}"
@@ -236,7 +263,7 @@ class Runtime:
                 raise DispatchError("unit_exec_surface_mismatch")
         return "present", props
 
-    def install_service(self, request: dict[str, Any]) -> dict[str, Any]:
+    def install_service(self, request: dict[str, Any], deadline: float | None = None) -> dict[str, Any]:
         repository = validate_repository(str(request["repository"]))
         runner_dir = self.validate_runner_dir(
             repository, str(request["runner_dir"]), allow_legacy=False
@@ -278,12 +305,12 @@ class Runtime:
         os.chown(tmp, 0, 0)
         os.chmod(tmp, 0o644)
         os.replace(tmp, unit_path)
-        subprocess.run(["systemctl", "daemon-reload"], check=True)
-        subprocess.run(["systemctl", "enable", service], check=True)
-        self.validate_unit(repository, runner_dir, runner_name, service)
+        self._run(["systemctl", "daemon-reload"], deadline=deadline, check=True)
+        self._run(["systemctl", "enable", service], deadline=deadline, check=True)
+        self.validate_unit(repository, runner_dir, runner_name, service, deadline=deadline)
         return {"ok": True, "service": service}
 
-    def privileged(self, request: dict[str, Any]) -> dict[str, Any]:
+    def privileged(self, request: dict[str, Any], deadline: float | None = None) -> dict[str, Any]:
         op = request.get("op")
         if op not in ALLOWED_PRIV:
             return stable_error("unknown_privileged_operation")
@@ -304,17 +331,18 @@ class Runtime:
             runner_dir = self.validate_runner_dir(str(request["runner_dir"]))
             runner_name = str(request["runner_name"])
             if op == "service_install":
-                return self.install_service(request)
+                return self.install_service(request, deadline=deadline)
 
             service = str(request["service"])
             state, _ = self.validate_unit(
-                repository, runner_dir, runner_name, service, allow_absent=True
+                repository, runner_dir, runner_name, service, allow_absent=True, deadline=deadline
             )
             if op == "service_state":
                 if state == "absent":
                     return {"ok": True, "state": "absent"}
-                active = subprocess.run(
+                active = self._run(
                     ["systemctl", "is-active", service],
+                    deadline=deadline,
                     text=True,
                     capture_output=True,
                     check=False,
@@ -327,27 +355,34 @@ class Runtime:
                 return stable_error("service_absent")
 
             if op == "service_start":
-                subprocess.run(["systemctl", "start", service], check=True)
+                self._run(["systemctl", "start", service], deadline=deadline, check=True)
             elif op == "service_stop":
-                subprocess.run(["systemctl", "stop", service], check=True)
+                self._run(["systemctl", "stop", service], deadline=deadline, check=True)
             elif op == "service_restart":
-                subprocess.run(["systemctl", "restart", service], check=True)
+                self._run(["systemctl", "restart", service], deadline=deadline, check=True)
             elif op == "service_uninstall":
-                subprocess.run(["systemctl", "disable", service], check=False)
-                subprocess.run(["systemctl", "stop", service], check=False)
+                self._run(["systemctl", "disable", service], deadline=deadline, check=False)
+                self._run(["systemctl", "stop", service], deadline=deadline, check=False)
                 # Revalidate after stop and before unlinking the unit.
                 self.validate_unit(repository, runner_dir, runner_name, service)
                 os.unlink(f"/etc/systemd/system/{service}")
-                subprocess.run(["systemctl", "daemon-reload"], check=True)
+                self._run(["systemctl", "daemon-reload"], deadline=deadline, check=True)
                 final_state, _ = self.validate_unit(
-                    repository, runner_dir, runner_name, service, allow_absent=True
+                    repository, runner_dir, runner_name, service, allow_absent=True, deadline=deadline
                 )
                 if final_state != "absent":
                     raise DispatchError("service_uninstall_not_final")
             else:
                 return stable_error("unknown_privileged_operation")
             return {"ok": True}
-        except (KeyError, ValueError, OSError, subprocess.CalledProcessError, DispatchError):
+        except (
+            KeyError,
+            ValueError,
+            OSError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            DispatchError,
+        ):
             return stable_error("privileged_validation_failed")
 
 

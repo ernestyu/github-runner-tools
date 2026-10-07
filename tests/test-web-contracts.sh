@@ -279,6 +279,61 @@ fi
 [[ -d "$STALE_DIR" && -f "$STALE_DIR/.runner" ]] ||
   fail "stale recovery rejection mutated runner state"
 
+# Core CLI-only lock bootstrap must work without Web setup and fail closed on
+# symlink/wrong metadata. Use an isolated temporary path; no Web component is involved.
+CORE_LOCK_ROOT="$TMP/core-lock-bootstrap"
+(
+  RUNNER_TOOLS_LIB_ONLY=1 source "$ROOT/scripts/register-runner.sh"
+  MUTATION_LOCK_DIR="$CORE_LOCK_ROOT"
+  MUTATION_LOCK_FILE="$CORE_LOCK_ROOT/mutation.lock"
+  ensure_mutation_lock
+)
+[[ "$(stat -c '%U:%G:%a:%F' "$CORE_LOCK_ROOT")" == "root:root:755:directory" ]] ||
+  fail "core lock directory bootstrap contract mismatch"
+[[ "$(stat -c '%U:%G:%a:%F' "$CORE_LOCK_ROOT/mutation.lock")" == "root:$(id -gn):660:regular empty file" ||
+   "$(stat -c '%U:%G:%a:%F' "$CORE_LOCK_ROOT/mutation.lock")" == "root:$(id -gn):660:regular file" ]] ||
+  fail "core lock file bootstrap contract mismatch"
+
+sudo rm -f -- "$CORE_LOCK_ROOT/mutation.lock"
+sudo rmdir -- "$CORE_LOCK_ROOT"
+ln -s "$TMP" "$CORE_LOCK_ROOT"
+if (
+  RUNNER_TOOLS_LIB_ONLY=1 source "$ROOT/scripts/register-runner.sh"
+  MUTATION_LOCK_DIR="$CORE_LOCK_ROOT"
+  MUTATION_LOCK_FILE="$CORE_LOCK_ROOT/mutation.lock"
+  ensure_mutation_lock
+) >/dev/null 2>&1; then
+  fail "symlinked core lock directory was accepted"
+fi
+rm -f -- "$CORE_LOCK_ROOT"
+
+sudo install -d -o root -g root -m 0777 "$CORE_LOCK_ROOT"
+if (
+  RUNNER_TOOLS_LIB_ONLY=1 source "$ROOT/scripts/remove-runner.sh"
+  MUTATION_LOCK_DIR="$CORE_LOCK_ROOT"
+  MUTATION_LOCK_FILE="$CORE_LOCK_ROOT/mutation.lock"
+  ensure_mutation_lock
+) >/dev/null 2>&1; then
+  fail "wrong-mode core lock directory was accepted"
+fi
+sudo rm -rf -- "$CORE_LOCK_ROOT"
+
+# Installer authority invariants: Web credentials are root:grt-web 0640,
+# installed executable code is root-owned, frontend/dispatcher identities are
+# distinct, and no NOPASSWD path is introduced.
+grep -Fq 'sudo install -o root -g "$WEB_USER" -m 0640 "$TMP_CONFIG" "$CONFIG_FILE"' "$ROOT/scripts/setup-web-management.sh" ||
+  fail "root:grt-web Web config contract missing"
+grep -Fq 'sudo install -o root -g "$WEB_USER" -m 0640 "$TMP_AUTH" "$AUTH_FILE"' "$ROOT/scripts/setup-web-management.sh" ||
+  fail "root:grt-web auth contract missing"
+grep -Fq 'sudo install -o root -g root -m 0755 "$ROOT/web/$file" "$INSTALL_ROOT/$file"' "$ROOT/scripts/setup-web-management.sh" ||
+  fail "root-owned installed Web code contract missing"
+if grep -Eq 'NOPASSWD|/etc/sudoers|sudoers\.d' "$ROOT/scripts/setup-web-management.sh"; then
+  fail "Web setup introduces forbidden passwordless sudo policy"
+fi
+if grep -Eq 'usermod[[:space:]].*(-aG|-G).*actions|usermod[[:space:]].*(-aG|-G).*grt-web' "$ROOT/scripts/setup-web-management.sh"; then
+  fail "Web setup unexpectedly merges runner/Web groups"
+fi
+
 # Shared lock: a CLI mutation must fail busy when another process owns the same
 # core lock. Test against the removal implementation in isolated test mode.
 LOCKDIR="$TMP/shared-lock"

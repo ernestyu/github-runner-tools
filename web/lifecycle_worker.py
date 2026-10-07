@@ -36,7 +36,27 @@ def read_request(fd: int) -> dict[str, Any]:
     return req
 
 
+def privileged_peer_uid(fd: int) -> int:
+    """Return SO_PEERCRED uid for the private dispatcher socket."""
+    import struct
+
+    sock = socket.socket(fileno=os.dup(fd))
+    try:
+        raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        _pid, uid, _gid = struct.unpack("3i", raw)
+        return int(uid)
+    finally:
+        sock.close()
+
+
 def privileged_context_check(fd: int) -> None:
+    # The JSON context_check response is not authority by itself: another
+    # actions process can create its own socketpair and emulate that response.
+    # The request-scoped private channel is authoritative only when its Unix
+    # peer is the root dispatcher.
+    if privileged_peer_uid(fd) != 0:
+        raise RuntimeError("privileged dispatcher peer is not root")
+
     sock = socket.socket(fileno=os.dup(fd))
     file = sock.makefile("rwb", buffering=0)
     try:

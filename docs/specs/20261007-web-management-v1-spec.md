@@ -1042,29 +1042,34 @@ It must not require running the entire setup script as root.
 Setup responsibilities:
 
 - verify Tailscale CLI/service availability;
-- verify the expected runner owner;
+- resolve and freeze the configured runner-owner UID/GID;
 - create the locked `grt-web` account;
-- install root-owned Web/controller/helper code;
+- install root-owned Web code;
+- install root-owned dispatcher/helper code;
+- install root-owned lifecycle-worker code;
 - install root-owned configuration;
 - install authentication hash/session secret;
-- install systemd Web service;
-- install only the narrow privileged-helper IPC/service required by §10;
-- configure IPC ownership/permissions so `actions` cannot invoke privileged operations;
-- install/verify any root-controlled dependency/service-management mechanism;
+- install the `grt-web` systemd service;
+- install the root dispatcher socket/service;
+- create `/run/github-runner-tools/web-dispatch.sock` with the ownership/mode in §10.1;
+- verify `actions` cannot connect to the dispatch socket;
+- create/prepare `/run/lock/github-runner-tools/mutation.lock` for both CLI and Web coordination;
+- install/verify the root-controlled dependency mechanism;
+- install/verify the canonical root-controlled runner unit mechanism;
 - configure or print the exact Tailscale Serve command;
 - validate that the Web backend binds only to loopback;
-- start/enable the Web service only after validation succeeds.
+- start/enable services only after validation succeeds.
 
-Setup must stop rather than replace an unmanaged conflicting service/configuration.
+Setup must stop rather than replace unmanaged conflicting services, sockets, unit templates, or configuration.
 
-Setup must verify that no installed privileged executable/script is writable by either:
+Setup must verify that privileged executable/helper/worker code is not writable by either:
 
 ```text
 grt-web
 actions
 ```
 
-unless that file is deliberately non-executable data and its mutability is part of the frozen contract.
+The lifecycle worker executes as `actions`, but its installed code remains root-owned and non-runner-writable.
 
 ## 23. Configuration
 

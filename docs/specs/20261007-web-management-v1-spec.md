@@ -1557,44 +1557,66 @@ Documentation must explain:
 Web Management V1 is complete only when all of the following are true:
 
 1. Web frontend runs as dedicated non-root `grt-web`.
-2. Runner owner and Web frontend identities are separate.
-3. Frontend binds only to loopback.
-4. Remote access is exclusively Tailnet HTTPS through Tailscale Serve.
-5. Direct LAN/WAN access to the backend is impossible under the default configuration.
-6. No Tailscale Funnel/public exposure is enabled.
-7. Local administrator password is stored only as a hardened salted hash.
-8. Authentication uses opaque server-side sessions; restart invalidates sessions.
-9. Session cookie uses Secure, HttpOnly, SameSite=Strict.
-10. CSRF protection covers every mutation.
-11. Production mode disables request-body/form-value/debug secret logging.
-12. Request/token sizes are bounded.
-13. No temporary GitHub token is sent through argv, environment, file, URL, logs, or response.
-14. Whole runner lifecycle is never run as root.
-15. Registration/configuration/unregister/directory operations execute as the configured runner owner.
-16. Root privilege is limited to host dependency/service-management operations.
-17. Privileged helper executes only root-owned, non-runner-writable code as root.
-18. Runner owner receives no new passwordless root execution path.
-19. Runner owner cannot invoke privileged-helper IPC.
-20. Privileged service mutation cross-checks actual systemd User, WorkingDirectory, and ExecStart against expected identity.
-21. Runner-owned `.service` metadata alone is never sufficient privileged authority.
-22. Existing CLI lifecycle remains functional.
-23. CLI and Web lifecycle share the same semantic authority.
-24. `status-runners.sh --json` implements the frozen machine contract.
-25. UI action availability comes from machine-readable eligibility flags, but those flags are advisory only.
-26. Every mutation acquires the global lock before authoritative identity/state revalidation.
-27. Every privileged service mutation revalidates root-controlled systemd state immediately before execution.
-28. Create accepts only OWNER/REPO + temporary registration token in V1.
-29. Normal remove requires temporary removal token.
-30. Local recovery requires no GitHub token and preserves existing frozen recovery semantics.
-31. Destructive operation uses session-bound, operation-bound, repository-bound single-use confirmation.
-32. Only one mutation runs at a time.
-33. Mutation timeout is bounded.
-34. Local artifact archive is never deleted by Web runner removal/recovery.
-35. Direct LAN management is not available in V1.
-36. Automated tests cover §28.
-37. Full repository test suite passes.
-38. Live Debian acceptance sequence in §29 passes before release.
-39. README, Chinese README, and CHANGELOG are updated only after implementation passes audit.
+2. Frontend binds only to loopback.
+3. Remote access is Tailnet-only HTTPS through Tailscale Serve.
+4. Direct LAN/WAN backend access is unavailable.
+5. No Funnel/public exposure is enabled.
+6. Administrator password is stored only as a hardened salted hash.
+7. Authentication uses opaque server-side sessions.
+8. Session cookie is Secure, HttpOnly, SameSite=Strict.
+9. CSRF protection covers every state-changing POST.
+10. Request/body/token sizes are bounded and debug/form-value logging is disabled.
+
+11. The public privileged IPC is the root-controlled Unix dispatch socket.
+12. Dispatch socket ownership is root:grt-web with mode 0660.
+13. Dispatcher verifies peer credentials and accepts only grt-web.
+14. actions cannot connect to the public dispatch socket.
+15. Dispatcher launches only the fixed installed lifecycle worker.
+16. Lifecycle worker drops to the configured actions UID/GID before lifecycle logic.
+17. Whole runner lifecycle never executes as root.
+18. The worker has no retained root identity after the UID/GID drop.
+19. Privileged worker requests use only the private request-scoped control channel.
+20. Unrelated actions processes cannot use that private privileged channel.
+21. No new passwordless sudo permission is granted to actions or grt-web.
+
+22. Root code never executes runner-user-writable code as root.
+23. Web dependency handling does not run runner-owned dependency scripts as root.
+24. Web-created services use a root-owned canonical unit mechanism.
+25. Existing-service mutation validates FragmentPath, ownership/write permissions, DropInPaths, User, WorkingDirectory, and all relevant Exec* directives.
+26. Any unverified unit, drop-in, or command surface fails closed.
+
+27. actions UID is explicitly documented as inside the temporary-token trust boundary.
+28. Hosts executing untrusted/public workflows as actions are outside Web V1 security support.
+29. Temporary GitHub tokens never enter argv, environment, file, URL, log, response, session, or nonce state.
+30. Final runner configure/remove consumption uses controlled stdin/PTY input without a secret --token argument.
+31. If the supported runner version cannot satisfy the no-argv token contract, the Web operation fails unsupported.
+
+32. Normal Remove does not submit or store the removal token before the final confirmation POST.
+33. Final Normal Remove POST contains CSRF + bound one-time nonce + removal token.
+34. Confirmation nonce is session/operation/repository bound, single-use, short-lived, and contains no secret.
+
+35. `status-runners.sh --json` implements the frozen machine-readable contract.
+36. UI eligibility flags are advisory only.
+37. Every mutation revalidates current identity/state after acquiring the shared mutation lock.
+38. Every privileged service mutation revalidates current root-controlled systemd state immediately before execution.
+
+39. CLI register, normal remove, and recover-local use `/run/lock/github-runner-tools/mutation.lock`.
+40. Web Create/Remove/Recover use the same lock.
+41. CLI-held lock blocks Web mutation.
+42. Web-held lock blocks CLI mutation.
+43. Mutations are not queued in V1.
+
+44. Create accepts only OWNER/REPO + temporary registration token.
+45. Normal Remove requires a temporary removal token.
+46. Recover Local requires no GitHub token and preserves the frozen recovery semantics.
+47. Mutation timeout is bounded.
+48. Local artifact archive is never deleted by Web runner removal/recovery.
+49. Existing CLI lifecycle remains functional and semantically aligned with the Web worker.
+
+50. Automated tests cover §28.
+51. Full repository test suite passes.
+52. Live Debian acceptance sequence in §29 passes before release.
+53. README, Chinese README, and CHANGELOG are updated only after implementation passes audit.
 
 ## 32. Implementation boundary
 

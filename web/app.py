@@ -42,7 +42,10 @@ def now() -> float:
 def dispatch(config: dict[str, str], request: dict[str, Any]) -> dict[str, Any]:
     path = config.get("DISPATCH_SOCKET", "/run/github-runner-tools/web-dispatch.sock")
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.settimeout(20)
+    timeout = 20
+    if request.get("op") != "list":
+        timeout = int(config.get("MUTATION_TIMEOUT_SECONDS", "900")) + 30
+    sock.settimeout(timeout)
     try:
         sock.connect(path)
         sock.sendall(encode_json_line(request))

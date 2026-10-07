@@ -259,6 +259,32 @@ class DispatcherAuthorityTests(unittest.TestCase):
             )
             self.assertEqual(result, {"ok": False, "error": "privileged_validation_failed"})
 
+    def test_dispatcher_never_reflects_submitted_token(self):
+        token = "SECRET_DISPATCH_TOKEN"
+        sent = []
+        fake_request = mock.Mock()
+        fake_request.sendall.side_effect = sent.append
+        runtime = SimpleNamespace(web_pw=SimpleNamespace(pw_uid=4242))
+        server = SimpleNamespace(
+            runtime=runtime,
+            execute=mock.Mock(return_value={"ok": False, "error": token}),
+        )
+        handler = object.__new__(dispatcher.DispatchHandler)
+        handler.request = fake_request
+        handler.server = server
+        with mock.patch("dispatcher.unix_peer_uid", return_value=4242), \
+             mock.patch(
+                 "dispatcher.recv_json_line",
+                 return_value={"op": "create", "repository": "owner/repo", "token": token},
+             ):
+            handler.handle()
+        response = b"".join(sent).decode("utf-8")
+        self.assertNotIn(token, response)
+        self.assertEqual(
+            json.loads(response.strip()),
+            {"ok": False, "error": "internal_error"},
+        )
+
     def test_public_dispatch_rejects_unknown_fields_before_execute(self):
         sent = []
         fake_request = mock.Mock()

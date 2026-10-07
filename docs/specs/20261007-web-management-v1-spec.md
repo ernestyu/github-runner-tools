@@ -551,34 +551,87 @@ For any service mutation, the root-controlled systemd cross-check in §10.7 must
 
 This prevents runner-owned metadata or service state from changing between list rendering and destructive execution.
 
-## 12. Non-interactive secret transport
+## 12. Temporary-token transport and trust boundary
 
-The current CLI reads temporary GitHub tokens from `/dev/tty`.
+### 12.1 Frozen trust model
 
-The Web path requires a non-interactive adapter.
+Web Management V1 explicitly treats the configured runner-owner UID, normally `actions`, as inside the trust boundary for temporary GitHub registration/removal tokens.
 
-Temporary GitHub registration/removal tokens must be delivered to lifecycle code through an anonymous pipe or inherited file descriptor.
+Therefore V1 does not claim to protect those temporary tokens from arbitrary hostile code that is already executing as the same `actions` UID.
 
-They must not be delivered through:
+Web Management V1 is supported only on a host where workflows executing under the runner-owner account are trusted.
+
+Public or otherwise untrusted workflows running as `actions` are outside the Web V1 security model.
+
+This limitation must be stated in the final README/Web security documentation.
+
+### 12.2 End-to-end token rule
+
+The no-leak rule applies all the way to the final GitHub Actions Runner process.
+
+A temporary registration/removal token must never appear in:
 
 ```text
 argv
-environment variable
+environment
 temporary file
 persistent file
 database
-URL
+URL/query string
+application log
+system journal
+HTML
+HTTP response
+session state
+confirmation nonce state
 ```
 
-Required semantic interface:
+It is not sufficient for only the Web-to-worker hop to use an FD.
+
+### 12.3 Web-to-worker transport
+
+The token is received only in the relevant HTTPS POST body.
+
+The dispatcher passes it to the `actions` lifecycle worker through an anonymous pipe or inherited file descriptor.
+
+The token must not be copied into dispatcher/worker argv or environment.
+
+### 12.4 Final GitHub Runner consumer
+
+The Web path must invoke the official runner configuration/removal flow without placing the token in a `--token <secret>` argument.
+
+For Web Create:
 
 ```text
-token input = file descriptor / anonymous pipe
+official config.sh configure path
+→ interactive mode
+→ non-secret settings supplied deterministically
+→ registration token supplied only over controlled stdin/PTY input
 ```
 
-The exact internal flag name may be chosen during implementation, but the transport contract is frozen.
+For Web Normal Remove:
 
-Token buffers/variables must be cleared or released immediately after the lifecycle call completes.
+```text
+official config.sh remove path
+→ no --token secret argument
+→ removal token supplied only over controlled stdin/PTY input
+```
+
+Any token-input adapter must execute as `actions`, not root, before it invokes runner-owned configuration code.
+
+Terminal echo/recording must not expose the token.
+
+The implementation must test the supported GitHub Actions Runner version against this contract.
+
+If the supported runner version cannot complete Web configure/remove without exposing the token through a prohibited channel, Web Create/Normal Remove must fail as unsupported.
+
+There is no fallback to `--token "$TOKEN"`.
+
+### 12.5 Token lifetime
+
+No server-side token cache is allowed.
+
+The token exists only for the active request and must be released/overwritten where practical immediately after the final consumer no longer needs it.
 
 ## 13. Status JSON contract
 

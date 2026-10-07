@@ -51,6 +51,14 @@ def validate_repository(value: str) -> str:
     return value
 
 
+def validate_temporary_token(value: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > MAX_TOKEN_LEN:
+        raise ValueError("invalid temporary token")
+    if any(ch in value for ch in ("\r", "\n", "\x00")):
+        raise ValueError("temporary token contains control characters")
+    return value
+
+
 def sanitize_component(value: str) -> str:
     value = value.lower()
     value = re.sub(r"[^a-z0-9._-]+", "-", value)

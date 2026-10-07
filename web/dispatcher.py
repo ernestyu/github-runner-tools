@@ -205,6 +205,41 @@ class Runtime:
         stripped = value.strip()
         return stripped in ("", "[]", "{}")
 
+    def _validate_unit_file_schema(self, fragment: str, runner_dir: str) -> None:
+        service: dict[str, list[str]] = {}
+        section = ""
+        with open(fragment, "r", encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line or line.startswith(("#", ";")):
+                    continue
+                if line.startswith("[") and line.endswith("]"):
+                    section = line
+                    continue
+                if section != "[Service]" or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                service.setdefault(key.strip(), []).append(value.strip())
+
+        expected_exec = os.path.join(runner_dir, "runsvc.sh")
+        if service.get("User") != [self.runner_user]:
+            raise DispatchError("unit_file_user_mismatch")
+        if service.get("WorkingDirectory") != [runner_dir]:
+            raise DispatchError("unit_file_workdir_mismatch")
+        if service.get("ExecStart") != [expected_exec]:
+            raise DispatchError("unit_file_execstart_mismatch")
+        if "Group" in service and service["Group"] != [self.runner_group]:
+            raise DispatchError("unit_file_group_mismatch")
+        for key in (
+            "ExecStartPre",
+            "ExecStartPost",
+            "ExecStop",
+            "ExecStopPost",
+            "ExecReload",
+        ):
+            if service.get(key):
+                raise DispatchError("unit_file_exec_surface_mismatch")
+
     def validate_unit(
         self,
         repository: str,
@@ -237,6 +272,7 @@ class Runtime:
         st = os.stat(expected_fragment, follow_symlinks=False)
         if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
             raise DispatchError("unit_permissions_invalid")
+        self._validate_unit_file_schema(expected_fragment, runner_dir)
         if props["DropInPaths"].strip():
             raise DispatchError("unit_dropin_forbidden")
         if props["User"] != self.runner_user:
@@ -246,11 +282,12 @@ class Runtime:
 
         expected_exec = os.path.join(runner_dir, "runsvc.sh")
         exec_start = props["ExecStart"]
-        if expected_exec not in exec_start:
+        path_marker = f"path={expected_exec}"
+        argv_marker = f"argv[]={expected_exec}"
+        if path_marker not in exec_start or argv_marker not in exec_start:
             raise DispatchError("unit_execstart_mismatch")
-        # Canonical V1 units have exactly one start command and no other Exec*
-        # hooks. Reject extra command separators/secondary executable entries.
-        if exec_start.count("path=") not in (0, 1):
+        # Exactly one systemd start command is permitted.
+        if exec_start.count("path=") != 1 or exec_start.count("argv[]=") != 1:
             raise DispatchError("unit_execstart_mismatch")
         for key in (
             "ExecStartPre",

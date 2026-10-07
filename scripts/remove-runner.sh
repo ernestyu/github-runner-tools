@@ -189,7 +189,9 @@ ensure_mutation_lock() {
     die "Mutation lock file must not be a symlink."
   fi
   if [[ ! -e "$MUTATION_LOCK_FILE" ]]; then
-    sudo install -o root -g "$group" -m 0660 /dev/null "$MUTATION_LOCK_FILE"
+    sudo touch "$MUTATION_LOCK_FILE"
+    sudo chown root:"$group" "$MUTATION_LOCK_FILE"
+    sudo chmod 0660 "$MUTATION_LOCK_FILE"
   fi
   [[ -f "$MUTATION_LOCK_FILE" && ! -L "$MUTATION_LOCK_FILE" ]] || die "Mutation lock file has invalid type."
   [[ "$(stat -c '%u' "$MUTATION_LOCK_FILE")" == "0" &&

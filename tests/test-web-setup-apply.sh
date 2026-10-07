@@ -90,7 +90,8 @@ printf 'test-web-password\ntest-web-password\n' |
   script -q -c "PATH='$MOCK':\$PATH bash '$ROOT/scripts/setup-web-management.sh' --apply" /dev/null
   >"$OUT" 2>&1 || true
 
-if ! tr -d '\r' < "$OUT" | grep -Fq "Web Management installed and enabled."; then
+NORMALIZED_OUT="$(tr -d '\r' < "$OUT")"
+if ! grep -Fq "Web Management installed and enabled." <<<"$NORMALIZED_OUT"; then
   cat "$OUT" >&2
   fail "mocked explicit Web --apply path did not reach successful completion"
 fi

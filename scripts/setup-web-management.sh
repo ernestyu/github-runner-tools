@@ -96,7 +96,9 @@ if sudo test -e "$LOCK_FILE"; then
      "$LOCK_META" == "root:$RUNNER_GROUP:660:regular file" ]] ||
     die "Existing shared mutation lock has unexpected ownership/mode/type."
 else
-  sudo install -o root -g "$RUNNER_GROUP" -m 0660 /dev/null "$LOCK_FILE"
+  sudo touch "$LOCK_FILE"
+  sudo chown root:"$RUNNER_GROUP" "$LOCK_FILE"
+  sudo chmod 0660 "$LOCK_FILE"
 fi
 
 if ! getent passwd "$WEB_USER" >/dev/null; then

@@ -199,6 +199,20 @@ class Handler(BaseHTTPRequestHandler):
         import hmac
         return hmac.compare_digest(form.get("csrf", ""), sess["csrf"])
 
+    def _listed_eligible(self, repository: str, operation: str) -> bool:
+        response = dispatch(self.app.config, {"op": "list"})
+        if not response.get("ok") or not isinstance(response.get("runners"), list):
+            return False
+        flag = "can_remove" if operation == "remove" else "can_recover_local"
+        for item in response["runners"]:
+            if (
+                isinstance(item, dict)
+                and item.get("repository") == repository
+                and item.get(flag) is True
+            ):
+                return True
+        return False
+
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
         if path == "/login":
@@ -330,6 +344,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, page("Invalid repository", "<h1>Invalid repository</h1>"))
                 return
             operation = "remove" if path.startswith("/remove") else "recover_local"
+            if not self._listed_eligible(repo, operation):
+                self._send(409, page("State changed", "<h1>This runner is not currently eligible for that operation.</h1>"))
+                return
             nonce = secure_random_token(24)
             sess["confirm"][nonce] = {"op": operation, "repository": repo, "expires": now() + CONFIRM_TTL}
             if operation == "remove":

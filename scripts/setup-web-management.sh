@@ -277,7 +277,8 @@ rm -f -- "$TMP_WEB_UNIT" "$TMP_DISPATCH_UNIT"
 for installed in "$INSTALL_ROOT"/*.py "$INSTALL_ROOT"/cli/*.sh; do
   [[ "$(sudo stat -c '%U:%a' "$installed")" == root:* ]] || die "Installed code is not root-owned: $installed"
   mode="$(sudo stat -c '%a' "$installed")"
-  (( (10#$mode & 022) == 0 )) || die "Installed code is group/world writable: $installed"
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || die "Installed code has invalid mode: $installed"
+  (( (8#$mode & 8#022) == 0 )) || die "Installed code is group/world writable: $installed"
 done
 
 sudo systemctl daemon-reload

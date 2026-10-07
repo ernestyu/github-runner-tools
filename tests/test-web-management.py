@@ -74,13 +74,12 @@ class TokenAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             child = pathlib.Path(td) / "child.py"
             child.write_text(
-                """import os,sys\n"
+                "import os,sys\n"
                 "print('Enter token:', flush=True)\n"
                 "value=input()\n"
                 "print('TOKEN_OK=' + str(value.startswith('SECRET_')), flush=True)\n"
                 "print('ARGV_HAS=' + str(any('SECRET_WEB_TOKEN' in x for x in sys.argv)), flush=True)\n"
-                "print('ENV_HAS=' + str(any('SECRET_WEB_TOKEN' in v for v in os.environ.values())), flush=True)\n"
-                """,
+                "print('ENV_HAS=' + str(any('SECRET_WEB_TOKEN' in v for v in os.environ.values())), flush=True)\n",
                 encoding="utf-8",
             )
             read_fd, write_fd = os.pipe()

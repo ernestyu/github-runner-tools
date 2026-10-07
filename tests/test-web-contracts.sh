@@ -143,6 +143,106 @@ chmod +x "$SETUP_MOCK/systemctl" "$SETUP_MOCK/tailscale" "$SETUP_MOCK/sudo"
 PATH="$SETUP_MOCK:$PATH" bash "$ROOT/scripts/setup-web-management.sh" --dry-run >/dev/null
 [[ ! -e "$MARKER" ]] || fail "Web dry-run invoked privileged persistent mutation"
 
+# Internal Web lifecycle context must be bound to a root Unix peer, not merely
+# to caller-controlled environment flags plus a forgeable JSON context reply.
+python3 - "$ROOT" <<'PY' || fail "fake same-UID Web registration context was accepted"
+import os
+import socket
+import subprocess
+import sys
+
+root = sys.argv[1]
+left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    script = f'''
+set -Eeuo pipefail
+RUNNER_TOOLS_LIB_ONLY=1 source "{root}/scripts/register-runner.sh"
+WEB_MODE=1
+LOCK_ALREADY_HELD=1
+PRIVILEGED_FD={left.fileno()}
+acquire_mutation_lock
+'''
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        pass_fds=(left.fileno(),),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if os.geteuid() != 0 and proc.returncode == 0:
+        raise SystemExit(1)
+finally:
+    left.close()
+    right.close()
+PY
+
+python3 - "$ROOT" <<'PY' || fail "fake same-UID Web removal context was accepted"
+import os
+import socket
+import subprocess
+import sys
+
+root = sys.argv[1]
+left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    script = f'''
+set -Eeuo pipefail
+RUNNER_TOOLS_LIB_ONLY=1 source "{root}/scripts/remove-runner.sh"
+WEB_MODE=1
+LOCK_ALREADY_HELD=1
+PRIVILEGED_FD={left.fileno()}
+acquire_mutation_lock
+'''
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        pass_fds=(left.fileno(),),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if os.geteuid() != 0 and proc.returncode == 0:
+        raise SystemExit(1)
+finally:
+    left.close()
+    right.close()
+PY
+
+# Web setup apply contract must install fixed identities/permissions and remain
+# explicit opt-in. These are contract assertions over the installer itself;
+# live ownership is separately covered by frozen Debian acceptance.
+grep -Fq 'sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$WEB_USER"' "$ROOT/scripts/setup-web-management.sh" ||
+  fail "Web apply does not create locked grt-web account"
+grep -Fq 'sudo install -o root -g "$WEB_USER" -m 0640 "$TMP_CONFIG" "$CONFIG_FILE"' "$ROOT/scripts/setup-web-management.sh" ||
+  fail "Web config ownership contract missing"
+grep -Fq 'sudo install -o root -g "$WEB_USER" -m 0640 "$TMP_AUTH" "$AUTH_FILE"' "$ROOT/scripts/setup-web-management.sh" ||
+  fail "Web auth ownership contract missing"
+grep -Fq 'User=$WEB_USER' "$ROOT/scripts/setup-web-management.sh" ||
+  fail "Web service user contract missing"
+grep -Fq 'User=root' "$ROOT/scripts/setup-web-management.sh" ||
+  fail "dispatcher root service contract missing"
+if grep -Eq 'tailscale[[:space:]]+funnel' "$ROOT/scripts/setup-web-management.sh"; then
+  fail "Web setup contains forbidden Tailscale Funnel command"
+fi
+
+# Lock/revalidation ordering must remain explicit: CLI acquisition occurs
+# before target filesystem validation/mutation in both mutating scripts.
+python3 - "$ROOT" <<'PY' || fail "CLI lock/revalidation ordering contract failed"
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+reg = (root / "scripts/register-runner.sh").read_text()
+rem = (root / "scripts/remove-runner.sh").read_text()
+for name, text, target in [
+    ("register", reg, 'RUNNER_DIR="$RUNNER_BASE_DIR/actions-runner-$LOCAL_ID"'),
+    ("remove", rem, 'NEW_DIR="$RUNNER_BASE_DIR/actions-runner-$LOCAL_ID"'),
+]:
+    lock = text.find("acquire_mutation_lock", text.find("main()"))
+    validation = text.find(target, text.find("main()"))
+    if lock < 0 or validation < 0 or lock >= validation:
+        raise SystemExit(f"{name} does not lock before target validation")
+PY
+
 # Shared lock: a CLI mutation must fail busy when another process owns the same
 # core lock. Test against the removal implementation in isolated test mode.
 LOCKDIR="$TMP/shared-lock"

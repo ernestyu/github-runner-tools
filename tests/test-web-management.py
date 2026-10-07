@@ -148,11 +148,19 @@ class DispatcherAuthorityTests(unittest.TestCase):
 
     def validate_with(self, props):
         rt = self.runtime()
+        rt.runner_group = "actions"
         rt._systemctl_show = mock.Mock(return_value=props)
         service = "actions.runner.owner-repo.runner.service"
+        unit = (
+            "[Service]\n"
+            "User=actions\n"
+            "WorkingDirectory=/home/actions/actions-runner-owner--repo\n"
+            "ExecStart=/home/actions/actions-runner-owner--repo/runsvc.sh\n"
+        )
         with mock.patch("dispatcher.os.path.realpath", side_effect=lambda p: p), \
              mock.patch("dispatcher.os.path.islink", return_value=False), \
-             mock.patch("dispatcher.os.stat", return_value=self.regular_root_stat()):
+             mock.patch("dispatcher.os.stat", return_value=self.regular_root_stat()), \
+             mock.patch("builtins.open", mock.mock_open(read_data=unit)):
             return rt.validate_unit(
                 "owner/repo",
                 "/home/actions/actions-runner-owner--repo",

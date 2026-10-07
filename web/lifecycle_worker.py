@@ -2,6 +2,7 @@
 """UID-dropped lifecycle worker for Web Management V1."""
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import pwd
@@ -38,6 +39,15 @@ def privileged_context_check(fd: int) -> None:
         sock.close()
 
 
+def disable_ptrace_dumpability() -> None:
+    # Same-UID runner jobs must not be able to inspect this request-scoped
+    # worker and duplicate its private privileged control FD.
+    libc = ctypes.CDLL(None, use_errno=True)
+    PR_SET_DUMPABLE = 4
+    if libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "prctl(PR_SET_DUMPABLE) failed")
+
+
 def main() -> int:
     if os.environ.get("GRT_WEB_CONTEXT") != "1":
         return 70
@@ -56,6 +66,11 @@ def main() -> int:
         return 71
     if os.getgroups():
         # Dispatcher must clear supplementary groups before lifecycle entry.
+        return 72
+
+    try:
+        disable_ptrace_dumpability()
+    except OSError:
         return 72
 
     try:

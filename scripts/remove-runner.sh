@@ -175,6 +175,9 @@ ensure_mutation_lock() {
 
   group="$(id -gn)"
   gid="$(id -g)"
+  if [[ -L "$MUTATION_LOCK_DIR" ]]; then
+    die "Mutation lock directory must not be a symlink."
+  fi
   if [[ ! -e "$MUTATION_LOCK_DIR" ]]; then
     sudo install -d -o root -g root -m 0755 "$MUTATION_LOCK_DIR"
   fi
@@ -182,6 +185,9 @@ ensure_mutation_lock() {
   [[ "$(stat -c '%u' "$MUTATION_LOCK_DIR")" == "0" && "$(stat -c '%a' "$MUTATION_LOCK_DIR")" == "755" ]] ||
     die "Mutation lock directory has invalid ownership/mode."
 
+  if [[ -L "$MUTATION_LOCK_FILE" ]]; then
+    die "Mutation lock file must not be a symlink."
+  fi
   if [[ ! -e "$MUTATION_LOCK_FILE" ]]; then
     sudo install -o root -g "$group" -m 0660 /dev/null "$MUTATION_LOCK_FILE"
   fi

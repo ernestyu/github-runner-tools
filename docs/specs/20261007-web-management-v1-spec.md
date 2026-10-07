@@ -979,7 +979,7 @@ Existing lifecycle recovery semantics remain responsible for subsequent cleanup.
 
 ## 20. Logging
 
-The Web service and broker may log:
+The Web service and dispatcher/helper may log:
 
 - timestamp;
 - authenticated session/user identifier;
@@ -1016,7 +1016,7 @@ recovery not eligible
 service state unknown
 identity ambiguous
 operation timed out
-broker unavailable
+dispatcher unavailable
 internal error
 ```
 
@@ -1480,34 +1480,52 @@ After static/code audit passes, validate on the real Debian host in this order:
 ```text
 1. bash tests/run-all.sh
 2. setup-web-management.sh --dry-run
-3. inspect generated users/config/services/helper plan
+3. inspect generated users/config/services/socket/lock/unit plan
 4. setup-web-management.sh --apply
-5. verify frontend runs as grt-web
-6. verify frontend only listens on 127.0.0.1
-7. verify no direct LAN/WAN listener exists
-8. verify privileged helper has no TCP listener
-9. verify actions cannot read Web auth config
-10. verify actions cannot invoke privileged helper
-11. verify grt-web cannot write runner directories
-12. verify privileged installed code is root-owned and not writable by actions/grt-web
-13. verify Tailscale Serve HTTPS endpoint
-14. verify no Tailscale Funnel/public endpoint exists
-15. login from phone through Tailnet
-16. list current runners
-17. create a disposable/test repository runner using a temporary registration token
-18. verify runner files are owned by actions
-19. verify runner appears and service is active
-20. verify systemd unit User/WorkingDirectory/ExecStart match expected runner identity
-21. normal-remove that disposable runner using a temporary removal token
-22. create a second disposable runner
-23. delete it on GitHub first
-24. wait for local .runner/.credentials cleanup
-25. use Web Recover local residue
-26. verify systemd unit absent
-27. verify runner directory removed
-28. verify /srv/github-actions-archive is untouched
-29. verify registration/removal tokens do not appear in journal, argv, environment, temp files, or responses
-30. verify local CLI create/status/remove behavior still works
+
+5. verify Web process runs as grt-web
+6. verify dispatcher runs as root
+7. verify lifecycle worker enters lifecycle code as actions
+8. verify actions cannot connect to web-dispatch.sock
+9. verify grt-web has no sudo rights
+10. verify actions received no new passwordless sudo rule
+11. verify installed worker/helper code is root-owned and not writable by actions/grt-web
+
+12. verify frontend listens only on 127.0.0.1
+13. verify no direct LAN/WAN listener exists
+14. verify dispatcher/helper has no TCP listener
+15. verify Tailscale Serve HTTPS endpoint
+16. verify no Tailscale Funnel/public endpoint exists
+
+17. login from phone through Tailnet
+18. list current runners
+
+19. create a disposable/test repository runner using a temporary registration token
+20. inspect the final configuration process: token absent from argv/environment
+21. verify no token appears in journal, temporary files, or HTTP response
+22. verify runner files are owned by actions
+23. verify runner appears and service is active
+24. verify managed systemd unit provenance and all required unit properties match the canonical schema
+
+25. normal-remove that disposable runner
+26. enter removal token only on the final confirmation page
+27. inspect final removal process: token absent from argv/environment
+28. verify runner removed
+
+29. create a second disposable runner
+30. delete it on GitHub first
+31. wait for local .runner/.credentials cleanup
+32. use Web Recover Local
+33. verify systemd unit absent
+34. verify runner directory removed
+
+35. verify /srv/github-actions-archive is untouched
+
+36. hold the shared lock from CLI and verify Web mutation returns busy/409
+37. hold the shared lock from Web and verify CLI register/remove/recover refuses to start
+
+38. verify local CLI register/status/remove behavior still works
+39. verify no registration/removal token appears in any channel forbidden by §12
 ```
 
 Do not use a production/private research runner as the first Web mutation test.

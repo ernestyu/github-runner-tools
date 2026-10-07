@@ -526,7 +526,7 @@ control what the UI displays.
 
 They are not authorization for a mutation.
 
-Immediately before every create/remove/recover operation, the server-side lifecycle controller must:
+Immediately before every create/remove/recover operation, the request-scoped `actions` lifecycle worker must:
 
 ```text
 acquire global mutation lock
@@ -536,7 +536,7 @@ acquire global mutation lock
 → only then begin mutation
 ```
 
-The controller/helper must not trust:
+The lifecycle worker/dispatcher must not trust:
 
 - stale list-page data;
 - browser hidden fields;
@@ -1550,7 +1550,8 @@ Documentation must explain:
 - normal remove flow;
 - local recovery flow;
 - why direct LAN HTTP/public Internet exposure is not supported;
-- security boundary between `grt-web`, runner-owner lifecycle, privileged service helper, and the runner owner.
+- exact `grt-web → root dispatcher → UID-dropped actions lifecycle worker → private privileged control FD` boundary;
+- the explicit temporary-token trust model: `actions` is inside the token trust boundary, so public/untrusted workflows are outside Web V1 support.
 
 ## 31. Acceptance criteria
 
@@ -1620,26 +1621,34 @@ Web Management V1 is complete only when all of the following are true:
 
 ## 32. Implementation boundary
 
-This feature is intentionally a thin management UI over an existing runner lifecycle.
+This feature is intentionally a thin management UI over the existing runner lifecycle.
 
 Do not expand implementation into a general CI dashboard.
 
 The expected implementation surface is limited to:
 
 ```text
-Web frontend
+Web frontend (grt-web)
 +
-authentication/session/CSRF
+authentication/session/CSRF/confirmation
++
+root dispatch socket/service
++
+fixed root-owned lifecycle worker executed only after UID/GID drop to actions
++
+request-scoped private privileged control FD
++
+root-controlled dependency/systemd service logic
 +
 status JSON adapter
 +
-non-interactive token FD adapter
+controlled stdin/PTY token adapter with no argv secret
 +
-runner-owner lifecycle controller
+shared CLI/Web mutation lock
 +
-narrow root-owned dependency/systemd helper
+canonical root-controlled systemd unit validation/installation
 +
-systemd/Tailscale setup
+Tailscale Serve setup
 +
 List/Create/Remove/Recover UI
 +
@@ -1658,6 +1667,9 @@ workflow control
 GitHub PAT automation
 direct LAN access
 public Internet access
+database
+bulk runner operations
+automatic token generation
 ```
 
 requires a separate SPEC amendment.

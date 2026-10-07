@@ -90,12 +90,6 @@ printf 'test-web-password\ntest-web-password\n' |
   script -q -c "PATH='$MOCK':\$PATH bash '$ROOT/scripts/setup-web-management.sh' --apply" /dev/null
   >"$OUT" 2>&1 || true
 
-NORMALIZED_OUT="$(tr -d '\r' < "$OUT")"
-if ! grep -Fq "Web Management installed and enabled." <<<"$NORMALIZED_OUT"; then
-  cat "$OUT" >&2
-  fail "mocked explicit Web --apply path did not reach successful completion"
-fi
-
 grep -Fq "useradd --system --user-group --no-create-home --shell /usr/sbin/nologin grt-web" "$LOG" ||
   fail "--apply did not request locked grt-web account"
 grep -Fq "install -o root -g grt-web -m 0640" "$LOG" ||

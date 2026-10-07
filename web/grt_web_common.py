@@ -138,14 +138,15 @@ def password_hash(password: str, *, n: int = 2**15, r: int = 8, p: int = 1) -> s
         raise ValueError("password cannot be empty")
     salt = secrets.token_bytes(16)
     digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p, dklen=32)
-    return "scrypt$${}$${}$${}$${}$${}".format(
-        n,
-        r,
-        p,
+    parts = [
+        "scrypt",
+        str(n),
+        str(r),
+        str(p),
         base64.urlsafe_b64encode(salt).decode("ascii"),
         base64.urlsafe_b64encode(digest).decode("ascii"),
-    )
-
+    ]
+    return "$".join(parts)
 
 def verify_password(password: str, encoded: str) -> bool:
     try:

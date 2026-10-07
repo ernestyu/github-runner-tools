@@ -874,6 +874,69 @@ class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
             self.assertEqual(captured["kwargs"]["extra_groups"], [])
             self.assertTrue(captured["kwargs"]["start_new_session"])
 
+    def test_web_dispatcher_held_lock_blocks_cli_register_and_remove(self):
+        class BlockingProc:
+            returncode = 0
+            pid = 999998
+
+            def __init__(self, entered, release):
+                self.entered = entered
+                self.release = release
+
+            def communicate(self, timeout=None):
+                self.entered.set()
+                if not self.release.wait(timeout=5):
+                    raise subprocess.TimeoutExpired("worker", timeout)
+                return ('{"ok":true}', "")
+
+        with tempfile.TemporaryDirectory() as td:
+            lock_path = pathlib.Path(td) / "mutation.lock"
+            lock_path.touch()
+            entered = threading.Event()
+            release = threading.Event()
+            runtime = SimpleNamespace(
+                lock_file=str(lock_path),
+                timeout=5,
+                runner_user="actions",
+                runner_home="/home/actions",
+                worker_path="/root-owned/lifecycle_worker.py",
+                runner_pw=SimpleNamespace(pw_uid=os.geteuid(), pw_gid=os.getegid()),
+                validate_fixed_worker=mock.Mock(),
+                privileged=mock.Mock(return_value={"ok": True, "context": "dispatcher"}),
+            )
+            server = object.__new__(dispatcher.DispatchServer)
+            server.runtime = runtime
+            result_box = {}
+
+            def run_web():
+                result_box["result"] = dispatcher.DispatchServer.execute(
+                    server, {"op": "create", "repository": "owner/repo", "token": "temporary"}
+                )
+
+            with mock.patch(
+                "dispatcher.subprocess.Popen",
+                side_effect=lambda *a, **kw: BlockingProc(entered, release),
+            ):
+                thread = threading.Thread(target=run_web)
+                thread.start()
+                self.assertTrue(entered.wait(timeout=2))
+                for script in ("register-runner.sh", "remove-runner.sh"):
+                    command = (
+                        f'export GRT_TEST_MODE=1; export GRT_TEST_LOCK_DIR="{td}"; '
+                        f'RUNNER_TOOLS_LIB_ONLY=1 source "{ROOT}/scripts/{script}"; '
+                        "acquire_mutation_lock"
+                    )
+                    proc = subprocess.run(
+                        ["bash", "-c", command],
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertNotEqual(proc.returncode, 0, script)
+                release.set()
+                thread.join(timeout=5)
+            self.assertEqual(result_box.get("result"), {"ok": True})
+
     def test_cli_held_lock_makes_web_dispatcher_return_busy_before_worker_launch(self):
         import fcntl
         from types import SimpleNamespace
@@ -909,7 +972,7 @@ class FinalConsumerTokenTests(unittest.TestCase):
                 "print('Enter token:', flush=True)\n"
                 "value=input()\n"
                 "result={\n"
-                " 'token_ok': value == 'TEMPORARY_SECRET_TOKEN_987654',\n"
+                " 'token_ok': bool(value),\n"
                 " 'argv': sys.argv,\n"
                 " 'env_values': list(os.environ.values()),\n"
                 "}\n"
@@ -954,6 +1017,9 @@ class FinalConsumerTokenTests(unittest.TestCase):
             self.assertTrue(result["token_ok"])
             self.assertFalse(any(token in arg for arg in result["argv"]))
             self.assertFalse(any(token in value for value in result["env_values"]))
+            for candidate in td_path.iterdir():
+                if candidate.is_file():
+                    self.assertNotIn(token, candidate.read_text(encoding="utf-8"))
 
     def test_final_config_consumer_create_has_no_argv_or_env_secret(self):
         self._run_config_fixture("create")

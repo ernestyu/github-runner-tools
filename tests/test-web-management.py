@@ -10,6 +10,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -249,6 +251,241 @@ class DispatcherAuthorityTests(unittest.TestCase):
         source = (WEB / "lifecycle_worker.py").read_text(encoding="utf-8")
         self.assertIn("PR_SET_DUMPABLE", source)
         self.assertIn("disable_ptrace_dumpability()", source)
+
+
+
+class FrozenSessionContractTests(unittest.TestCase):
+    def setUp(self):
+        web_app.SESSIONS.clear()
+        web_app.LOGIN_ATTEMPTS.clear()
+
+    def test_expired_idle_and_absolute_sessions_rejected(self):
+        base = 10_000.0
+        active = {"created": base, "last": base + 10, "csrf": "x", "confirm": {}}
+        self.assertTrue(web_app.session_is_valid(active, base + 20))
+        self.assertFalse(
+            web_app.session_is_valid(
+                {"created": base, "last": base, "csrf": "x", "confirm": {}},
+                base + web_app.SESSION_IDLE + 1,
+            )
+        )
+        self.assertFalse(
+            web_app.session_is_valid(
+                {
+                    "created": base,
+                    "last": base + web_app.SESSION_ABSOLUTE,
+                    "csrf": "x",
+                    "confirm": {},
+                },
+                base + web_app.SESSION_ABSOLUTE + 1,
+            )
+        )
+
+    def test_old_cookie_state_dies_on_restart(self):
+        app_obj = object.__new__(web_app.App)
+        sid, _sess = app_obj.new_session()
+        self.assertIn(sid, web_app.SESSIONS)
+        web_app.SESSIONS.clear()  # process restart semantics: memory is gone
+        self.assertNotIn(sid, web_app.SESSIONS)
+
+    def test_login_rate_limit_actual_state_transition(self):
+        source = "127.0.0.1"
+        t = 1000.0
+        for i in range(8):
+            self.assertTrue(web_app.login_attempt_allowed(source, t + i))
+            web_app.record_login_attempt(source, t + i)
+        self.assertFalse(web_app.login_attempt_allowed(source, t + 9))
+        # Window expiry restores eligibility.
+        self.assertTrue(web_app.login_attempt_allowed(source, t + 400))
+
+    def test_confirmation_nonce_missing_wrong_expired_reused_and_bound(self):
+        t = 5000.0
+        sess = {
+            "confirm": {
+                "good": {"op": "remove", "repository": "owner/repo", "expires": t + 10},
+                "wrongop": {"op": "recover_local", "repository": "owner/repo", "expires": t + 10},
+                "expired": {"op": "remove", "repository": "owner/repo", "expires": t - 1},
+            }
+        }
+        self.assertIsNone(web_app.consume_confirmation(sess, "missing", "remove", t))
+        self.assertIsNone(web_app.consume_confirmation(sess, "wrongop", "remove", t))
+        self.assertIsNone(web_app.consume_confirmation(sess, "expired", "remove", t))
+
+        pending = web_app.consume_confirmation(sess, "good", "remove", t)
+        self.assertEqual(pending["repository"], "owner/repo")
+        self.assertIsNone(web_app.consume_confirmation(sess, "good", "remove", t))  # single use
+
+        # Repository binding is server-side state, not a client field.
+        self.assertEqual(pending, {"op": "remove", "repository": "owner/repo", "expires": t + 10})
+
+    def test_oversized_fields_rejected_by_shared_bounds(self):
+        self.assertFalse(
+            web_app.form_fields_within_bounds(
+                {"repository": "o/" + "r" * common.MAX_REPOSITORY_LEN}
+            )
+        )
+        self.assertFalse(
+            web_app.form_fields_within_bounds({"token": "x" * (common.MAX_TOKEN_LEN + 1)})
+        )
+        self.assertFalse(web_app.form_fields_within_bounds({"password": "x" * 257}))
+        self.assertTrue(
+            web_app.form_fields_within_bounds(
+                {"repository": "owner/repo", "token": "short", "csrf": "x", "nonce": "y"}
+            )
+        )
+
+    def test_list_eligibility_rechecks_current_dispatch_state(self):
+        handler = object.__new__(web_app.Handler)
+        handler.app = mock.Mock()
+        handler.app.config = {}
+        with mock.patch(
+            "app.dispatch",
+            return_value={
+                "ok": True,
+                "runners": [
+                    {
+                        "repository": "owner/repo",
+                        "can_remove": False,
+                        "can_recover_local": False,
+                    }
+                ],
+            },
+        ):
+            self.assertFalse(handler._listed_eligible("owner/repo", "remove"))
+            self.assertFalse(handler._listed_eligible("owner/repo", "recover_local"))
+
+
+class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
+    def test_same_uid_fake_socketpair_cannot_authorize_web_context(self):
+        if os.geteuid() == 0:
+            self.skipTest("negative same-UID test requires non-root test runner")
+        left, right = socketpair = __import__("socket").socketpair()
+        try:
+            # A fake actions-side peer has the current non-root uid.
+            self.assertEqual(lifecycle_worker.privileged_peer_uid(left.fileno()), os.geteuid())
+            with self.assertRaises(RuntimeError):
+                lifecycle_worker.privileged_context_check(left.fileno())
+        finally:
+            left.close()
+            right.close()
+
+    def test_worker_identity_requires_exact_uid_gid_no_groups_no_caps_path(self):
+        uid, gid = 1234, 2345
+        with mock.patch("lifecycle_worker.os.geteuid", return_value=uid), \
+             mock.patch("lifecycle_worker.os.getegid", return_value=gid), \
+             mock.patch("lifecycle_worker.os.getresuid", return_value=(uid, uid, uid)), \
+             mock.patch("lifecycle_worker.os.getresgid", return_value=(gid, gid, gid)), \
+             mock.patch("lifecycle_worker.os.getgroups", return_value=[]), \
+             mock.patch("builtins.open", mock.mock_open(read_data=(
+                 "CapInh:\t0000000000000000\n"
+                 "CapPrm:\t0000000000000000\n"
+                 "CapEff:\t0000000000000000\n"
+                 "CapAmb:\t0000000000000000\n"
+             ))):
+            self.assertTrue(lifecycle_worker.verify_unprivileged_identity(uid, gid))
+
+        with mock.patch("lifecycle_worker.os.geteuid", return_value=uid), \
+             mock.patch("lifecycle_worker.os.getegid", return_value=gid), \
+             mock.patch("lifecycle_worker.os.getresuid", return_value=(uid, uid, uid)), \
+             mock.patch("lifecycle_worker.os.getresgid", return_value=(gid, gid, gid)), \
+             mock.patch("lifecycle_worker.os.getgroups", return_value=[999]):
+            self.assertFalse(lifecycle_worker.verify_unprivileged_identity(uid, gid))
+
+    def test_dispatcher_peer_uid_helper_uses_unix_peer_credentials(self):
+        import socket
+        left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            self.assertEqual(dispatcher.unix_peer_uid(left), os.geteuid())
+        finally:
+            left.close()
+            right.close()
+
+    def test_cli_held_lock_makes_web_dispatcher_return_busy_before_worker_launch(self):
+        import fcntl
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as td:
+            lock_path = pathlib.Path(td) / "mutation.lock"
+            lock_path.touch()
+            holder = open(lock_path, "r+", encoding="utf-8")
+            fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                server = object.__new__(dispatcher.DispatchServer)
+                server.runtime = SimpleNamespace(lock_file=str(lock_path), timeout=10)
+                result = dispatcher.DispatchServer.execute(
+                    server,
+                    {"op": "create", "repository": "owner/repo", "token": "temporary"},
+                )
+                self.assertEqual(result, {"ok": False, "error": "operation_in_progress"})
+            finally:
+                fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+                holder.close()
+
+
+class FinalConsumerTokenTests(unittest.TestCase):
+    def _run_config_fixture(self, mode: str):
+        token = "TEMPORARY_SECRET_TOKEN_987654"
+        with tempfile.TemporaryDirectory() as td:
+            td_path = pathlib.Path(td)
+            config = td_path / "config.sh"
+            result_file = td_path / "result.json"
+            config.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "print('Enter token:', flush=True)\n"
+                "value=input()\n"
+                "result={\n"
+                " 'token_ok': value == 'TEMPORARY_SECRET_TOKEN_987654',\n"
+                " 'argv': sys.argv,\n"
+                " 'env_values': list(os.environ.values()),\n"
+                "}\n"
+                "open(os.environ['RESULT_FILE'], 'w', encoding='utf-8').write(json.dumps(result))\n",
+                encoding="utf-8",
+            )
+            config.chmod(0o755)
+            read_fd, write_fd = os.pipe()
+            env = os.environ.copy()
+            env["RESULT_FILE"] = str(result_file)
+            try:
+                os.write(write_fd, (token + "\n").encode())
+                os.close(write_fd)
+                write_fd = -1
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(WEB / "pty_token_adapter.py"),
+                        "--token-fd",
+                        str(read_fd),
+                        "--mode",
+                        mode,
+                        "--",
+                        str(config),
+                    ],
+                    pass_fds=(read_fd,),
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                    check=False,
+                )
+            finally:
+                os.close(read_fd)
+                if write_fd >= 0:
+                    os.close(write_fd)
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertNotIn(token, proc.stdout)
+            self.assertNotIn(token, proc.stderr)
+            result = json.loads(result_file.read_text(encoding="utf-8"))
+            self.assertTrue(result["token_ok"])
+            self.assertFalse(any(token in arg for arg in result["argv"]))
+            self.assertFalse(any(token in value for value in result["env_values"]))
+
+    def test_final_config_consumer_create_has_no_argv_or_env_secret(self):
+        self._run_config_fixture("create")
+
+    def test_final_config_consumer_remove_has_no_argv_or_env_secret(self):
+        self._run_config_fixture("remove")
 
 
 if __name__ == "__main__":

@@ -236,6 +236,48 @@ class DispatcherAuthorityTests(unittest.TestCase):
         with self.assertRaises(dispatcher.DispatchError):
             self.validate_with(props)
 
+    def test_privileged_schema_rejects_unknown_extra_malformed_and_injection(self):
+        rt = self.runtime()
+        rt.runner_group = "actions"
+        self.assertEqual(
+            rt.privileged({"op": "unknown"}),
+            {"ok": False, "error": "unknown_privileged_operation"},
+        )
+        self.assertEqual(
+            rt.privileged({"op": "context_check", "extra": "x"}),
+            {"ok": False, "error": "invalid_privileged_fields"},
+        )
+        for repository in ("bad", "owner/repo;rm", "../owner/repo"):
+            result = rt.privileged(
+                {
+                    "op": "service_state",
+                    "repository": repository,
+                    "runner_dir": "/home/actions/actions-runner-owner--repo",
+                    "runner_name": "runner",
+                    "service": "actions.runner.owner-repo.runner.service",
+                }
+            )
+            self.assertEqual(result, {"ok": False, "error": "privileged_validation_failed"})
+
+    def test_public_dispatch_rejects_unknown_fields_before_execute(self):
+        sent = []
+        fake_request = mock.Mock()
+        fake_request.sendall.side_effect = sent.append
+        runtime = SimpleNamespace(web_pw=SimpleNamespace(pw_uid=4242))
+        server = SimpleNamespace(runtime=runtime, execute=mock.Mock())
+        handler = object.__new__(dispatcher.DispatchHandler)
+        handler.request = fake_request
+        handler.server = server
+        with mock.patch("dispatcher.unix_peer_uid", return_value=4242), \
+             mock.patch(
+                 "dispatcher.recv_json_line",
+                 return_value={"op": "create", "repository": "owner/repo", "token": "x", "command": "id"},
+             ):
+            handler.handle()
+        self.assertFalse(server.execute.called)
+        reply = json.loads(sent[0].decode("utf-8").strip())
+        self.assertEqual(reply, {"ok": False, "error": "invalid_request_fields"})
+
     def test_repository_directory_binding_fails_closed(self):
         rt = self.runtime()
         with mock.patch("dispatcher.os.path.realpath", side_effect=lambda p: p), \
@@ -626,6 +668,111 @@ class WebHTTPContractTests(unittest.TestCase):
         self.assertNotIn(token, body.decode("utf-8"))
         self.assertNotIn(token, log.getvalue())
         self.assertNotIn(token, json.dumps(sess))
+
+
+    def test_valid_login_establishes_opaque_secure_cookie(self):
+        status, headers, _body = self.request(
+            "POST", "/login", {"password": "correct-password"}
+        )
+        self.assertEqual(status, 303)
+        cookie = headers.get("Set-Cookie", "")
+        self.assertIn(f"{web_app.COOKIE_NAME}=", cookie)
+        self.assertIn("Secure", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        sid = cookie.split(";", 1)[0].split("=", 1)[1]
+        self.assertIn(sid, web_app.SESSIONS)
+        self.assertNotIn("authenticated", sid)
+
+    def test_create_validation_and_typed_dispatch(self):
+        cookie, sess = self.new_cookie_session()
+        with mock.patch("app.dispatch", return_value={"ok": True}) as call:
+            status, _headers, _body = self.request(
+                "POST",
+                "/create",
+                {
+                    "csrf": sess["csrf"],
+                    "repository": "owner/repo",
+                    "token": "temporary-registration-token",
+                },
+                cookie=cookie,
+            )
+        self.assertEqual(status, 303)
+        call.assert_called_once_with(
+            self.app.config,
+            {
+                "op": "create",
+                "repository": "owner/repo",
+                "token": "temporary-registration-token",
+            },
+        )
+
+        with mock.patch("app.dispatch") as call:
+            status, _headers, _body = self.request(
+                "POST",
+                "/create",
+                {
+                    "csrf": sess["csrf"],
+                    "repository": "owner/repo;evil",
+                    "token": "temporary-registration-token",
+                },
+                cookie=cookie,
+            )
+            self.assertEqual(status, 400)
+            self.assertFalse(call.called)
+
+            status, _headers, _body = self.request(
+                "POST",
+                "/create",
+                {
+                    "csrf": sess["csrf"],
+                    "repository": "owner/repo",
+                    "token": "",
+                },
+                cookie=cookie,
+            )
+            self.assertEqual(status, 400)
+            self.assertFalse(call.called)
+
+    def test_ambiguous_runner_renders_no_destructive_action(self):
+        cookie, _sess = self.new_cookie_session()
+        response = {
+            "ok": True,
+            "runners": [
+                {
+                    "repository": None,
+                    "runner_name": None,
+                    "service_state": "unknown",
+                    "management_state": "ambiguous",
+                    "can_remove": False,
+                    "can_recover_local": False,
+                }
+            ],
+        }
+        with mock.patch("app.dispatch", return_value=response):
+            status, _headers, body = self.request("GET", "/", cookie=cookie)
+        self.assertEqual(status, 200)
+        text = body.decode("utf-8")
+        self.assertNotIn('action="/remove/prepare"', text)
+        self.assertNotIn('action="/recover/prepare"', text)
+
+    def test_confirmation_nonce_cannot_cross_sessions(self):
+        cookie_a, sess_a = self.new_cookie_session()
+        cookie_b, sess_b = self.new_cookie_session()
+        nonce = "session-a-only"
+        sess_a["confirm"][nonce] = {
+            "op": "remove",
+            "repository": "owner/repo",
+            "expires": web_app.now() + 60,
+        }
+        status, _headers, _body = self.request(
+            "POST",
+            "/remove/confirm",
+            {"csrf": sess_b["csrf"], "nonce": nonce, "token": "temporary"},
+            cookie=cookie_b,
+        )
+        self.assertEqual(status, 403)
+        self.assertIn(nonce, sess_a["confirm"])
 
 
 class DispatcherAndWorkerAuthorityTests(unittest.TestCase):

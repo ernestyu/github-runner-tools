@@ -37,6 +37,29 @@ CONFIRM_TTL = 5 * 60
 COOKIE_NAME = "grt_session"
 
 
+
+REMOVE_FAILURE_TEXT = {
+    "preflight_failed": "Runner removal preflight failed; service was not intentionally changed.",
+    "service_state_failed": "Cannot verify runner service state; no removal started.",
+    "service_stop_failed": "Runner service stop failed; check systemd state before retrying.",
+    "service_uninstall_failed": "Runner service uninstall failed; check systemd state before retrying.",
+    "config_remove_failed": "Runner registration removal failed or is uncertain; check GitHub and systemd before retrying.",
+    "local_cleanup_failed": "GitHub unregister completed; local cleanup is incomplete.",
+    "unknown_failed": "Runner removal outcome is uncertain; inspect GitHub, systemd and local files before another operation.",
+}
+
+
+def remove_failure_message(result: dict[str, Any]) -> str:
+    if result.get("error") != "lifecycle_failed":
+        return "Runner operation failed."
+    stage = result.get("stage")
+    code = result.get("exit_code")
+    if not isinstance(stage, str) or stage not in REMOVE_FAILURE_TEXT:
+        return "Runner operation failed."
+    if code is not None and (type(code) is not int or not 1 <= code <= 255):
+        return "Runner operation failed."
+    return REMOVE_FAILURE_TEXT[stage] + (f" Exit code: {code}." if code is not None else "")
+
 ACCESS_ROUTES = {
     "/": "index", "/login": "login", "/create": "create",
     "/logout": "logout", "/remove/prepare": "remove_prepare",
@@ -573,7 +596,8 @@ class Handler(BaseHTTPRequestHandler):
             elif result.get("error") == "operation_in_progress":
                 self._send(409, page("Busy", "<h1>Another lifecycle operation is already in progress.</h1>"))
             else:
-                self._send(500, page("Operation failed", "<h1>Runner operation failed.</h1>"))
+                message = remove_failure_message(result) if expected_op == "remove" else "Runner operation failed."
+                self._send(500, page("Operation failed", f"<h1>{html.escape(message)}</h1>"))
             return
 
         self._send(404, page("Not found", "<h1>Not found</h1>"))

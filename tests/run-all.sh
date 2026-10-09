@@ -21,7 +21,7 @@ while IFS= read -r script; do
 done < <(find "$ROOT/scripts" "$ROOT/hooks" "$ROOT/tests" "$ROOT/.github/actions" -type f -name '*.sh' -print | sort)
 
 echo "Checking Python syntax..."
-python3 -m py_compile "$ROOT"/web/*.py "$ROOT"/tests/test-web-management.py "$ROOT"/tests/test-web-confirmation-gate-a.py
+python3 -m py_compile "$ROOT"/web/*.py "$ROOT"/tests/test-web-management.py "$ROOT"/tests/test-web-confirmation-gate-a.py "$ROOT"/tests/test-web-official-remove.py
 
 tests=(
   tests/test-pure.sh
@@ -49,6 +49,11 @@ echo
  echo "============================================================"
 echo "RUN: tests/test-web-confirmation-gate-a.py"
 python3 "$ROOT/tests/test-web-confirmation-gate-a.py"
+
+echo
+ echo "============================================================"
+echo "RUN: tests/test-web-official-remove.py"
+python3 "$ROOT/tests/test-web-official-remove.py"
 
 for test_script in "${tests[@]}"; do
   echo

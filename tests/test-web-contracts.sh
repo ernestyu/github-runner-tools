@@ -175,6 +175,47 @@ if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
     raise SystemExit(1)
 PY
 
+# The installed dispatcher unit must provision the two capabilities required
+# solely for the fixed worker identity transition while preserving the frozen
+# sandbox.
+grep -Fq 'AmbientCapabilities=CAP_SETUID CAP_SETGID' "$ROOT/scripts/setup-web-management.sh" ||
+  fail "dispatcher unit does not explicitly provision CAP_SETUID/CAP_SETGID"
+grep -Fq 'NoNewPrivileges=true' "$ROOT/scripts/setup-web-management.sh" ||
+  fail "dispatcher NoNewPrivileges hardening missing"
+grep -Fq 'RestrictSUIDSGID=true' "$ROOT/scripts/setup-web-management.sh" ||
+  fail "dispatcher RestrictSUIDSGID hardening missing"
+
+# Real systemd regression: under the production-relevant hardening, explicit
+# AmbientCapabilities must yield CAP_SETUID and CAP_SETGID in both permitted
+# and effective sets. The transient unit is collected immediately.
+sudo systemd-run --quiet --wait --pipe --collect \
+  -p 'User=root' \
+  -p 'Group=root' \
+  -p 'NoNewPrivileges=yes' \
+  -p 'RestrictSUIDSGID=yes' \
+  -p 'ProtectSystem=strict' \
+  -p 'ProtectKernelTunables=yes' \
+  -p 'ProtectKernelModules=yes' \
+  -p 'ProtectControlGroups=yes' \
+  -p 'LockPersonality=yes' \
+  -p 'AmbientCapabilities=CAP_SETUID CAP_SETGID' \
+  /usr/bin/python3 - <<'PY' ||
+  fail "transient systemd capability provisioning regression failed"
+status = {}
+with open("/proc/self/status", encoding="utf-8") as handle:
+    for line in handle:
+        if ":" in line:
+            key, value = line.split(":", 1)
+            status[key] = value.strip()
+
+required = (1 << 6) | (1 << 7)
+permitted = int(status["CapPrm"], 16)
+effective = int(status["CapEff"], 16)
+if permitted & required != required or effective & required != required:
+    raise SystemExit(1)
+print("DISPATCHER_CAPABILITY_PROVISIONING PASS")
+PY
+
 # Reproduce the Debian capability-inheritance failure mechanism with real
 # Linux capget/capset, then exercise Dispatcher -> fixed Worker -> list while
 # inheritable capabilities and NoNewPrivs are both present in the dispatcher.

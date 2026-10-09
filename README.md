@@ -136,6 +136,17 @@ The browser frontend never listens directly on the LAN or public Internet. The b
 
 Remote access is intended to go through **Tailscale Serve**. Do not use Tailscale Funnel for this component.
 
+### Prerequisites and access control
+
+The Web installer requires an installed Tailscale CLI and an active `tailscaled` service, even if you do not immediately enable remote access. Install and join Tailscale first, then verify:
+
+```bash
+tailscale status
+systemctl is-active tailscaled
+```
+
+For remote access, the browsing device must be on the same tailnet (or have explicitly authorized shared access). Tailnet access controls must permit the client to reach the Web host on TCP 443. On tagged hosts, authorize the host's **tag identity**, not an assumed user identity. The Web installer does not edit tailnet policies. Do not leave an unrestricted allow-all policy in place solely to make the Web UI reachable.
+
 ### One-time Web installation
 
 Clone or update the repository, then inspect the plan first:
@@ -151,6 +162,8 @@ bash scripts/setup-web-management.sh --apply
 Run the setup as the normal runner owner, not as root. The script uses `sudo` internally only for fixed host-level installation steps.
 
 `--apply` is the explicit opt-in point. It installs the Web frontend, privileged dispatcher, fixed lifecycle worker, configuration, systemd units, and Web administrator password configuration.
+
+The first installation prompts for a **single Web administrator password**. V1 has no username field, per-user accounts, or role-based access control. This password is separate from Linux, GitHub, and Tailscale authentication. On repeat `--apply`, an existing authentication file with the expected ownership and permissions is preserved, so the existing password remains in use. Tailscale access control is an additional network boundary, not a substitute for Web login.
 
 It also runs:
 
@@ -217,13 +230,42 @@ tailscale serve --bg ...
     → operator explicitly makes the UI reachable inside the tailnet
 ```
 
-The Web backend remains loopback-only even when Serve is enabled.
+The Web backend remains loopback-only even when Serve is enabled. Read the exact private HTTPS URL from `tailscale serve status` (typically `https://HOST.TAILNET.ts.net/`); do not append another `.ts.net`. Only authorized tailnet clients should be able to connect.
+
+### Post-install verification and troubleshooting
+
+On the runner host:
+
+```bash
+systemctl is-active github-runner-tools-dispatch.service
+systemctl is-active github-runner-tools-web.service
+curl -i --max-time 5 http://127.0.0.1:8765/
+tailscale serve status
+```
+
+An unauthenticated request to the loopback backend may redirect to `/login`. From another authorized tailnet device, open the HTTPS URL reported by Serve, log in with the Web administrator password (no username), and confirm the local runner inventory is visible. The inventory reflects **local runners on this host**, not every runner registered on GitHub.
+
+If the page reports `Runner status is unavailable`, that does **not** mean the runner services have stopped. Check the dispatcher and Web logs and the CLI status command before modifying any runner:
+
+```bash
+bash scripts/status-runners.sh --json
+sudo journalctl -u github-runner-tools-dispatch.service -n 60 --no-pager
+sudo journalctl -u github-runner-tools-web.service -n 60 --no-pager
+```
+
+### Lifecycle operations and acceptance scope
+
+**Create** requires `OWNER/REPO` and a temporary GitHub registration token. **Remove** uses a temporary GitHub removal token and performs remote unregister plus verified local cleanup. **Recover local** is only for narrowly verified residue after GitHub-side deletion; see [Workflow selection and management](#workflow-selection-and-management) for its fail-closed conditions. These operations can change or remove real runner installations: use a disposable repository for testing.
+
+Live Debian acceptance currently covers Web login and listing existing runners. Web Create / Remove / Recover have automated coverage but **their disposable-runner live acceptance remains pending**; do not interpret CI PASS as proof of those production mutation paths.
 
 ### Web security model
 
 Web Management preserves the existing runner lifecycle rules rather than replacing them. The frontend runs as the dedicated `grt-web` user, the root dispatcher has a narrow fixed authority surface, and the lifecycle worker drops to the configured runner owner before runner-owned lifecycle logic runs.
 
 Temporary GitHub registration/removal tokens are request-scoped and are not intentionally stored in argv, environment variables, persistent files, URLs, sessions, or logs.
+
+Tailscale grants control tailnet connectivity; they do not isolate ordinary LAN or public-network routes. Keep CI hosts isolated from sensitive networks where appropriate.
 
 The configured runner-owner account is inside the temporary-token trust boundary. Do not use Web Management V1 on a host where untrusted/public workflows execute as that same runner owner.
 

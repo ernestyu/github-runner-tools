@@ -65,6 +65,20 @@ def stable_error(code: str) -> dict[str, Any]:
     return {"ok": False, "error": code}
 
 
+def diagnostic(stage: str, exc: BaseException | None = None, **fields: Any) -> None:
+    """Emit bounded metadata only; never exception text or request content."""
+    parts = [f"dispatcher_diag stage={stage}"]
+    if exc is not None:
+        parts.append(f"exc={type(exc).__name__}")
+        errno_value = getattr(exc, "errno", None)
+        if isinstance(errno_value, int):
+            parts.append(f"errno={errno_value}")
+    for key, value in fields.items():
+        if isinstance(value, (int, bool)):
+            parts.append(f"{key}={value}")
+    print(" ".join(parts), file=sys.stderr, flush=True)
+
+
 def unix_peer_uid(sock: socket.socket) -> int:
     import struct
 
@@ -471,7 +485,8 @@ class DispatchHandler(socketserver.BaseRequestHandler):
             self.request.sendall(encode_json_line(result))
         except (ProtocolError, ValueError):
             self.request.sendall(encode_json_line(stable_error("invalid_request")))
-        except Exception:
+        except Exception as exc:
+            diagnostic("request_handler", exc)
             self.request.sendall(encode_json_line(stable_error("internal_error")))
 
 
@@ -523,6 +538,11 @@ class DispatchServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
                 "GRT_CLI_DIR": "/usr/local/lib/github-runner-tools/web/cli",
                 "GRT_PTY_ADAPTER": "/usr/local/lib/github-runner-tools/web/pty_token_adapter.py",
             }
+            # Do not perform setgroups/setregid/setreuid in Popen's
+            # fork/exec child path. The dispatcher is multi-threaded; the
+            # fixed root-owned worker execs first and immediately drops all
+            # supplementary groups and real/effective/saved IDs itself before
+            # lifecycle logic begins.
             proc = subprocess.Popen(
                 ["/usr/bin/python3", runtime.worker_path],
                 stdin=subprocess.DEVNULL,
@@ -531,9 +551,6 @@ class DispatchServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
                 text=True,
                 env=env,
                 pass_fds=(request_r, token_r, ctrl_child.fileno()),
-                user=runtime.runner_pw.pw_uid,
-                group=runtime.runner_pw.pw_gid,
-                extra_groups=[],
                 start_new_session=True,
             )
             os.close(request_r)
@@ -598,14 +615,28 @@ class DispatchServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
                 thread.join()
 
             if proc.returncode != 0:
+                diagnostic(
+                    "worker_exit",
+                    returncode=int(proc.returncode),
+                    stderr_bytes=len(stderr.encode("utf-8", errors="replace")),
+                )
                 return stable_error("lifecycle_failed")
             try:
                 result = json.loads(stdout)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
+                diagnostic(
+                    "worker_json",
+                    exc,
+                    stdout_bytes=len(stdout.encode("utf-8", errors="replace")),
+                )
                 return stable_error("invalid_worker_result")
             if not isinstance(result, dict):
+                diagnostic("worker_result_type")
                 return stable_error("invalid_worker_result")
             return result
+        except Exception as exc:
+            diagnostic("execute", exc)
+            return stable_error("internal_error")
         finally:
             for fd in (request_r, request_w, token_r, token_w):
                 if isinstance(fd, int) and fd >= 0:

@@ -156,5 +156,43 @@ class BaselineHTTPGateA(unittest.TestCase):
         self.assertEqual(len([x for x in self.calls if x["op"] == "remove"]), 1)
 
 
+    def test_d1_log_allowlist_and_fail_open_diagnostics(self):
+        import io
+        handler = object.__new__(web.Handler)
+        handler.path = "/untrusted/%0Asecret?token=PRIVATE_QUERY"
+        handler.command = "POST"
+        handler.client_address = ("192.0.2.9", 4567)
+        output = io.StringIO()
+        with mock.patch("builtins.print", side_effect=lambda *a, **k: output.write(a[0] + "\\n")):
+            handler.log_message('"%s" %s %s', "RAW_PATH", "403", "PRIVATE")
+        self.assertEqual(output.getvalue(), "web_access method=POST route=other status=403\\n")
+        for secret in ("PRIVATE", "192.0.2.9", "%0A", "RAW_PATH"):
+            self.assertNotIn(secret, output.getvalue())
+        handler.path = "/remove/confirm?token=LEAK"
+        handler.command = "UNTRUSTED_METHOD"
+        output = io.StringIO()
+        with mock.patch("builtins.print", side_effect=lambda *a, **k: output.write(a[0] + "\\n")):
+            handler.log_message("%s", "raw", "3\\n99")
+        self.assertEqual(output.getvalue(), "web_access method=OTHER route=remove_confirm status=000\\n")
+        with mock.patch("builtins.print", side_effect=OSError("journal unavailable")):
+            handler.log_message("%s", "raw", "200")
+            web.diagnostic_event("invalid_csrf")
+
+    def test_d2_classifications_and_diagnostic_failure_noninterference(self):
+        cookie = self.login()
+        csrf, nonce = self.prepare(cookie)
+        with mock.patch("builtins.print", side_effect=OSError("journal unavailable")):
+            status, _, _ = self.request("POST", "/remove/confirm",
+                {"csrf": csrf, "nonce": nonce, "token": TOKEN}, cookie=cookie)
+        self.assertEqual(status, 303)
+        self.assertEqual(len([x for x in self.calls if x["op"] == "remove"]), 1)
+        with mock.patch("app.diagnostic_event") as spy:
+            status, _, _ = self.request("POST", "/remove/confirm",
+                {"csrf": csrf, "nonce": nonce, "token": TOKEN}, cookie=cookie)
+        self.assertEqual(status, 403)
+        self.assertIn(mock.call("nonce_missing_or_used"), spy.call_args_list)
+        self.assertEqual(len([x for x in self.calls if x["op"] == "remove"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

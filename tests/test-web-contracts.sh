@@ -175,6 +175,147 @@ if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
     raise SystemExit(1)
 PY
 
+# Reproduce the Debian capability-inheritance failure mechanism with real
+# Linux capget/capset, then exercise Dispatcher -> fixed Worker -> list while
+# inheritable capabilities and NoNewPrivs are both present in the dispatcher.
+sudo python3 - "$ROOT" "$(id -u)" "$(id -g)" <<'PY' || fail "capability inheritance / dispatcher-worker regression failed"
+import ctypes
+import grp
+import json
+import os
+import pathlib
+import pwd
+import shutil
+import stat
+import sys
+import tempfile
+
+root, uid_s, gid_s = sys.argv[1:4]
+uid, gid = int(uid_s), int(gid_s)
+sys.path.insert(0, os.path.join(root, "web"))
+
+import dispatcher
+import lifecycle_worker
+
+def set_one_inheritable_capability():
+    header, data = lifecycle_worker._capget_data()
+    chosen = None
+    for word_index, entry in enumerate(data):
+        permitted = int(entry.permitted)
+        if permitted:
+            bit = permitted & -permitted
+            entry.inheritable |= bit
+            chosen = word_index * 32 + (bit.bit_length() - 1)
+            break
+    if chosen is None:
+        raise RuntimeError("root test process has no permitted capability to place in CapInh")
+    lifecycle_worker._capset_data(header, data)
+    caps = lifecycle_worker.read_capability_sets()
+    if caps["CapInh"] == 0:
+        raise RuntimeError("failed to construct nonzero CapInh")
+    return chosen, caps
+
+chosen, before = set_one_inheritable_capability()
+print(f"CAPABILITY_REGRESSION_PRE CapInh_nonzero=1 selected_cap={chosen}")
+
+# Exact previous drop sequence: setgroups -> setresgid -> setresuid -> strict
+# verification. Linux preserves CapInh across this UID transition, so the old
+# worker reaches the same identity-verification failure that mapped to exit 71.
+pid = os.fork()
+if pid == 0:
+    try:
+        os.setgroups([])
+        os.setresgid(gid, gid, gid)
+        os.setresuid(uid, uid, uid)
+        caps = lifecycle_worker.read_capability_sets()
+        failed_strict_verification = not lifecycle_worker.verify_unprivileged_identity(uid, gid)
+        if caps["CapInh"] != 0 and failed_strict_verification:
+            os._exit(71)
+        os._exit(10)
+    except BaseException:
+        os._exit(11)
+
+_, status = os.waitpid(pid, 0)
+if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 71:
+    raise RuntimeError(f"legacy drop sequence did not reproduce exit-71 condition: status={status}")
+print("CAPABILITY_REGRESSION_LEGACY exit=71 cause=nonzero_CapInh_after_uid_drop")
+
+# Match the production hardening property relevant to this path.
+libc = ctypes.CDLL(None, use_errno=True)
+PR_SET_NO_NEW_PRIVS = 38
+if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+    err = ctypes.get_errno()
+    raise OSError(err, "PR_SET_NO_NEW_PRIVS failed")
+
+tmp = pathlib.Path(tempfile.mkdtemp(prefix="grt-cap-int-"))
+try:
+    os.chmod(tmp, 0o755)
+    install = tmp / "web"
+    cli = install / "cli"
+    install.mkdir(mode=0o755)
+    cli.mkdir(mode=0o755)
+
+    for name in ("lifecycle_worker.py", "grt_web_common.py", "pty_token_adapter.py"):
+        src = pathlib.Path(root) / "web" / name
+        dst = install / name
+        shutil.copyfile(src, dst)
+        os.chown(dst, 0, 0)
+        os.chmod(dst, 0o755 if name != "grt_web_common.py" else 0o644)
+
+    status_script = cli / "status-runners.sh"
+    status_script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os\n"
+        "status={}\n"
+        "for line in open('/proc/self/status', encoding='utf-8'):\n"
+        "    if ':' in line:\n"
+        "        k,v=line.split(':',1); status[k]=v.strip()\n"
+        "keys=('CapInh','CapPrm','CapEff','CapAmb')\n"
+        "caps_zero=all(int(status.get(k,'0'),16)==0 for k in keys)\n"
+        f"identity_ok=(os.getuid()=={uid} and os.geteuid()=={uid} and os.getgid()=={gid} and os.getegid()=={gid} and os.getgroups()==[])\n"
+        "if not (caps_zero and identity_ok): raise SystemExit(9)\n"
+        "print(json.dumps([{'repository':'owner/repo','caps_zero':caps_zero,'identity_ok':identity_ok}]))\n",
+        encoding="utf-8",
+    )
+    os.chown(status_script, 0, 0)
+    os.chmod(status_script, 0o755)
+
+    worker_path = str(install / "lifecycle_worker.py")
+    pty_path = str(install / "pty_token_adapter.py")
+    lock_path = tmp / "mutation.lock"
+    lock_path.write_text("", encoding="utf-8")
+    os.chown(lock_path, 0, gid)
+    os.chmod(lock_path, 0o660)
+
+    pw = pwd.getpwuid(uid)
+    gr = grp.getgrgid(gid)
+    rt = object.__new__(dispatcher.Runtime)
+    rt.runner_user = pw.pw_name
+    rt.runner_home = pw.pw_dir
+    rt.runner_group = gr.gr_name
+    rt.worker_path = worker_path
+    rt.cli_dir = str(cli)
+    rt.pty_adapter = pty_path
+    rt.lock_file = str(lock_path)
+    rt.timeout = 10
+    rt.runner_pw = pw
+    rt.runner_gr = gr
+
+    server = object.__new__(dispatcher.DispatchServer)
+    server.runtime = rt
+    result = dispatcher.DispatchServer.execute(server, {"op": "list"})
+    if result.get("ok") is not True:
+        raise RuntimeError(f"dispatcher list failed: {result!r}")
+    runners = result.get("runners")
+    if not isinstance(runners, list) or len(runners) != 1:
+        raise RuntimeError(f"unexpected runner list: {runners!r}")
+    if runners[0].get("caps_zero") is not True or runners[0].get("identity_ok") is not True:
+        raise RuntimeError(f"worker did not reach strict unprivileged state: {runners!r}")
+    print("CAPABILITY_REGRESSION_FIXED dispatcher_list_ok=1 caps_zero=1 identity_ok=1")
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+PY
+
 # The real Web lifecycle code path must invoke the official config.sh through
 # the PTY adapter and must not contain a secret --token argument in the Web
 # branch. Normal CLI may still use --token because it is outside Web V1.

@@ -212,23 +212,23 @@ class BaselineHTTPGateA(unittest.TestCase):
                     out = io.StringIO()
                     with mock.patch("sys.stdout", out):
                         handler.log_message("malicious %s", "PRIVATE_TOKEN", "403")
-                    self.assertEqual(out.getvalue(), f"web_access method={method} route={label} status=403\\n")
-                    self.assertEqual(out.getvalue().count("\\n"), 1)
+                    self.assertEqual(out.getvalue(), f"web_access method={method} route={label} status=403\n")
+                    self.assertEqual(out.getvalue().count("\n"), 1)
 
         for path in ("/unknown", "/remove/confirm/extra", "/%72emove/confirm",
-                     "/remove/%0Aconfirm", "/bad\\r\\nCOOKIE_PRIVATE", "/?token=PASSWORD"):
-            handler.path, handler.command = path, "BOGUS\\nPRIVATE"
+                     "/remove/%0Aconfirm", "/bad\\r\nCOOKIE_PRIVATE", "/?token=PASSWORD"):
+            handler.path, handler.command = path, "BOGUS\nPRIVATE"
             out = io.StringIO()
             with mock.patch("sys.stdout", out):
-                handler.log_message("%s %s", "PRIVATE_CSRF", "3\\n99")
-            self.assertEqual(out.getvalue(), "web_access method=OTHER route=other status=000\\n")
+                handler.log_message("%s %s", "PRIVATE_CSRF", "3\n99")
+            self.assertEqual(out.getvalue(), "web_access method=OTHER route=other status=000\n")
             for forbidden in ("192.0.2.9", "PRIVATE", "unknown", "%0A", "PASSWORD"):
                 self.assertNotIn(forbidden, out.getvalue())
         handler.path, handler.command = "/remove/confirm?token=PRIVATE_TOKEN", "GET"
         out = io.StringIO()
         with mock.patch("sys.stdout", out):
             handler.log_message("%s", "PRIVATE_NONCE", "200")
-        self.assertEqual(out.getvalue(), "web_access method=GET route=remove_confirm status=200\\n")
+        self.assertEqual(out.getvalue(), "web_access method=GET route=remove_confirm status=200\n")
 
         with mock.patch("builtins.print") as printer:
             handler.log_message("%s", "SECRET_COOKIE", "200")

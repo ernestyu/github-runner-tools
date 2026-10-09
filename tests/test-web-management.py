@@ -760,6 +760,92 @@ class WebHTTPContractTests(unittest.TestCase):
             self.assertEqual(status, 400)
             self.assertFalse(call.called)
 
+    def test_management_page_uses_compact_table_and_blank_registration_token(self):
+        cookie, _sess = self.new_cookie_session()
+        response = {
+            "ok": True,
+            "runners": [
+                {
+                    "repository": "owner/repo",
+                    "runner_name": "local-ci-owner--repo",
+                    "service_state": "active",
+                    "management_state": "configured",
+                    "can_remove": True,
+                    "can_recover_local": False,
+                }
+            ],
+        }
+        with mock.patch("app.dispatch", return_value=response):
+            status, _headers, body = self.request("GET", "/", cookie=cookie)
+
+        self.assertEqual(status, 200)
+        text = body.decode("utf-8")
+        self.assertIn('class="runner-table"', text)
+        self.assertIn("<th>Repository</th>", text)
+        self.assertIn("<th>Runner</th>", text)
+        self.assertIn("<th>Status</th>", text)
+        self.assertIn("owner/repo", text)
+        self.assertIn("local-ci-owner--repo", text)
+        self.assertIn("Active", text)
+        self.assertNotIn("State: configured", text)
+        self.assertNotIn("Service: active", text)
+        self.assertIn('action="/remove/prepare"', text)
+
+        token_input = (
+            '<input type="password" name="token" value="" maxlength="1024" '
+            'autocomplete="new-password" placeholder="Paste temporary registration token" required>'
+        )
+        self.assertIn(token_input, text)
+
+    def test_recoverable_runner_uses_user_facing_status_and_recover_action(self):
+        cookie, _sess = self.new_cookie_session()
+        response = {
+            "ok": True,
+            "runners": [
+                {
+                    "repository": "owner/repo",
+                    "runner_name": "local-ci-owner--repo",
+                    "service_state": "absent",
+                    "management_state": "recoverable_residue",
+                    "can_remove": False,
+                    "can_recover_local": True,
+                }
+            ],
+        }
+        with mock.patch("app.dispatch", return_value=response):
+            status, _headers, body = self.request("GET", "/", cookie=cookie)
+
+        self.assertEqual(status, 200)
+        text = body.decode("utf-8")
+        self.assertIn("Needs recovery", text)
+        self.assertIn('action="/recover/prepare"', text)
+        self.assertIn(">Recover</button>", text)
+        self.assertNotIn("recoverable_residue", text)
+
+    def test_runner_status_view_hides_internal_configured_state(self):
+        self.assertEqual(
+            web_app.runner_status_view(
+                {"service_state": "active", "management_state": "configured"}
+            ),
+            ("Active", "ok"),
+        )
+        self.assertEqual(
+            web_app.runner_status_view(
+                {"service_state": "inactive", "management_state": "configured"}
+            ),
+            ("Inactive", "muted"),
+        )
+        self.assertEqual(
+            web_app.runner_status_view(
+                {
+                    "service_state": "absent",
+                    "management_state": "recoverable_residue",
+                    "can_recover_local": True,
+                }
+            ),
+            ("Needs recovery", "status-warn"),
+        )
+
     def test_ambiguous_runner_renders_no_destructive_action(self):
         cookie, _sess = self.new_cookie_session()
         response = {

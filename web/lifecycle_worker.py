@@ -14,6 +14,114 @@ from typing import Any
 from grt_web_common import ProtocolError, validate_repository
 
 
+_LINUX_CAPABILITY_VERSION_3 = 0x20080522
+_CAPABILITY_WORDS = 2
+_PR_SET_KEEPCAPS = 8
+_PR_CAP_AMBIENT = 47
+_PR_CAP_AMBIENT_CLEAR_ALL = 4
+
+_IDENTITY_STAGES = {
+    "worker_not_root",
+    "capability_clear_failed",
+    "setgroups_failed",
+    "setgid_failed",
+    "setuid_failed",
+    "identity_verification_failed",
+}
+
+
+class _CapHeader(ctypes.Structure):
+    _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
+
+
+class _CapData(ctypes.Structure):
+    _fields_ = [
+        ("effective", ctypes.c_uint32),
+        ("permitted", ctypes.c_uint32),
+        ("inheritable", ctypes.c_uint32),
+    ]
+
+
+class IdentityDropError(RuntimeError):
+    def __init__(self, stage: str, cause: BaseException | None = None):
+        if stage not in _IDENTITY_STAGES:
+            raise ValueError("invalid identity-drop stage")
+        super().__init__(stage)
+        self.stage = stage
+        self.cause_type = type(cause).__name__ if cause is not None else None
+        errno_value = getattr(cause, "errno", None)
+        self.errno = errno_value if isinstance(errno_value, int) else None
+
+
+def worker_diagnostic(stage: str, exc: IdentityDropError | None = None) -> None:
+    """Emit fixed, bounded identity-drop metadata only."""
+    if stage not in _IDENTITY_STAGES:
+        stage = "identity_verification_failed"
+    parts = [f"worker_diag stage={stage}"]
+    if exc is not None and exc.cause_type:
+        parts.append(f"exc={exc.cause_type}")
+    if exc is not None and exc.errno is not None:
+        parts.append(f"errno={exc.errno}")
+    print(" ".join(parts), file=sys.stderr, flush=True)
+
+
+def _capget_data() -> tuple[_CapHeader, Any]:
+    libc = ctypes.CDLL(None, use_errno=True)
+    header = _CapHeader(_LINUX_CAPABILITY_VERSION_3, 0)
+    data = (_CapData * _CAPABILITY_WORDS)()
+    if libc.capget(ctypes.byref(header), ctypes.byref(data)) != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, "capget failed")
+    return header, data
+
+
+def _capset_data(header: _CapHeader, data: Any) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.capset(ctypes.byref(header), ctypes.byref(data)) != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, "capset failed")
+
+
+def read_capability_sets() -> dict[str, int]:
+    status: dict[str, str] = {}
+    with open("/proc/self/status", "r", encoding="utf-8") as handle:
+        for line in handle:
+            if ":" in line:
+                key, value = line.split(":", 1)
+                status[key] = value.strip()
+    return {
+        key: int(status.get(key, "0"), 16)
+        for key in ("CapInh", "CapPrm", "CapEff", "CapAmb")
+    }
+
+
+def clear_capabilities_for_identity_drop() -> None:
+    """Clear inheritable/ambient state without removing SETUID/SETGID yet."""
+    libc = ctypes.CDLL(None, use_errno=True)
+
+    # Ambient capabilities are never needed by the worker.
+    if libc.prctl(_PR_CAP_AMBIENT, _PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, "PR_CAP_AMBIENT_CLEAR_ALL failed")
+
+    # Preserve effective/permitted capabilities needed for setgroups/set*id,
+    # while explicitly zeroing every inheritable capability word.
+    header, data = _capget_data()
+    for entry in data:
+        entry.inheritable = 0
+    _capset_data(header, data)
+
+    # Do not preserve permitted capabilities across the later root->actions
+    # UID transition, even if the parent process changed this prctl setting.
+    if libc.prctl(_PR_SET_KEEPCAPS, 0, 0, 0, 0) != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, "PR_SET_KEEPCAPS failed")
+
+    caps = read_capability_sets()
+    if caps["CapInh"] != 0 or caps["CapAmb"] != 0:
+        raise PermissionError("capability pre-drop verification failed")
+
+
 def read_request(fd: int) -> dict[str, Any]:
     data = bytearray()
     while True:
@@ -89,15 +197,9 @@ def verify_unprivileged_identity(uid: int, gid: int) -> bool:
     if os.getgroups():
         return False
     try:
-        status = {}
-        with open("/proc/self/status", "r", encoding="utf-8") as handle:
-            for line in handle:
-                if ":" in line:
-                    key, value = line.split(":", 1)
-                    status[key] = value.strip()
-        for key in ("CapInh", "CapPrm", "CapEff", "CapAmb"):
-            if int(status.get(key, "0"), 16) != 0:
-                return False
+        caps = read_capability_sets()
+        if any(caps[key] != 0 for key in ("CapInh", "CapPrm", "CapEff", "CapAmb")):
+            return False
     except (OSError, ValueError):
         return False
     return True
@@ -106,22 +208,44 @@ def verify_unprivileged_identity(uid: int, gid: int) -> bool:
 def drop_to_runner_identity(uid: int, gid: int) -> None:
     """Drop root completely before any runner lifecycle logic executes."""
     if os.geteuid() != 0:
-        raise PermissionError("worker launcher did not start with root identity")
+        raise IdentityDropError("worker_not_root")
 
-    # The order is security-sensitive: supplementary groups first, then all
-    # real/effective/saved GIDs, then all real/effective/saved UIDs.
-    os.setgroups([])
-    if hasattr(os, "setresgid"):
-        os.setresgid(gid, gid, gid)
-    else:
-        os.setgid(gid)
-    if hasattr(os, "setresuid"):
-        os.setresuid(uid, uid, uid)
-    else:
-        os.setuid(uid)
+    # Security-sensitive order:
+    # 1. Remove inheritable/ambient capability state while preserving the
+    #    effective/permitted SETUID/SETGID authority needed for the next steps.
+    # 2. Clear supplementary groups.
+    # 3. Drop all real/effective/saved GIDs.
+    # 4. Drop all real/effective/saved UIDs; with KEEPCAPS disabled Linux
+    #    clears permitted/effective capabilities during this transition.
+    # 5. Verify IDs, groups, and all required capability sets are zero.
+    try:
+        clear_capabilities_for_identity_drop()
+    except (OSError, PermissionError) as exc:
+        raise IdentityDropError("capability_clear_failed", exc) from exc
+
+    try:
+        os.setgroups([])
+    except OSError as exc:
+        raise IdentityDropError("setgroups_failed", exc) from exc
+
+    try:
+        if hasattr(os, "setresgid"):
+            os.setresgid(gid, gid, gid)
+        else:
+            os.setgid(gid)
+    except OSError as exc:
+        raise IdentityDropError("setgid_failed", exc) from exc
+
+    try:
+        if hasattr(os, "setresuid"):
+            os.setresuid(uid, uid, uid)
+        else:
+            os.setuid(uid)
+    except OSError as exc:
+        raise IdentityDropError("setuid_failed", exc) from exc
 
     if not verify_unprivileged_identity(uid, gid):
-        raise PermissionError("worker identity drop verification failed")
+        raise IdentityDropError("identity_verification_failed")
 
 
 def main() -> int:
@@ -141,7 +265,8 @@ def main() -> int:
     pw = pwd.getpwnam(runner_user)
     try:
         drop_to_runner_identity(pw.pw_uid, pw.pw_gid)
-    except (OSError, PermissionError):
+    except IdentityDropError as exc:
+        worker_diagnostic(exc.stage, exc)
         return 71
 
     try:

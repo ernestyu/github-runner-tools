@@ -93,20 +93,18 @@ def consume_confirmation(
 ) -> dict[str, Any] | None:
     pending = sess["confirm"].pop(nonce, None)
     t = now() if at is None else at
-    if (
-        not isinstance(pending, dict)
-        or pending.get("op") != expected_op
-        or pending.get("expires", 0) < t
-    ):
-        # Category is based exclusively on this actual pop and comparison.
-        if not isinstance(pending, dict):
-            diagnostic_event("nonce_missing_or_used")
-        elif pending.get("op") != expected_op:
-            diagnostic_event("operation_mismatch")
-        elif pending.get("expires", 0) < t:
-            diagnostic_event("nonce_expired")
-        else:
-            diagnostic_event("confirmation_unknown")
+    # Preserve original short-circuit order while reusing each decisive
+    # comparison result for passive diagnostics (no second pending.get()).
+    if not isinstance(pending, dict):
+        diagnostic_event("nonce_missing_or_used")
+        return None
+    operation_mismatch = pending.get("op") != expected_op
+    if operation_mismatch:
+        diagnostic_event("operation_mismatch")
+        return None
+    expired = pending.get("expires", 0) < t
+    if expired:
+        diagnostic_event("nonce_expired")
         return None
     return pending
 

@@ -5,6 +5,7 @@ import json
 import fcntl
 import time
 import sys
+from unittest import mock
 import signal
 import os
 from pathlib import Path
@@ -250,9 +251,21 @@ exit 1
             rt.validate_fixed_worker = lambda: None
             server = object.__new__(dispatcher.DispatchServer)
             server.runtime = rt
-            result = dispatcher.DispatchServer.execute(server, {
-                "op": "remove", "repository": "example/repo", "token": "FAKE_TOKEN"})
+            original_popen = dispatcher.subprocess.Popen
+            spawned = []
+            def captured_popen(*args, **kwargs):
+                process = original_popen(*args, **kwargs)
+                spawned.append(process)
+                return process
+            with mock.patch.object(dispatcher.subprocess, "Popen", side_effect=captured_popen):
+                result = dispatcher.DispatchServer.execute(server, {
+                    "op": "remove", "repository": "example/repo", "token": "FAKE_TOKEN"})
             self.assertEqual(result.get("error"), "operation_timed_out")
+            self.assertEqual(len(spawned), 1)
+            self.assertIsNotNone(spawned[0].stdout)
+            self.assertIsNotNone(spawned[0].stderr)
+            self.assertTrue(spawned[0].stdout.closed, "stdout pipe leaked on timeout")
+            self.assertTrue(spawned[0].stderr.closed, "stderr pipe leaked on timeout")
             self.assertEqual(calls.read_text().splitlines(), ["called"])
             self.assertTrue(child_pidfile.exists(), "fake descendant was not started")
             parent_pid = int(parent_pidfile.read_text())

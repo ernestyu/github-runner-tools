@@ -2,6 +2,9 @@
 """Disposable fake-runner integration tests; no GitHub or systemd mutation."""
 from __future__ import annotations
 import json
+import fcntl
+import time
+import sys
 import signal
 import os
 from pathlib import Path
@@ -157,6 +160,99 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
                 self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=unknown_failed exit=unknown\n")
                 self.assertTrue(exists)
                 self.assertEqual(ops, ["service_stop", "service_uninstall"])
+
+
+class FdAndTimeoutEvidenceTests(unittest.TestCase):
+    def test_real_wrappers_pipeline_substitution_and_failure_marker(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bindir = root / "bin"
+            bindir.mkdir()
+            log = root / "probe.jsonl"
+            code = ("#!/usr/bin/python3\n"
+                "import os,sys,json\n"
+                "rec={'tool':os.path.basename(sys.argv[0]),'fd':os.path.exists('/proc/self/fd/'+os.environ['PROBE_FD'])}\n"
+                "with open(os.environ['PROBE_LOG'],'a') as f:f.write(json.dumps(rec)+'\\n')\n"
+                "if '--fail' in sys.argv:sys.exit(17)\n"
+                "print('ok')\n")
+            for name in ("python3","jq","cat","tr","sed"):
+                p = bindir / name
+                p.write_text(code)
+                p.chmod(0o755)
+            rd, wr = os.pipe()
+            driver = r"""
+RUNNER_TOOLS_LIB_ONLY=1
+source "$REMOVE_SCRIPT"
+WEB_MODE=1
+RESULT_FD="$1"
+REMOVE_STAGE=service_stop_failed
+python3 foo
+jq foo
+cat foo
+tr foo
+sed foo
+value="$(jq substitute)"
+printf 'a\n' | tr pipe >/dev/null
+if sed --fail; then exit 11; fi
+exit 1
+"""
+            try:
+                env = {**os.environ,"PATH":str(bindir)+":"+os.environ["PATH"],
+                       "PROBE_FD":str(wr),"PROBE_LOG":str(log),
+                       "REMOVE_SCRIPT":str(ROOT/"scripts/remove-runner.sh")}
+                proc = subprocess.run(["bash","-c",driver,"_",str(wr)],
+                    pass_fds=(wr,),env=env,capture_output=True,text=True,timeout=10)
+            finally:
+                os.close(wr)
+            try:
+                marker = os.read(rd,129)
+                extra = os.read(rd,129)
+            finally:
+                os.close(rd)
+            self.assertEqual(proc.returncode,1)
+            self.assertEqual(marker,b"GRT_REMOVE_RESULT_V1 stage=service_stop_failed exit=unknown\n")
+            self.assertEqual(extra,b"")
+            observed = [json.loads(x) for x in log.read_text().splitlines()]
+            self.assertTrue(all(not x["fd"] for x in observed))
+            names = [x["tool"] for x in observed]
+            for name in ("python3","jq","cat","tr","sed"):
+                self.assertIn(name,names)
+            self.assertGreaterEqual(names.count("jq"),2)
+            self.assertGreaterEqual(names.count("tr"),2)
+
+    def test_dispatcher_timeout_process_group_single_execution_and_lock(self):
+        sys.path.insert(0,str(ROOT/"web"))
+        import dispatcher
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            lock = root/"lock"
+            lock.touch()
+            calls = root/"calls"
+            pidfile = root/"pid"
+            worker = root/"blocked_worker.py"
+            worker.write_text(
+                "import os,time\n"
+                "with open("+repr(str(calls))+",'a') as f:f.write('called\\n')\n"
+                "with open("+repr(str(pidfile))+",'w') as f:f.write(str(os.getpid()))\n"
+                "time.sleep(60)\n")
+            rt = SimpleNamespace(lock_file=str(lock),timeout=0.25,
+                runner_user="nobody",runner_home=str(root),cli_dir=str(root),
+                pty_adapter=str(root/"unused"),worker_path=str(worker))
+            rt.validate_fixed_worker = lambda: None
+            server = object.__new__(dispatcher.DispatchServer)
+            server.runtime = rt
+            result = dispatcher.DispatchServer.execute(server,
+                {"op":"remove","repository":"example/repo","token":"FAKE_TOKEN"})
+            self.assertEqual(result.get("error"),"operation_timed_out")
+            self.assertEqual(calls.read_text().splitlines(),["called"])
+            pid = int(pidfile.read_text())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid,0)
+            with lock.open("r+") as handle:
+                fcntl.flock(handle.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+                fcntl.flock(handle.fileno(),fcntl.LOCK_UN)
+            self.assertFalse((root/"actions-runner-example--repo").exists())
 
 if __name__ == "__main__":
     unittest.main()

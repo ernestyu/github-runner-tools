@@ -20,6 +20,7 @@ print("CHILD_STDERR_" + os.environ["GRT_TEST_SECRET"], file=sys.stderr)
 sys.exit(int(os.environ.get("GRT_CONFIG_EXIT","0")))
 """
 DRIVER = r"""
+RUNNER_TOOLS_LIB_ONLY=1
 source "$1"
 web_context_check() { :; }
 web_service_state() {

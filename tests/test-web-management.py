@@ -1292,6 +1292,13 @@ class OfficialRemoveDiagnosticsTests(unittest.TestCase):
         self.assertEqual(lifecycle_worker.parse_remove_marker(good, -9), fallback)
         self.assertEqual(lifecycle_worker.parse_remove_marker(good, 0), fallback)
 
+    def test_remove_unknown_dispatcher_outcomes_are_explicit(self):
+        expected = web_app.REMOVE_FAILURE_TEXT["unknown_failed"]
+        for error in ("operation_timed_out", "internal_error",
+                      "invalid_worker_result", "worker_error"):
+            with self.subTest(error=error):
+                self.assertEqual(web_app.remove_failure_message({"ok": False, "error": error}), expected)
+
     def test_web_static_failure_mapping_is_not_injectable(self):
         item = {"ok": False, "error": "lifecycle_failed", "stage": "service_uninstall_failed", "exit_code": 3}
         self.assertEqual(web_app.remove_failure_message(item),

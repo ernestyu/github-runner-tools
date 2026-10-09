@@ -224,11 +224,6 @@ Group=$WEB_USER
 ExecStart=/usr/bin/python3 $INSTALL_ROOT/app.py --config $CONFIG_FILE --auth-config $AUTH_FILE
 Restart=on-failure
 RestartSec=2
-# The dispatcher must launch the fixed worker as root and the worker must then
-# irreversibly drop to the runner owner. Under NoNewPrivileges=yes, do not rely
-# on implicit root exec semantics to retain CAP_SETUID/CAP_SETGID across exec.
-# Provision exactly these identity-transition capabilities explicitly.
-AmbientCapabilities=CAP_SETUID CAP_SETGID
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -261,6 +256,11 @@ RuntimeDirectoryMode=0755
 ExecStart=/usr/bin/python3 $INSTALL_ROOT/dispatcher.py --config $CONFIG_FILE
 Restart=on-failure
 RestartSec=2
+# The dispatcher must launch the fixed worker as root and the worker must then
+# irreversibly drop to the runner owner. Under NoNewPrivileges=yes, do not rely
+# on implicit root exec semantics to retain CAP_SETUID/CAP_SETGID across exec.
+# Provision exactly these identity-transition capabilities explicitly.
+AmbientCapabilities=CAP_SETUID CAP_SETGID
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

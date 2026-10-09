@@ -53,7 +53,10 @@ class BaselineHTTPGateA(unittest.TestCase):
         self.verify_patch = mock.patch.object(web, "verify_password", side_effect=lambda p, _h: p == PASSWORD)
         self.dispatch_patch.start()
         self.verify_patch.start()
-        web.Handler.app = SimpleNamespace(config={}, password_hash="test-only-hash", prune=web.App.prune)
+        app_obj = object.__new__(web.App)
+        app_obj.config = {}
+        app_obj.password_hash = "test-only-hash"
+        web.Handler.app = app_obj
         # Avoid patching live server state: bind only an ephemeral loopback test socket.
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), web.Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

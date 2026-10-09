@@ -584,6 +584,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
   if ( exec {RESULT_FD}>&-; ./config.sh remove --token "$TOKEN" >/dev/null 2>&1 ); then
     unset TOKEN
   else
+    REMOVE_EXIT="$?"
     unset TOKEN
     die "Runner registration removal failed or remains uncertain."
   fi

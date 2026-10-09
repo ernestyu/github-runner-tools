@@ -837,10 +837,14 @@ class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
              mock.patch("lifecycle_worker.os.getgroups", return_value=[999]):
             self.assertFalse(lifecycle_worker.verify_unprivileged_identity(uid, gid))
 
-    def test_worker_drops_groups_gid_uid_in_security_order(self):
+    def test_worker_drops_capabilities_groups_gid_uid_in_security_order(self):
         calls = []
         uid, gid = 1234, 2345
         with mock.patch("lifecycle_worker.os.geteuid", return_value=0), \
+             mock.patch(
+                 "lifecycle_worker.clear_capabilities_for_identity_drop",
+                 side_effect=lambda: calls.append(("caps", None)),
+             ), \
              mock.patch("lifecycle_worker.os.setgroups", side_effect=lambda v: calls.append(("groups", v))), \
              mock.patch("lifecycle_worker.os.setresgid", side_effect=lambda a, b, c: calls.append(("gid", (a, b, c)))), \
              mock.patch("lifecycle_worker.os.setresuid", side_effect=lambda a, b, c: calls.append(("uid", (a, b, c)))), \
@@ -849,20 +853,72 @@ class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
+                ("caps", None),
                 ("groups", []),
                 ("gid", (gid, gid, gid)),
                 ("uid", (uid, uid, uid)),
             ],
         )
 
-    def test_worker_drop_failure_is_fatal(self):
+    def test_worker_drop_failure_is_fatal_and_staged(self):
+        cases = [
+            (
+                "capability_clear_failed",
+                "lifecycle_worker.clear_capabilities_for_identity_drop",
+                OSError(1, "SECRET capability failure"),
+            ),
+            (
+                "setgroups_failed",
+                "lifecycle_worker.os.setgroups",
+                OSError(1, "SECRET setgroups failure"),
+            ),
+            (
+                "setgid_failed",
+                "lifecycle_worker.os.setresgid",
+                OSError(1, "SECRET setgid failure"),
+            ),
+            (
+                "setuid_failed",
+                "lifecycle_worker.os.setresuid",
+                OSError(1, "SECRET setuid failure"),
+            ),
+        ]
+        for expected_stage, target, side_effect in cases:
+            with self.subTest(stage=expected_stage), \
+                 mock.patch("lifecycle_worker.os.geteuid", return_value=0), \
+                 mock.patch("lifecycle_worker.clear_capabilities_for_identity_drop"), \
+                 mock.patch("lifecycle_worker.os.setgroups"), \
+                 mock.patch("lifecycle_worker.os.setresgid"), \
+                 mock.patch("lifecycle_worker.os.setresuid"), \
+                 mock.patch("lifecycle_worker.verify_unprivileged_identity", return_value=True), \
+                 mock.patch(target, side_effect=side_effect):
+                with self.assertRaises(lifecycle_worker.IdentityDropError) as cm:
+                    lifecycle_worker.drop_to_runner_identity(1234, 2345)
+                self.assertEqual(cm.exception.stage, expected_stage)
+
         with mock.patch("lifecycle_worker.os.geteuid", return_value=0), \
+             mock.patch("lifecycle_worker.clear_capabilities_for_identity_drop"), \
              mock.patch("lifecycle_worker.os.setgroups"), \
              mock.patch("lifecycle_worker.os.setresgid"), \
              mock.patch("lifecycle_worker.os.setresuid"), \
              mock.patch("lifecycle_worker.verify_unprivileged_identity", return_value=False):
-            with self.assertRaises(PermissionError):
+            with self.assertRaises(lifecycle_worker.IdentityDropError) as cm:
                 lifecycle_worker.drop_to_runner_identity(1234, 2345)
+            self.assertEqual(cm.exception.stage, "identity_verification_failed")
+
+    def test_worker_identity_diagnostic_is_bounded_and_secret_free(self):
+        secret = "DO_NOT_LOG_WORKER_SECRET"
+        exc = lifecycle_worker.IdentityDropError(
+            "capability_clear_failed", OSError(1, secret)
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out):
+            lifecycle_worker.worker_diagnostic(exc.stage, exc)
+        logged = out.getvalue()
+        self.assertIn("worker_diag stage=capability_clear_failed", logged)
+        self.assertIn("exc=PermissionError", logged)
+        self.assertIn("errno=1", logged)
+        self.assertNotIn(secret, logged)
 
     def test_dispatcher_diagnostic_is_bounded_and_does_not_log_exception_text(self):
         secret = "DO_NOT_LOG_THIS_SECRET"
@@ -877,6 +933,23 @@ class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
         self.assertIn("returncode=7", logged)
         self.assertNotIn(secret, logged)
         self.assertNotIn("ignored=", logged)
+
+    def test_dispatcher_forwards_only_fixed_worker_diagnostics(self):
+        secret = "DO_NOT_FORWARD_SECRET"
+        incoming = (
+            "worker_diag stage=capability_clear_failed exc=PermissionError errno=1\n"
+            f"{secret}\n"
+            f"worker_diag stage=capability_clear_failed exc={secret}\n"
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out):
+            dispatcher.forward_worker_diagnostics(incoming)
+        logged = out.getvalue()
+        self.assertIn(
+            "worker_diag stage=capability_clear_failed exc=PermissionError errno=1",
+            logged,
+        )
+        self.assertNotIn(secret, logged)
 
     def test_dispatcher_peer_uid_helper_uses_unix_peer_credentials(self):
         import socket
@@ -918,6 +991,8 @@ class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
                 runner_user="actions",
                 runner_home="/home/actions",
                 worker_path="/root-owned/lifecycle_worker.py",
+                cli_dir="/usr/local/lib/github-runner-tools/web/cli",
+                pty_adapter="/usr/local/lib/github-runner-tools/web/pty_token_adapter.py",
                 runner_pw=SimpleNamespace(pw_uid=1234, pw_gid=2345),
                 validate_fixed_worker=mock.Mock(),
                 privileged=mock.Mock(return_value={"ok": True, "context": "dispatcher"}),
@@ -972,6 +1047,8 @@ class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
                 runner_user="actions",
                 runner_home="/home/actions",
                 worker_path="/root-owned/lifecycle_worker.py",
+                cli_dir="/usr/local/lib/github-runner-tools/web/cli",
+                pty_adapter="/usr/local/lib/github-runner-tools/web/pty_token_adapter.py",
                 runner_pw=SimpleNamespace(pw_uid=os.geteuid(), pw_gid=os.getegid()),
                 validate_fixed_worker=mock.Mock(),
                 privileged=mock.Mock(return_value={"ok": True, "context": "dispatcher"}),

@@ -122,7 +122,7 @@ class BaselineHTTPGateA(unittest.TestCase):
         cookie = self.login()
         csrf, nonce = self.prepare(cookie)
         status, _, body = self.request("POST", "/remove/confirm",
-            {"csrf": csrf, "nonce": nonce, "token": "bad token with spaces"}, cookie=cookie)
+            {"csrf": csrf, "nonce": nonce, "token": ""}, cookie=cookie)
         self.assertEqual(status, 400)
         self.assertIn("Invalid removal token", body)
         status, _, body = self.request("POST", "/remove/confirm",

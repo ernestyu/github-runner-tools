@@ -6,7 +6,33 @@ Changes intended for the next release are collected under **Unreleased**.
 
 ## Unreleased
 
-_No changes yet._
+### Added
+
+- Added optional Web Management V1 for repository-level runner management from a browser over Tailscale-only HTTPS.
+- Added explicit `setup-web-management.sh --dry-run|--apply`; Web Management remains opt-in and CLI-only operation remains fully supported.
+- Added a dedicated non-root `grt-web` frontend, root-owned dispatcher, fixed lifecycle worker, Unix-socket peer authentication, shared CLI/Web mutation locking, CSRF/session/confirmation protections, and request-scoped token transport.
+- Added compact responsive runner inventory UI with Create, Remove, and Recover actions; normal configured runners now display a concise user-facing status instead of internal management-state text.
+- Added deterministic Web security/integration coverage, including dispatcher peer credentials, UID/GID/capability drop, lock exclusion, token transport/redaction, systemd unit provenance, explicit Web installation, and failure-path tests.
+
+### Changed
+
+- Web registration-token input is now blank by default with a non-secret placeholder.
+- Web runner inventory now uses a compact table on larger screens and a responsive row layout on phones.
+- Dispatcher worker identity transition now explicitly handles inherited Linux capabilities before dropping to the runner owner.
+- Dispatcher systemd installation now provisions only the explicit `CAP_SETUID` / `CAP_SETGID` authority required for the fixed worker identity transition while retaining `NoNewPrivileges=yes` and the existing sandbox.
+- Dispatcher startup now fails early with bounded diagnostics when required identity-transition capabilities are missing.
+- Web and dispatcher diagnostics remain bounded and avoid logging request bodies, credentials, tokens, cookies, or exception messages containing secrets.
+
+### Validated
+
+- Full repository test suite passes on GitHub-hosted CI and the Debian CI host.
+- Web Management has been installed on the real Debian host and validated for Tailscale-only HTTPS access, authentication, persistent systemd startup, dispatcher/worker privilege transition, and listing the existing active/configured runner inventory.
+- Existing runner registrations and services remained unchanged during Web Management list/status validation.
+
+### Pending before release
+
+- Complete live Debian create/remove/recover acceptance with a disposable repository runner.
+- ARM64 remains implemented but unvalidated on real ARM64 hardware.
 
 ## v1.0.1 - 2026-10-05
 

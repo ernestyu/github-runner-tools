@@ -116,14 +116,48 @@ def page(title: str, body: str) -> bytes:
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title)}</title>
 <style>
-body{{font-family:system-ui,-apple-system,sans-serif;max-width:760px;margin:0 auto;padding:20px;background:#f6f7f9;color:#171717}}
+body{{font-family:system-ui,-apple-system,sans-serif;max-width:1040px;margin:0 auto;padding:20px;background:#f6f7f9;color:#171717}}
 .card{{background:white;border:1px solid #ddd;border-radius:10px;padding:16px;margin:12px 0}}
 .row{{display:flex;gap:10px;flex-wrap:wrap;align-items:center}}
 input,button{{font:inherit;padding:10px;border-radius:8px;border:1px solid #aaa}}
 input{{width:min(100%,430px);box-sizing:border-box}}
 button{{cursor:pointer;background:#111;color:white}}
-.danger{{background:#9d1c1c}} .muted{{color:#666;font-size:.92rem}}
-.ok{{color:#126b2d}} .bad{{color:#9d1c1c}} code{{word-break:break-all}}
+.danger{{background:#9d1c1c}}
+.muted{{color:#666;font-size:.92rem}}
+.ok{{color:#126b2d}}
+.bad{{color:#9d1c1c}}
+code{{word-break:break-all}}
+.runner-table-wrap{{background:#fff;border:1px solid #ddd;border-radius:10px;overflow:hidden;margin:12px 0 18px}}
+.runner-table{{width:100%;border-collapse:collapse}}
+.runner-table th,.runner-table td{{padding:12px 14px;text-align:left;border-bottom:1px solid #e6e6e6;vertical-align:middle}}
+.runner-table th{{font-size:.82rem;text-transform:uppercase;letter-spacing:.04em;color:#666;background:#fafafa}}
+.runner-table tr:last-child td{{border-bottom:0}}
+.runner-table .repo{{font-weight:650}}
+.runner-table .runner{{color:#666}}
+.runner-table .status{{white-space:nowrap}}
+.runner-table .action{{width:1%;white-space:nowrap;text-align:right}}
+.runner-table form{{margin:0;display:inline-block}}
+.runner-table .danger{{padding:7px 11px;font-size:.92rem}}
+.status-dot{{display:inline-block;width:.55rem;height:.55rem;border-radius:50%;background:#16803a;margin-right:.45rem;vertical-align:.05rem}}
+.status-warn{{color:#8a5a00;font-weight:600}}
+.status-bad{{color:#9d1c1c;font-weight:600}}
+.create-grid{{display:grid;grid-template-columns:minmax(220px,1fr) minmax(260px,1.4fr) auto;gap:12px;align-items:end}}
+.create-grid label{{display:block;font-size:.86rem;color:#555;margin-bottom:5px}}
+.create-grid input{{width:100%}}
+.create-grid button{{white-space:nowrap}}
+@media (max-width:700px){{
+  body{{padding:14px}}
+  .create-grid{{grid-template-columns:1fr}}
+  .runner-table thead{{display:none}}
+  .runner-table,.runner-table tbody,.runner-table tr,.runner-table td{{display:block;width:100%;box-sizing:border-box}}
+  .runner-table tr{{position:relative;padding:12px 92px 12px 12px;border-bottom:1px solid #e6e6e6}}
+  .runner-table tr:last-child{{border-bottom:0}}
+  .runner-table td{{padding:2px 0;border:0}}
+  .runner-table .repo{{font-size:1rem}}
+  .runner-table .runner{{font-size:.88rem}}
+  .runner-table .status{{margin-top:5px;font-size:.9rem}}
+  .runner-table .action{{position:absolute;right:12px;top:50%;transform:translateY(-50%);width:auto}}
+}}
 </style>
 </head><body>{body}</body></html>"""
     return doc.encode("utf-8")
@@ -159,6 +193,35 @@ class App:
         }
         SESSIONS[sid] = sess
         return sid, sess
+
+
+def runner_status_view(item: dict[str, Any]) -> tuple[str, str]:
+    """Return user-facing status text and CSS class without exposing internal state."""
+    service = str(item.get("service_state") or "unknown")
+    management = str(item.get("management_state") or "ambiguous")
+
+    if management == "configured":
+        if service == "active":
+            return "Active", "ok"
+        if service == "inactive":
+            return "Inactive", "muted"
+        if service == "absent":
+            return "Service absent", "status-warn"
+        return "Service unknown", "status-warn"
+
+    if item.get("can_recover_local") is True or management in (
+        "recoverable",
+        "recoverable_residue",
+    ):
+        return "Needs recovery", "status-warn"
+
+    if management == "incomplete":
+        return "Incomplete", "status-warn"
+
+    if management == "ambiguous":
+        return "Attention", "status-bad"
+
+    return "Attention", "status-bad"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -287,37 +350,45 @@ class Handler(BaseHTTPRequestHandler):
                 return
             _, sess = current
             response = dispatch(self.app.config, {"op": "list"})
-            cards = []
+            rows = []
             if response.get("ok") and isinstance(response.get("runners"), list):
                 for item in response["runners"]:
                     if not isinstance(item, dict):
                         continue
                     repo = item.get("repository")
                     repo_text = html.escape(repo or "Unknown repository")
-                    name = html.escape(str(item.get("runner_name") or "unknown"))
-                    service = html.escape(str(item.get("service_state") or "unknown"))
-                    management = html.escape(str(item.get("management_state") or "ambiguous"))
-                    actions = ""
+                    name = html.escape(str(item.get("runner_name") or "—"))
+                    status_text, status_class = runner_status_view(item)
+                    status_html = html.escape(status_text)
+                    if status_text == "Active":
+                        status_html = f'<span class="status-dot"></span>{status_html}'
+                    actions = "—"
                     if repo and item.get("can_remove") is True:
-                        actions += f"""<form method="post" action="/remove/prepare"><input type="hidden" name="csrf" value="{sess['csrf']}"><input type="hidden" name="repository" value="{html.escape(repo)}"><button class="danger" type="submit">Remove</button></form>"""
-                    if repo and item.get("can_recover_local") is True:
-                        actions += f"""<form method="post" action="/recover/prepare"><input type="hidden" name="csrf" value="{sess['csrf']}"><input type="hidden" name="repository" value="{html.escape(repo)}"><button class="danger" type="submit">Recover local residue</button></form>"""
-                    cards.append(
-                        f"""<div class="card"><strong>{repo_text}</strong><div class="muted">Runner: {name}<br>Service: {service}<br>State: {management}</div><div class="row">{actions}</div></div>"""
+                        actions = f"""<form method="post" action="/remove/prepare"><input type="hidden" name="csrf" value="{sess['csrf']}"><input type="hidden" name="repository" value="{html.escape(repo)}"><button class="danger" type="submit">Remove</button></form>"""
+                    elif repo and item.get("can_recover_local") is True:
+                        actions = f"""<form method="post" action="/recover/prepare"><input type="hidden" name="csrf" value="{sess['csrf']}"><input type="hidden" name="repository" value="{html.escape(repo)}"><button class="danger" type="submit">Recover</button></form>"""
+                    rows.append(
+                        f"""<tr><td class="repo">{repo_text}</td><td class="runner">{name}</td><td class="status {status_class}">{status_html}</td><td class="action">{actions}</td></tr>"""
                     )
+            if rows:
+                runner_list = (
+                    '<div class="runner-table-wrap"><table class="runner-table">'
+                    '<thead><tr><th>Repository</th><th>Runner</th><th>Status</th><th class="action">Action</th></tr></thead>'
+                    f"<tbody>{''.join(rows)}</tbody></table></div>"
+                )
             else:
-                cards.append('<div class="card bad">Runner status is unavailable.</div>')
+                runner_list = '<div class="card bad">Runner status is unavailable.</div>'
             body = page(
                 "Runner management",
                 f"""<h1>Runner management</h1>
 <div class="card"><h2>Add runner</h2>
-<form method="post" action="/create">
+<form method="post" action="/create" class="create-grid">
 <input type="hidden" name="csrf" value="{sess['csrf']}">
-<label>Repository (OWNER/REPO)</label><br><input name="repository" maxlength="200" required>
-<br><br><label>Temporary registration token</label><br><input type="password" name="token" maxlength="1024" autocomplete="off" required>
-<br><br><button type="submit">Create runner</button>
+<div><label>Repository (OWNER/REPO)</label><input name="repository" maxlength="200" placeholder="owner/repository" required></div>
+<div><label>Temporary registration token</label><input type="password" name="token" value="" maxlength="1024" autocomplete="new-password" placeholder="Paste temporary registration token" required></div>
+<div><button type="submit">Create runner</button></div>
 </form><p class="muted">Use only with trusted workflows. Public/untrusted workflows are outside the Web V1 security model.</p></div>
-<h2>Current runners</h2>{''.join(cards)}
+<h2>Current runners</h2>{runner_list}
 <form method="post" action="/logout"><input type="hidden" name="csrf" value="{sess['csrf']}"><button type="submit">Log out</button></form>""",
             )
             self._send(200, body)

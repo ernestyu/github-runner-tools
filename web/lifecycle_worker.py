@@ -6,6 +6,7 @@ import ctypes
 import json
 import os
 import pwd
+import re
 import socket
 import subprocess
 import sys
@@ -29,6 +30,37 @@ _IDENTITY_STAGES = {
     "identity_verification_failed",
 }
 
+
+
+REMOVE_STAGES = frozenset({
+    "preflight_failed", "service_state_failed", "service_stop_failed",
+    "service_uninstall_failed", "config_remove_failed",
+    "local_cleanup_failed", "unknown_failed",
+})
+REMOVE_MARKER = re.compile(
+    rb"GRT_REMOVE_RESULT_V1 stage=(preflight_failed|service_state_failed|"
+    rb"service_stop_failed|service_uninstall_failed|config_remove_failed|"
+    rb"local_cleanup_failed|unknown_failed) exit=(unknown|0|[1-9][0-9]{0,2})\\n"
+)
+
+
+def parse_remove_marker(raw: bytes, returncode: int) -> dict[str, Any]:
+    unknown = {"ok": False, "error": "lifecycle_failed",
+               "stage": "unknown_failed", "exit_code": None}
+    if returncode <= 0 or len(raw) > 128:
+        return unknown
+    match = REMOVE_MARKER.fullmatch(raw)
+    if match is None:
+        return unknown
+    stage = match.group(1).decode("ascii")
+    value = match.group(2).decode("ascii")
+    if stage not in REMOVE_STAGES or value == "0":
+        return unknown
+    exit_code = None if value == "unknown" else int(value)
+    if exit_code is not None and exit_code > 255:
+        return unknown
+    return {"ok": False, "error": "lifecycle_failed",
+            "stage": stage, "exit_code": exit_code}
 
 class _CapHeader(ctypes.Structure):
     _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
@@ -338,16 +370,39 @@ def main() -> int:
                 print(json.dumps({"ok": False, "error": "unknown_operation"}))
                 return 0
 
-        proc = subprocess.run(
-            cmd,
-            text=True,
-            capture_output=True,
-            env=env,
-            pass_fds=(token_fd, privileged_fd),
-            check=False,
-        )
+        result_read = result_write = -1
+        if op == "remove":
+            result_read, result_write = os.pipe()
+            cmd[cmd.index("--lock-already-held"):cmd.index("--lock-already-held")] = [
+                "--result-fd", str(result_write)
+            ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                text=True,
+                capture_output=True,
+                env=env,
+                pass_fds=(token_fd, privileged_fd, result_write)
+                if op == "remove" else (token_fd, privileged_fd),
+                check=False,
+            )
+        finally:
+            if result_write >= 0:
+                os.close(result_write)
+        marker = b""
+        if result_read >= 0:
+            try:
+                # Do not block if a misbehaving descendant retained the pipe.
+                import select
+                if select.select([result_read], [], [], 0)[0]:
+                    marker = os.read(result_read, 129)
+            finally:
+                os.close(result_read)
         if proc.returncode != 0:
-            print(json.dumps({"ok": False, "error": "lifecycle_failed"}))
+            if op == "remove":
+                print(json.dumps(parse_remove_marker(marker, proc.returncode)))
+            else:
+                print(json.dumps({"ok": False, "error": "lifecycle_failed"}))
             return 0
         if op == "list":
             try:

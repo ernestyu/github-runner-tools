@@ -221,38 +221,62 @@ exit 1
             self.assertGreaterEqual(names.count("tr"),2)
 
     def test_dispatcher_timeout_process_group_single_execution_and_lock(self):
-        sys.path.insert(0,str(ROOT/"web"))
+        sys.path.insert(0, str(ROOT / "web"))
         import dispatcher
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            lock = root/"lock"
+            sentinel = root / "actions-runner-example--repo"
+            sentinel.mkdir()
+            (sentinel / ".runner").write_text("SENTINEL: untouched")
+            lock = root / "lock"
             lock.touch()
-            calls = root/"calls"
-            pidfile = root/"pid"
-            worker = root/"blocked_worker.py"
+            calls = root / "calls"
+            parent_pidfile = root / "worker.pid"
+            child_pidfile = root / "child.pid"
+            worker = root / "blocked_worker.py"
             worker.write_text(
-                "import os,time\n"
-                "with open("+repr(str(calls))+",'a') as f:f.write('called\\n')\n"
-                "with open("+repr(str(pidfile))+",'w') as f:f.write(str(os.getpid()))\n"
-                "time.sleep(60)\n")
-            rt = SimpleNamespace(lock_file=str(lock),timeout=0.25,
-                runner_user="nobody",runner_home=str(root),cli_dir=str(root),
-                pty_adapter=str(root/"unused"),worker_path=str(worker))
+                "import os,subprocess,sys,time\n"
+                "with open(" + repr(str(calls)) + ",'a') as f:f.write('called\\n')\n"
+                "with open(" + repr(str(parent_pidfile)) + ",'w') as f:f.write(str(os.getpid()))\n"
+                "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'])\n"
+                "with open(" + repr(str(child_pidfile)) + ",'w') as f:f.write(str(child.pid))\n"
+                "time.sleep(60)\n"
+            )
+            rt = SimpleNamespace(
+                lock_file=str(lock), timeout=1.0,
+                runner_user="nobody", runner_home=str(root), cli_dir=str(root),
+                pty_adapter=str(root / "unused"), worker_path=str(worker))
             rt.validate_fixed_worker = lambda: None
             server = object.__new__(dispatcher.DispatchServer)
             server.runtime = rt
-            result = dispatcher.DispatchServer.execute(server,
-                {"op":"remove","repository":"example/repo","token":"FAKE_TOKEN"})
-            self.assertEqual(result.get("error"),"operation_timed_out")
-            self.assertEqual(calls.read_text().splitlines(),["called"])
-            pid = int(pidfile.read_text())
+            result = dispatcher.DispatchServer.execute(server, {
+                "op": "remove", "repository": "example/repo", "token": "FAKE_TOKEN"})
+            self.assertEqual(result.get("error"), "operation_timed_out")
+            self.assertEqual(calls.read_text().splitlines(), ["called"])
+            self.assertTrue(child_pidfile.exists(), "fake descendant was not started")
+            parent_pid = int(parent_pidfile.read_text())
+            child_pid = int(child_pidfile.read_text())
             with self.assertRaises(ProcessLookupError):
-                os.kill(pid,0)
+                os.kill(parent_pid, 0)
+
+            # A killed orphan may briefly remain as an OS zombie. A zombie
+            # cannot execute; accept either absent or /proc state Z.
+            def active(pid):
+                try:
+                    state = (Path("/proc") / str(pid) / "stat").read_text().split(") ", 1)[1][0]
+                except FileNotFoundError:
+                    return False
+                return state != "Z"
+            for _ in range(40):
+                if not active(child_pid):
+                    break
+                time.sleep(0.05)
+            self.assertFalse(active(child_pid), "Dispatcher left descendant running")
+            self.assertEqual((sentinel / ".runner").read_text(), "SENTINEL: untouched")
             with lock.open("r+") as handle:
-                fcntl.flock(handle.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
-                fcntl.flock(handle.fileno(),fcntl.LOCK_UN)
-            self.assertFalse((root/"actions-runner-example--repo").exists())
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 if __name__ == "__main__":
     unittest.main()

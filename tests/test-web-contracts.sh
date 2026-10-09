@@ -372,9 +372,8 @@ finally:
     shutil.rmtree(tmp, ignore_errors=True)
 PY
 
-# The real Web lifecycle code path must invoke the official config.sh through
-# the PTY adapter and must not contain a secret --token argument in the Web
-# branch. Normal CLI may still use --token because it is outside Web V1.
+# Create retains PTY secret handling. Web Remove intentionally uses the
+# official GitHub CLI --token argv contract per the approved SPEC.
 python3 - "$ROOT" <<'PY' || fail "Web final config.sh consumer contract mismatch"
 from pathlib import Path
 import sys
@@ -392,7 +391,9 @@ if '--mode create' not in reg_web or './config.sh' not in reg_web or '--token "$
 rem_start = rem.index('if [[ "$WEB_MODE" == "1" ]]; then', rem.index('echo "==> Removing runner registration'))
 rem_end = rem.index("else", rem_start)
 rem_web = rem[rem_start:rem_end]
-if '--mode remove' not in rem_web or './config.sh remove' not in rem_web or '--token "$TOKEN"' in rem_web:
+if '--mode remove' in rem_web or './config.sh remove --token "$TOKEN"' not in rem_web:
+    raise SystemExit(1)
+if 'exec {RESULT_FD}>&-' not in rem_web:
     raise SystemExit(1)
 PY
 

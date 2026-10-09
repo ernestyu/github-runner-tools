@@ -83,7 +83,7 @@ def diagnostic(stage: str, exc: BaseException | None = None, **fields: Any) -> N
 _WORKER_DIAG_RE = re.compile(
     r"^worker_diag stage=(?:worker_not_root|capability_clear_failed|setgroups_failed|"
     r"setgid_failed|setuid_failed|identity_verification_failed)"
-    r"(?: exc=[A-Za-z0-9_]+)?(?: errno=[0-9]{1,10})?$"
+    r"(?: exc=(?:OSError|PermissionError))?(?: errno=[0-9]{1,10})?$"
 )
 
 

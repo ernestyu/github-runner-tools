@@ -640,17 +640,24 @@ class DispatchServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
                 forward_worker_diagnostics(stderr)
             except subprocess.TimeoutExpired:
                 try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
                     try:
-                        os.killpg(proc.pid, signal.SIGKILL)
+                        os.killpg(proc.pid, signal.SIGTERM)
                     except ProcessLookupError:
                         pass
-                    proc.wait(timeout=5)
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        proc.wait(timeout=5)
+                finally:
+                    # communicate() did not finish: wait() does not close
+                    # Popen's captured streams on the timeout path.
+                    for stream in (proc.stdout, proc.stderr):
+                        if stream is not None:
+                            stream.close()
                 return stable_error("operation_timed_out")
             finally:
                 stop_event.set()

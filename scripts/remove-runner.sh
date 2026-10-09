@@ -26,12 +26,77 @@ remove_result() {
   if [[ "$value" != "unknown" ]] && (( value > 255 )); then value="unknown"; fi
   printf 'GRT_REMOVE_RESULT_V1 stage=%s exit=%s\n' "$REMOVE_STAGE" "$value" >&"$RESULT_FD" 2>/dev/null || true
 }
+# Web Remove external tools are invoked through wrappers that close the
+# private diagnostic write descriptor in the child before executing the tool.
+# Bash builtins and the parent remain able to write the final result.
+web_remove_external() {
+  if [[ "$WEB_MODE" == "1" && -n "$RESULT_FD" ]]; then
+    (exec {RESULT_FD}>&-; command "$@")
+  else
+    command "$@"
+  fi
+}
+python3() { web_remove_external python3 "$@"; }
+jq() { web_remove_external jq "$@"; }
+tr() { web_remove_external tr "$@"; }
+sed() { web_remove_external sed "$@"; }
+sha256sum() { web_remove_external sha256sum "$@"; }
+awk() { web_remove_external awk "$@"; }
+cut() { web_remove_external cut "$@"; }
+getent() { web_remove_external getent "$@"; }
+id() { web_remove_external id "$@"; }
+stat() { web_remove_external stat "$@"; }
+systemctl() { web_remove_external systemctl "$@"; }
+find() { web_remove_external find "$@"; }
+flock() { web_remove_external flock "$@"; }
+sudo() { web_remove_external sudo "$@"; }
+install() { web_remove_external install "$@"; }
+touch() { web_remove_external touch "$@"; }
+chown() { web_remove_external chown "$@"; }
+chmod() { web_remove_external chmod "$@"; }
+mkdir() { web_remove_external mkdir "$@"; }
+mv() { web_remove_external mv "$@"; }
+rm() { web_remove_external rm "$@"; }
+sleep() { web_remove_external sleep "$@"; }
+grep() { web_remove_external grep "$@"; }
+sort() { web_remove_external sort "$@"; }
+wc() { web_remove_external wc "$@"; }
+
+# The transport is UTF-8 JSON text followed by one LF. Validate its exact
+# bytes before Bash can discard NUL, normalize newlines, or alter encoding.
+# Never print invalid bytes. This helper receives the FD number, not a token.
 web_token_from_fd() {
-  local value
+  local value status=0
   [[ "$TOKEN_FD" =~ ^[0-9]+$ ]] || return 1
-  IFS= read -r value <&"$TOKEN_FD" || return 1
-  [[ "${#value}" -ge 1 && "${#value}" -le 1024 ]] || return 1
-  [[ "$value" != *$'\r'* && "$value" != *$'\n'* ]] || return 1
+  value="$(python3 - "$TOKEN_FD" <<'PY'
+import os
+import sys
+fd = int(sys.argv[1])
+raw = bytearray()
+while len(raw) <= 4096:
+    chunk = os.read(fd, 4097 - len(raw))
+    if not chunk:
+        break
+    raw.extend(chunk)
+    if b"\n" in chunk:
+        break
+if not raw.endswith(b"\n") or raw.count(b"\n") != 1:
+    raise SystemExit(1)
+payload = bytes(raw[:-1])
+try:
+    value = payload.decode("utf-8", "strict")
+except UnicodeError:
+    raise SystemExit(1)
+if (not value or len(value) > 1024 or
+        any(char in value for char in ("\x00", "\r", "\n"))):
+    raise SystemExit(1)
+sys.stdout.buffer.write(payload)
+PY
+)" || status=$?
+  # Close the original inherited descriptor in the parent immediately,
+  # including validation failure, before any service-related subprocess.
+  exec {TOKEN_FD}<&-
+  [[ "$status" == "0" ]] || return 1
   TOKEN="$value"
 }
 
@@ -585,6 +650,13 @@ if [[ "$WEB_MODE" == "1" ]]; then
     unset TOKEN
   else
     REMOVE_EXIT="$?"
+    # Bash's 128+signal convention cannot distinguish a killed child from
+    # a normal program deliberately exiting with the same numeric status.
+    # All such ambiguous statuses are conservatively unknown.
+    if (( REMOVE_EXIT >= 128 )); then
+      REMOVE_STAGE="unknown_failed"
+      REMOVE_EXIT="unknown"
+    fi
     unset TOKEN
     die "Runner registration removal failed or remains uncertain."
   fi

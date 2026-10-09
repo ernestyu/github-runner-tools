@@ -543,16 +543,20 @@ class DispatchServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
             # fixed root-owned worker execs first and immediately drops all
             # supplementary groups and real/effective/saved IDs itself before
             # lifecycle logic begins.
-            proc = subprocess.Popen(
-                ["/usr/bin/python3", runtime.worker_path],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-                pass_fds=(request_r, token_r, ctrl_child.fileno()),
-                start_new_session=True,
-            )
+            try:
+                proc = subprocess.Popen(
+                    ["/usr/bin/python3", runtime.worker_path],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    pass_fds=(request_r, token_r, ctrl_child.fileno()),
+                    start_new_session=True,
+                )
+            except Exception as exc:
+                diagnostic("worker_spawn", exc)
+                return stable_error("internal_error")
             os.close(request_r)
             request_r = -1
             os.close(token_r)

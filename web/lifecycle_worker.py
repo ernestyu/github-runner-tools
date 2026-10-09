@@ -103,6 +103,27 @@ def verify_unprivileged_identity(uid: int, gid: int) -> bool:
     return True
 
 
+def drop_to_runner_identity(uid: int, gid: int) -> None:
+    """Drop root completely before any runner lifecycle logic executes."""
+    if os.geteuid() != 0:
+        raise PermissionError("worker launcher did not start with root identity")
+
+    # The order is security-sensitive: supplementary groups first, then all
+    # real/effective/saved GIDs, then all real/effective/saved UIDs.
+    os.setgroups([])
+    if hasattr(os, "setresgid"):
+        os.setresgid(gid, gid, gid)
+    else:
+        os.setgid(gid)
+    if hasattr(os, "setresuid"):
+        os.setresuid(uid, uid, uid)
+    else:
+        os.setuid(uid)
+
+    if not verify_unprivileged_identity(uid, gid):
+        raise PermissionError("worker identity drop verification failed")
+
+
 def main() -> int:
     if os.environ.get("GRT_WEB_CONTEXT") != "1":
         return 70
@@ -118,7 +139,9 @@ def main() -> int:
         return 70
 
     pw = pwd.getpwnam(runner_user)
-    if not verify_unprivileged_identity(pw.pw_uid, pw.pw_gid):
+    try:
+        drop_to_runner_identity(pw.pw_uid, pw.pw_gid)
+    except (OSError, PermissionError):
         return 71
 
     try:

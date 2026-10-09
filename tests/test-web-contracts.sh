@@ -199,8 +199,7 @@ sudo systemd-run --quiet --wait --pipe --collect \
   -p 'ProtectControlGroups=yes' \
   -p 'LockPersonality=yes' \
   -p 'AmbientCapabilities=CAP_SETUID CAP_SETGID' \
-  /usr/bin/python3 - <<'PY' ||
-  fail "transient systemd capability provisioning regression failed"
+  /usr/bin/python3 - <<'PY' || fail "transient systemd capability provisioning regression failed"
 status = {}
 with open("/proc/self/status", encoding="utf-8") as handle:
     for line in handle:

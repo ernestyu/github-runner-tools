@@ -136,6 +136,17 @@ Web backend 不直接监听局域网，也不对公网开放，只绑定：
 
 远程访问设计为通过 **Tailscale Serve**。不要对这个 Web 管理界面使用 Tailscale Funnel。
 
+### 前置条件与访问控制
+
+Web 安装脚本要求主机已安装 Tailscale CLI，且 `tailscaled` 服务正在运行；即使暂时不启用远程访问，也要先满足这一条件。先安装 Tailscale、让主机加入 tailnet，再检查：
+
+```bash
+tailscale status
+systemctl is-active tailscaled
+```
+
+远程访问设备必须处于同一 tailnet，或拥有经过明确授权的共享访问权限。Tailnet Access Controls 需要允许客户端访问 Web 主机的 TCP 443。对于已打 Tag 的主机，应按实际 **Tag 身份**授权，而非假定它仍使用普通用户身份。安装脚本不会自动修改 Tailnet 策略，也不应为了访问 Web 而保留全网 Allow All 规则。
+
 ### Web 一次性安装
 
 先更新仓库，然后先看 dry-run：
@@ -151,6 +162,8 @@ bash scripts/setup-web-management.sh --apply
 请使用正常的 runner owner 用户执行，不要把整个脚本写成 `sudo bash ...`。脚本只会在固定的 host-level 安装步骤内部调用 `sudo`。
 
 `--apply` 就是 Web Management 的显式启用点。它会安装 Web frontend、root dispatcher、固定 lifecycle worker、配置文件、systemd units 和 Web 管理密码配置。
+
+首次安装会交互式设置**单一 Web 管理员密码**。V1 不要求用户名，也不支持独立的多用户账户或基于角色的权限控制。此密码独立于 Linux、GitHub 和 Tailscale 账户密码。重复执行 `--apply` 时，只要现有认证文件的所有权和权限符合要求，就会保留原有 Web 密码。Tailscale 的访问控制是额外的网络安全边界，不能代替 Web 登录认证。
 
 脚本还会执行：
 
@@ -217,13 +230,42 @@ tailscale serve --bg ...
     → 用户显式决定是否让 UI 在自己的 tailnet 内可访问
 ```
 
-即使启用 Serve，Web backend 本身仍然只监听 loopback。
+即使启用 Serve，Web backend 本身仍然只监听 loopback。准确的私有 HTTPS 地址应从 `tailscale serve status` 读取（通常为 `https://HOST.TAILNET.ts.net/`），不要重复添加 `.ts.net`。只有获得 Tailnet 授权的客户端才应能够连接。
+
+### 安装后验收与故障排查
+
+在 Runner 主机上执行：
+
+```bash
+systemctl is-active github-runner-tools-dispatch.service
+systemctl is-active github-runner-tools-web.service
+curl -i --max-time 5 http://127.0.0.1:8765/
+tailscale serve status
+```
+
+未登录时，本地 HTTP 请求可能被重定向到 `/login`。随后在另一台已获 Tailnet 授权的设备上访问 Serve 输出的 HTTPS 地址，以 Web 管理员密码登录（不需要用户名），确认能看到本机 Runner 列表。该列表显示的是**当前主机上的本地 Runner**，不是 GitHub 上全部已注册 Runner。
+
+如果页面显示 `Runner status is unavailable`，**不能据此判断 Runner 已停止运行**。先检查 Dispatcher、Web 日志与 CLI 状态，再考虑更改 Runner：
+
+```bash
+bash scripts/status-runners.sh --json
+sudo journalctl -u github-runner-tools-dispatch.service -n 60 --no-pager
+sudo journalctl -u github-runner-tools-web.service -n 60 --no-pager
+```
+
+### 生命周期操作与验收范围
+
+**Create** 需要 `OWNER/REPO` 和 GitHub 临时 registration token。**Remove** 需要临时 removal token，执行远端注销与经过验证的本地清理。**Recover local** 仅用于 GitHub 端已删除后、满足严格验证条件的本地残留；具体 fail-closed 限制见下文“Workflow 与日常管理”。这些操作会实际改变或删除 Runner，测试时应使用 disposable repository。
+
+目前 Debian 实机验收已覆盖 Web 登录及现有 Runner 列表读取；Web Create / Remove / Recover 虽有自动化测试，**但尚未完成 disposable-runner 实机验收**。不能把 CI PASS 等同于这三条生产 mutation 路径已经验证。
 
 ### Web 安全边界
 
 Web Management 不重新实现 runner lifecycle，而是复用现有的身份验证、删除和 recovery 规则。frontend 使用独立的 `grt-web` 用户；root dispatcher 只有固定且受限的 privileged surface；真正执行 runner lifecycle 之前，固定 worker 会下降到 runner owner 用户。
 
 临时 registration/removal token 是 request-scoped，不应进入 argv、环境变量、持久文件、URL、session 或日志。
+
+Tailscale Grants 只控制 Tailnet 网络连接，不会自动隔离普通局域网或公网路径。必要时仍应独立隔离 CI 主机与敏感网络。
 
 runner owner 用户属于临时 token 的 trust boundary。因此，如果同一个 runner owner 会执行 public/untrusted workflow，则不属于 Web Management V1 的安全支持模型。
 

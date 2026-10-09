@@ -837,6 +837,47 @@ class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
              mock.patch("lifecycle_worker.os.getgroups", return_value=[999]):
             self.assertFalse(lifecycle_worker.verify_unprivileged_identity(uid, gid))
 
+    def test_worker_drops_groups_gid_uid_in_security_order(self):
+        calls = []
+        uid, gid = 1234, 2345
+        with mock.patch("lifecycle_worker.os.geteuid", return_value=0), \
+             mock.patch("lifecycle_worker.os.setgroups", side_effect=lambda v: calls.append(("groups", v))), \
+             mock.patch("lifecycle_worker.os.setresgid", side_effect=lambda a, b, c: calls.append(("gid", (a, b, c)))), \
+             mock.patch("lifecycle_worker.os.setresuid", side_effect=lambda a, b, c: calls.append(("uid", (a, b, c)))), \
+             mock.patch("lifecycle_worker.verify_unprivileged_identity", return_value=True):
+            lifecycle_worker.drop_to_runner_identity(uid, gid)
+        self.assertEqual(
+            calls,
+            [
+                ("groups", []),
+                ("gid", (gid, gid, gid)),
+                ("uid", (uid, uid, uid)),
+            ],
+        )
+
+    def test_worker_drop_failure_is_fatal(self):
+        with mock.patch("lifecycle_worker.os.geteuid", return_value=0), \
+             mock.patch("lifecycle_worker.os.setgroups"), \
+             mock.patch("lifecycle_worker.os.setresgid"), \
+             mock.patch("lifecycle_worker.os.setresuid"), \
+             mock.patch("lifecycle_worker.verify_unprivileged_identity", return_value=False):
+            with self.assertRaises(PermissionError):
+                lifecycle_worker.drop_to_runner_identity(1234, 2345)
+
+    def test_dispatcher_diagnostic_is_bounded_and_does_not_log_exception_text(self):
+        secret = "DO_NOT_LOG_THIS_SECRET"
+        out = io.StringIO()
+        exc = OSError(13, secret)
+        with contextlib.redirect_stderr(out):
+            dispatcher.diagnostic("worker_spawn", exc, returncode=7, ignored=secret)
+        logged = out.getvalue()
+        self.assertIn("stage=worker_spawn", logged)
+        self.assertIn("exc=PermissionError", logged)
+        self.assertIn("errno=13", logged)
+        self.assertIn("returncode=7", logged)
+        self.assertNotIn(secret, logged)
+        self.assertNotIn("ignored=", logged)
+
     def test_dispatcher_peer_uid_helper_uses_unix_peer_credentials(self):
         import socket
         left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -860,7 +901,7 @@ class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
         reply = json.loads(sent[0].decode("utf-8").strip())
         self.assertEqual(reply, {"ok": False, "error": "peer_not_authorized"})
 
-    def test_dispatcher_launches_worker_with_exact_runner_identity_drop(self):
+    def test_dispatcher_launches_fixed_worker_without_popen_credential_mutation(self):
         class FakeProc:
             returncode = 0
             pid = 999999
@@ -895,9 +936,9 @@ class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
 
             self.assertEqual(result, {"ok": True})
             self.assertEqual(captured["args"], ["/usr/bin/python3", runtime.worker_path])
-            self.assertEqual(captured["kwargs"]["user"], 1234)
-            self.assertEqual(captured["kwargs"]["group"], 2345)
-            self.assertEqual(captured["kwargs"]["extra_groups"], [])
+            self.assertNotIn("user", captured["kwargs"])
+            self.assertNotIn("group", captured["kwargs"])
+            self.assertNotIn("extra_groups", captured["kwargs"])
             self.assertTrue(captured["kwargs"]["start_new_session"])
 
     def test_web_dispatcher_held_lock_blocks_cli_register_and_remove(self):

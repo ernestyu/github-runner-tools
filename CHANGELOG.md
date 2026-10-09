@@ -10,6 +10,7 @@ Changes intended for the next release are collected under **Unreleased**.
 
 - Added optional Web Management V1 for repository-level runner management from a browser over Tailscale-only HTTPS.
 - Added explicit `setup-web-management.sh --dry-run|--apply`; Web Management remains opt-in and CLI-only operation remains fully supported.
+- Documented bilingual Web prerequisites, password-only authentication, Tailscale access controls, post-install checks, and mutation acceptance boundaries.
 - Added a dedicated non-root `grt-web` frontend, root-owned dispatcher, fixed lifecycle worker, Unix-socket peer authentication, shared CLI/Web mutation locking, CSRF/session/confirmation protections, and request-scoped token transport.
 - Added compact responsive runner inventory UI with Create, Remove, and Recover actions; normal configured runners now display a concise user-facing status instead of internal management-state text.
 - Added deterministic Web security/integration coverage, including dispatcher peer credentials, UID/GID/capability drop, lock exclusion, token transport/redaction, systemd unit provenance, explicit Web installation, and failure-path tests.
@@ -32,7 +33,10 @@ Changes intended for the next release are collected under **Unreleased**.
 ### Pending before release
 
 - Complete live Debian create/remove/recover acceptance with a disposable repository runner.
-- ARM64 remains implemented but unvalidated on real ARM64 hardware.
+
+### Known platform limitations
+
+- ARM64 remains implemented but unvalidated on real ARM64 hardware; this is an existing platform limitation, not an additional Web Management release gate.
 
 ## v1.0.1 - 2026-10-05
 

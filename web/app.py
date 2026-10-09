@@ -50,6 +50,13 @@ REMOVE_FAILURE_TEXT = {
 
 
 def remove_failure_message(result: dict[str, Any]) -> str:
+    # These Dispatcher failures can occur after the remote mutation begins.
+    # Never describe a timed-out or crashed Remove as a definitive failure.
+    if result.get("error") in {
+        "operation_timed_out", "internal_error", "invalid_worker_result",
+        "worker_error",
+    }:
+        return REMOVE_FAILURE_TEXT["unknown_failed"]
     if result.get("error") != "lifecycle_failed":
         return "Runner operation failed."
     stage = result.get("stage")

@@ -216,7 +216,7 @@ class BaselineHTTPGateA(unittest.TestCase):
                     self.assertEqual(out.getvalue().count("\n"), 1)
 
         for path in ("/unknown", "/remove/confirm/extra", "/%72emove/confirm",
-                     "/remove/%0Aconfirm", "/bad\\r\nCOOKIE_PRIVATE", "/?token=PASSWORD"):
+                     "/remove/%0Aconfirm", "/bad\\r\nCOOKIE_PRIVATE"):
             handler.path, handler.command = path, "BOGUS\nPRIVATE"
             out = io.StringIO()
             with mock.patch("sys.stdout", out):

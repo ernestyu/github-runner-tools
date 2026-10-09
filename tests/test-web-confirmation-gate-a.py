@@ -194,5 +194,157 @@ class BaselineHTTPGateA(unittest.TestCase):
         self.assertEqual(len([x for x in self.calls if x["op"] == "remove"]), 1)
 
 
+    def test_d1_all_routes_methods_status_and_flush(self):
+        import io
+        handler = object.__new__(web.Handler)
+        handler.client_address = ("192.0.2.9", 1234)
+        cases = [
+            ("/", "index"), ("/login", "login"), ("/create", "create"),
+            ("/logout", "logout"), ("/remove/prepare", "remove_prepare"),
+            ("/remove/confirm", "remove_confirm"),
+            ("/recover/prepare", "recover_prepare"),
+            ("/recover/confirm", "recover_confirm"),
+        ]
+        for path, label in cases:
+            for method in ("GET", "POST"):
+                with self.subTest(path=path, method=method):
+                    handler.path, handler.command = path, method
+                    out = io.StringIO()
+                    with mock.patch("sys.stdout", out):
+                        handler.log_message("malicious %s", "PRIVATE_TOKEN", "403")
+                    self.assertEqual(out.getvalue(), f"web_access method={method} route={label} status=403\\n")
+                    self.assertEqual(out.getvalue().count("\\n"), 1)
+
+        for path in ("/unknown", "/remove/confirm/extra", "/%72emove/confirm",
+                     "/remove/%0Aconfirm", "/bad\\r\\nCOOKIE_PRIVATE", "/?token=PASSWORD"):
+            handler.path, handler.command = path, "BOGUS\\nPRIVATE"
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                handler.log_message("%s %s", "PRIVATE_CSRF", "3\\n99")
+            self.assertEqual(out.getvalue(), "web_access method=OTHER route=other status=000\\n")
+            for forbidden in ("192.0.2.9", "PRIVATE", "unknown", "%0A", "PASSWORD"):
+                self.assertNotIn(forbidden, out.getvalue())
+        handler.path, handler.command = "/remove/confirm?token=PRIVATE_TOKEN", "GET"
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            handler.log_message("%s", "PRIVATE_NONCE", "200")
+        self.assertEqual(out.getvalue(), "web_access method=GET route=remove_confirm status=200\\n")
+
+        with mock.patch("builtins.print") as printer:
+            handler.log_message("%s", "SECRET_COOKIE", "200")
+            self.assertEqual(printer.call_count, 1)
+            self.assertIs(printer.call_args.kwargs["flush"], True)
+            self.assertEqual(printer.call_args.args[0], "web_access method=GET route=remove_confirm status=200")
+
+    def test_d2_single_pop_single_get_per_guard_and_precedence(self):
+        class Pending(dict):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.lookups = []
+            def get(self, key, default=None):
+                self.lookups.append(key)
+                return super().get(key, default)
+        class Confirms(dict):
+            def __init__(self, data):
+                super().__init__(data)
+                self.pops = 0
+            def pop(self, *args):
+                self.pops += 1
+                return super().pop(*args)
+
+        cases = [
+            ("missing", None, "nonce_missing_or_used", []),
+            ("wrong", {"op": "recover_local", "expires": 101}, "operation_mismatch", ["op"]),
+            ("expired", {"op": "remove", "expires": 99}, "nonce_expired", ["op", "expires"]),
+            ("wrong-expired", {"op": "recover_local", "expires": 99}, "operation_mismatch", ["op"]),
+            ("valid", {"op": "remove", "expires": 101, "repository": REPO}, None, ["op", "expires"]),
+        ]
+        for name, data, expected, lookups in cases:
+            with self.subTest(name=name):
+                obj = Pending(**data) if data else None
+                confirms = Confirms({"key": obj} if obj is not None else {})
+                with mock.patch.object(web, "diagnostic_event") as event, mock.patch.object(web, "now", side_effect=AssertionError("extra clock")):
+                    result = web.consume_confirmation({"confirm": confirms}, "key", "remove", at=100)
+                self.assertEqual(confirms.pops, 1)
+                self.assertEqual(obj.lookups if obj is not None else [], lookups)
+                self.assertEqual(result is not None, name == "valid")
+                self.assertEqual(event.call_args_list, [] if expected is None else [mock.call(expected)])
+
+    def test_d2_http_events_results_and_no_unexpected_dispatch(self):
+        from copy import deepcopy
+        cookie = self.login()
+        csrf, nonce = self.prepare(cookie)
+        scenarios = [
+            ("/remove/confirm", {"csrf": csrf, "nonce": "absent", "token": TOKEN}, 403, "nonce_missing_or_used"),
+            ("/recover/confirm", {"csrf": csrf, "nonce": nonce}, 403, "operation_mismatch"),
+            ("/remove/confirm", {"csrf": "incorrect", "nonce": nonce, "token": TOKEN}, 403, "invalid_csrf"),
+            ("/remove/confirm", {"csrf": csrf, "nonce": nonce, "token": ""}, 400, "invalid_token_format"),
+        ]
+        for path, form, status_expected, category in scenarios:
+            with self.subTest(category=category):
+                # Each scenario starts from the same server-side pending confirmation.
+                sid = cookie.split("=", 1)[1]
+                original = web.SESSIONS[sid]
+                saved = deepcopy(original["confirm"])
+                before_mutations = len([x for x in self.calls if x["op"] == "remove"])
+                with mock.patch.object(web, "diagnostic_event") as spy:
+                    status, _, body = self.request("POST", path, form, cookie=cookie)
+                self.assertEqual(status, status_expected)
+                self.assertTrue(body)
+                self.assertIn(mock.call(category), spy.call_args_list)
+                if category != "invalid_csrf":
+                    self.assertIn(mock.call("pre_dispatch_rejected"), spy.call_args_list)
+                self.assertEqual(len([x for x in self.calls if x["op"] == "remove"]), before_mutations)
+                original["confirm"] = saved
+
+        # Explicitly verify the expiry branch via the real HTTP endpoint.
+        sid = cookie.split("=", 1)[1]
+        web.SESSIONS[sid]["confirm"][nonce]["expires"] = 0
+        with mock.patch.object(web, "diagnostic_event") as spy:
+            status, _, _ = self.request("POST", "/remove/confirm",
+                {"csrf": csrf, "nonce": nonce, "token": TOKEN}, cookie=cookie)
+        self.assertEqual(status, 403)
+        self.assertIn(mock.call("nonce_expired"), spy.call_args_list)
+        self.assertIn(mock.call("pre_dispatch_rejected"), spy.call_args_list)
+        self.assertEqual(len([x for x in self.calls if x["op"] == "remove"]), 0)
+
+    def test_noninterference_on_write_and_flush_failure(self):
+        import io
+        from copy import deepcopy
+
+        class BrokenStream(io.StringIO):
+            def __init__(self, failure):
+                super().__init__()
+                self.failure = failure
+            def write(self, value):
+                if self.failure == "write":
+                    raise OSError("simulated write failure")
+                return super().write(value)
+            def flush(self):
+                if self.failure == "flush":
+                    raise OSError("simulated flush failure")
+                return super().flush()
+
+        cookie = self.login()
+        csrf, nonce = self.prepare(cookie)
+        sid = cookie.split("=", 1)[1]
+        original = deepcopy(web.SESSIONS[sid])
+        payload = {"csrf": csrf, "nonce": nonce, "token": TOKEN}
+        observed = []
+        for failure in (None, "write", "flush"):
+            web.SESSIONS[sid] = deepcopy(original)
+            self.calls.clear()
+            stream = io.StringIO() if failure is None else BrokenStream(failure)
+            with mock.patch("sys.stdout", stream):
+                status, _headers, body = self.request("POST", "/remove/confirm", payload, cookie=cookie)
+            observed.append((status, body, deepcopy(web.SESSIONS[sid]["confirm"]),
+                             deepcopy(self.calls), web.SESSIONS[sid]["csrf"],
+                             web.SESSIONS[sid]["created"]))
+        self.assertEqual(observed[0], observed[1])
+        self.assertEqual(observed[0], observed[2])
+        self.assertEqual(observed[0][0], 303)
+        self.assertEqual([x["op"] for x in observed[0][3]], ["remove"])
+
+
 if __name__ == "__main__":
     unittest.main()

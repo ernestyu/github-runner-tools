@@ -161,11 +161,7 @@ pid = os.fork()
 if pid == 0:
     try:
         parent.close()
-        os.setgroups([])
-        os.setgid(gid)
-        os.setuid(uid)
-        if not lifecycle_worker.verify_unprivileged_identity(uid, gid):
-            os._exit(2)
+        lifecycle_worker.drop_to_runner_identity(uid, gid)
         if lifecycle_worker.privileged_peer_uid(child.fileno()) != 0:
             os._exit(3)
         os._exit(0)

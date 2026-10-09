@@ -27,6 +27,7 @@ RUNNER_TOOLS_LIB_ONLY=1
 source "$1"
 web_context_check() { :; }
 web_service_state() {
+    python3 -c 'import json,os; f=os.environ["GRT_PROBE_FILE"]; r=os.environ["GRT_CHECK_RESULT_FD"]; t=os.environ["GRT_PROBE_TOKEN_FD"]; open(f,"w").write(json.dumps({"result_fd":os.path.exists("/proc/self/fd/"+r),"token_fd":os.path.exists("/proc/self/fd/"+t)}))'
     if [[ "$GRT_FAIL_STAGE" == "service_state" ]]; then return 1; fi
     printf active
 }
@@ -56,6 +57,7 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
             (runner / "svc.sh").chmod(0o755)
             (runner / "config.sh").chmod(0o755)
             events, args_file = base / "events.log", base / "arguments.json"
+            probe_file = base / "fd-probe.json"
             token_r, token_w = os.pipe()
             result_r, result_w = os.pipe()
             try:
@@ -69,6 +71,8 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
                     "GRT_EVENT_FILE": str(events),
                     "GRT_CHECK_RESULT_FD": str(result_w),
                     "GRT_TEST_SECRET": TOKEN,
+                    "GRT_PROBE_FILE": str(probe_file),
+                    "GRT_PROBE_TOKEN_FD": str(token_r),
                     "GRT_CONFIG_EXIT": str(config_exit),
                     "GRT_CONFIG_SIGNAL": config_signal,
                     "GRT_FAIL_STAGE": fail_stage}
@@ -86,6 +90,9 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
             operations = events.read_text().splitlines() if events.exists() else []
             self.assertNotIn(TOKEN, proc.stdout)
             self.assertNotIn(TOKEN, proc.stderr)
+            if probe_file.exists():
+                self.assertEqual(json.loads(probe_file.read_text()),
+                                 {"result_fd": False, "token_fd": False})
             return proc.returncode, marker, captured, operations, runner.exists()
 
     def test_official_argv_and_result_fd_not_in_config(self):

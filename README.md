@@ -12,6 +12,8 @@ The current target is Debian 12/13 with systemd. The x86_64 path, including the 
 
 The current implementation has passed the repository test suite and live Debian self-hosted runner validation. The completed-job hook, local archive, manifest/hash publication, GitHub Step Summary, existing-runner migration path, and normal workflow execution have all been exercised successfully on the real runner host.
 
+The optional Web Management V1 frontend has also been installed on the real Debian host and validated for Tailscale-only HTTPS access, authentication, dispatcher startup, privilege drop, and listing the existing runner inventory. Web Management is still collected under **Unreleased** until its create/remove/recover paths complete final live acceptance.
+
 The remaining platform caveat is ARM64: the code path exists, but it has not yet been validated on a real ARM64 runner.
 
 ## Quick start
@@ -114,6 +116,116 @@ bash scripts/status-runners.sh
 ```
 
 The cloned script and the one-line bootstrap use the same defaults. Both now require the one-time local artifact platform setup to be present.
+
+## Optional Web Management
+
+Web Management V1 is an explicit opt-in component. The default installation remains CLI-only, and the CLI tools continue to work normally without the Web UI.
+
+The Web component is useful when the runner host is remote or you mainly have access from a phone. It provides a small management page for:
+
+- listing existing repository runners;
+- creating a runner from `OWNER/REPO` plus a temporary GitHub registration token;
+- normal removal with a temporary GitHub removal token;
+- local recovery cleanup for a runner that was already removed from GitHub.
+
+The browser frontend never listens directly on the LAN or public Internet. The backend binds only to:
+
+```text
+127.0.0.1:8765
+```
+
+Remote access is intended to go through **Tailscale Serve**. Do not use Tailscale Funnel for this component.
+
+### One-time Web installation
+
+Clone or update the repository, then inspect the plan first:
+
+```bash
+cd ~/github-runner-tools
+git pull --ff-only
+
+bash scripts/setup-web-management.sh --dry-run
+bash scripts/setup-web-management.sh --apply
+```
+
+Run the setup as the normal runner owner, not as root. The script uses `sudo` internally only for fixed host-level installation steps.
+
+`--apply` is the explicit opt-in point. It installs the Web frontend, privileged dispatcher, fixed lifecycle worker, configuration, systemd units, and Web administrator password configuration.
+
+It also runs:
+
+```text
+systemctl enable github-runner-tools-dispatch.service
+systemctl enable github-runner-tools-web.service
+```
+
+and starts/restarts both services. Therefore, after a successful one-time `--apply`, the Web backend is a normal persistent systemd service and starts automatically after reboot. You do **not** need to SSH into the Debian host every time you want to use the UI.
+
+Check the services with:
+
+```bash
+systemctl status github-runner-tools-dispatch.service
+systemctl status github-runner-tools-web.service
+```
+
+To stop the Web UI without uninstalling it:
+
+```bash
+sudo systemctl stop github-runner-tools-web.service
+sudo systemctl stop github-runner-tools-dispatch.service
+```
+
+To keep it disabled across reboot:
+
+```bash
+sudo systemctl disable --now github-runner-tools-web.service
+sudo systemctl disable --now github-runner-tools-dispatch.service
+```
+
+To enable it again later:
+
+```bash
+sudo systemctl enable --now github-runner-tools-dispatch.service
+sudo systemctl enable --now github-runner-tools-web.service
+```
+
+### Tailscale access is a separate operator choice
+
+The setup script deliberately does **not** configure Tailscale Serve automatically. After Web setup succeeds, the operator chooses whether to expose the loopback backend to the tailnet:
+
+```bash
+sudo tailscale serve --bg http://127.0.0.1:8765
+```
+
+The `--bg` form persists after the terminal session ends and resumes after device or Tailscale restarts. To inspect or disable it:
+
+```bash
+tailscale serve status
+sudo tailscale serve off
+```
+
+This separation is intentional:
+
+```text
+CLI-only host
+    → no Web components
+
+setup-web-management.sh --apply
+    → Web services installed + enabled + started locally
+
+tailscale serve --bg ...
+    → operator explicitly makes the UI reachable inside the tailnet
+```
+
+The Web backend remains loopback-only even when Serve is enabled.
+
+### Web security model
+
+Web Management preserves the existing runner lifecycle rules rather than replacing them. The frontend runs as the dedicated `grt-web` user, the root dispatcher has a narrow fixed authority surface, and the lifecycle worker drops to the configured runner owner before runner-owned lifecycle logic runs.
+
+Temporary GitHub registration/removal tokens are request-scoped and are not intentionally stored in argv, environment variables, persistent files, URLs, sessions, or logs.
+
+The configured runner-owner account is inside the temporary-token trust boundary. Do not use Web Management V1 on a host where untrusted/public workflows execute as that same runner owner.
 
 ## Local artifact archive
 

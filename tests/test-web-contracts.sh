@@ -178,12 +178,28 @@ PY
 # The installed dispatcher unit must provision the two capabilities required
 # solely for the fixed worker identity transition while preserving the frozen
 # sandbox.
-grep -Fq 'AmbientCapabilities=CAP_SETUID CAP_SETGID' "$ROOT/scripts/setup-web-management.sh" ||
-  fail "dispatcher unit does not explicitly provision CAP_SETUID/CAP_SETGID"
-grep -Fq 'NoNewPrivileges=true' "$ROOT/scripts/setup-web-management.sh" ||
-  fail "dispatcher NoNewPrivileges hardening missing"
-grep -Fq 'RestrictSUIDSGID=true' "$ROOT/scripts/setup-web-management.sh" ||
-  fail "dispatcher RestrictSUIDSGID hardening missing"
+python3 - "$ROOT/scripts/setup-web-management.sh" <<'PY' ||
+  fail "dispatcher capability placement contract failed"
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+web_start = text.index('TMP_WEB_UNIT="$(mktemp)"')
+dispatch_start = text.index('TMP_DISPATCH_UNIT="$(mktemp)"')
+install_start = text.index('sudo install -o root -g root -m 0644 "$TMP_WEB_UNIT"')
+
+web_unit = text[web_start:dispatch_start]
+dispatch_unit = text[dispatch_start:install_start]
+
+cap = "AmbientCapabilities=CAP_SETUID CAP_SETGID"
+if cap in web_unit:
+    raise SystemExit("identity capabilities were granted to Web frontend")
+if cap not in dispatch_unit:
+    raise SystemExit("dispatcher unit lacks CAP_SETUID/CAP_SETGID")
+for required in ("NoNewPrivileges=true", "RestrictSUIDSGID=true"):
+    if required not in dispatch_unit:
+        raise SystemExit(f"dispatcher hardening missing: {required}")
+PY
 
 # Real systemd regression: under the production-relevant hardening, explicit
 # AmbientCapabilities must yield CAP_SETUID and CAP_SETGID in both permitted

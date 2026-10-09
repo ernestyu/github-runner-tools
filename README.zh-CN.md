@@ -12,6 +12,8 @@
 
 当前实现已经通过完整仓库测试，并在真实 Debian self-hosted runner 上完成实机验证。completed-job hook、本地归档、manifest/hash 发布、GitHub Step Summary、已有 runner migration，以及真实 workflow 执行都已经实际跑通。
 
+可选的 Web Management V1 也已经安装到真实 Debian 主机，并完成 Tailscale-only HTTPS 访问、登录认证、dispatcher 启动、权限下降和现有 runner 列表读取的实机验证。Web Management 目前仍放在 **Unreleased**，在 create/remove/recover 三条 Web 路径完成最终实机验收之前不会作为新的正式 tag 发布。
+
 目前主要剩余的平台级限制是 ARM64：代码路径已经实现，但还没有在真实 ARM64 runner 上验证。
 
 ## 快速开始
@@ -114,6 +116,116 @@ bash scripts/status-runners.sh
 ```
 
 clone 方式和一行 bootstrap 使用相同的默认规则。两种方式现在都要求这台主机已经完成一次本地归档平台配置。
+
+## 可选 Web 管理界面
+
+Web Management V1 是一个**显式 opt-in 的可选组件**。默认仍然是 CLI-only；不安装 Web UI 时，现有命令行工具可以完整、正常地使用。
+
+这个 Web 页面主要解决“人在外面只有手机，不方便 SSH 登录 Debian”的日常管理问题。当前界面提供：
+
+- 查看已有 repository runner；
+- 输入 `OWNER/REPO` 和 GitHub 临时 registration token 创建 runner；
+- 使用临时 removal token 正常删除 runner；
+- 对已经在 GitHub 端删除的 runner 执行本地 recovery cleanup。
+
+Web backend 不直接监听局域网，也不对公网开放，只绑定：
+
+```text
+127.0.0.1:8765
+```
+
+远程访问设计为通过 **Tailscale Serve**。不要对这个 Web 管理界面使用 Tailscale Funnel。
+
+### Web 一次性安装
+
+先更新仓库，然后先看 dry-run：
+
+```bash
+cd ~/github-runner-tools
+git pull --ff-only
+
+bash scripts/setup-web-management.sh --dry-run
+bash scripts/setup-web-management.sh --apply
+```
+
+请使用正常的 runner owner 用户执行，不要把整个脚本写成 `sudo bash ...`。脚本只会在固定的 host-level 安装步骤内部调用 `sudo`。
+
+`--apply` 就是 Web Management 的显式启用点。它会安装 Web frontend、root dispatcher、固定 lifecycle worker、配置文件、systemd units 和 Web 管理密码配置。
+
+脚本还会执行：
+
+```text
+systemctl enable github-runner-tools-dispatch.service
+systemctl enable github-runner-tools-web.service
+```
+
+并立即启动/重启这两个服务。因此成功执行一次 `--apply` 以后，Web backend 就成为常驻的 systemd 服务，Debian 重启后也会自动启动。以后使用 Web UI **不需要每次先 SSH 登录 Debian 再手动启动**。
+
+查看状态：
+
+```bash
+systemctl status github-runner-tools-dispatch.service
+systemctl status github-runner-tools-web.service
+```
+
+临时停止 Web UI：
+
+```bash
+sudo systemctl stop github-runner-tools-web.service
+sudo systemctl stop github-runner-tools-dispatch.service
+```
+
+如果希望重启 Debian 后也保持关闭：
+
+```bash
+sudo systemctl disable --now github-runner-tools-web.service
+sudo systemctl disable --now github-runner-tools-dispatch.service
+```
+
+以后重新启用：
+
+```bash
+sudo systemctl enable --now github-runner-tools-dispatch.service
+sudo systemctl enable --now github-runner-tools-web.service
+```
+
+### 是否通过 Tailscale 暴露，由用户单独决定
+
+Web setup **不会自动配置 Tailscale Serve**。本地 Web 服务安装成功以后，由管理员自己决定是否让它在 tailnet 内可访问：
+
+```bash
+sudo tailscale serve --bg http://127.0.0.1:8765
+```
+
+使用 `--bg` 后，Serve 在退出 SSH/终端以后仍然保持工作，并且设备重启或 Tailscale 重启后会自动恢复。查看或关闭：
+
+```bash
+tailscale serve status
+sudo tailscale serve off
+```
+
+因此现在的控制关系是：
+
+```text
+默认 CLI-only
+    → 没有 Web 组件
+
+setup-web-management.sh --apply
+    → 安装 + enable + 启动本地 Web 服务
+
+tailscale serve --bg ...
+    → 用户显式决定是否让 UI 在自己的 tailnet 内可访问
+```
+
+即使启用 Serve，Web backend 本身仍然只监听 loopback。
+
+### Web 安全边界
+
+Web Management 不重新实现 runner lifecycle，而是复用现有的身份验证、删除和 recovery 规则。frontend 使用独立的 `grt-web` 用户；root dispatcher 只有固定且受限的 privileged surface；真正执行 runner lifecycle 之前，固定 worker 会下降到 runner owner 用户。
+
+临时 registration/removal token 是 request-scoped，不应进入 argv、环境变量、持久文件、URL、session 或日志。
+
+runner owner 用户属于临时 token 的 trust boundary。因此，如果同一个 runner owner 会执行 public/untrusted workflow，则不属于 Web Management V1 的安全支持模型。
 
 ## 本地 Artifact 归档
 

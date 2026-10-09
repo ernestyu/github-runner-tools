@@ -27,7 +27,7 @@ RUNNER_TOOLS_LIB_ONLY=1
 source "$1"
 web_context_check() { :; }
 web_service_state() {
-    python3 -c 'import json,os; f=os.environ["GRT_PROBE_FILE"]; r=os.environ["GRT_CHECK_RESULT_FD"]; t=os.environ["GRT_PROBE_TOKEN_FD"]; open(f,"w").write(json.dumps({"result_fd":os.path.exists("/proc/self/fd/"+r),"token_fd":os.path.exists("/proc/self/fd/"+t)}))'
+    python3 -c 'import json,os; f=os.environ["GRT_PROBE_FILE"]; r=os.environ["GRT_CHECK_RESULT_FD"]; t=os.environ["GRT_PROBE_TOKEN_FD"]; record=json.dumps({"result_fd":os.path.exists("/proc/self/fd/"+r),"token_fd":os.path.exists("/proc/self/fd/"+t)}); open(f,"w").write(record)'
     if [[ "$GRT_FAIL_STAGE" == "service_state" ]]; then return 1; fi
     printf active
 }

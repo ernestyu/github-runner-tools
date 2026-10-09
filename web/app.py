@@ -37,6 +37,31 @@ CONFIRM_TTL = 5 * 60
 COOKIE_NAME = "grt_session"
 
 
+ACCESS_ROUTES = {
+    "/": "index", "/login": "login", "/create": "create",
+    "/logout": "logout", "/remove/prepare": "remove_prepare",
+    "/remove/confirm": "remove_confirm",
+    "/recover/prepare": "recover_prepare",
+    "/recover/confirm": "recover_confirm",
+}
+
+
+def diagnostic_event(event: str) -> None:
+    """Best-effort fixed-category diagnostic; never affect authorization."""
+    allowed = {
+        "missing_cookie", "unknown_session", "idle_expired", "absolute_expired",
+        "session_unknown", "invalid_csrf", "nonce_missing_or_used",
+        "nonce_expired", "operation_mismatch", "confirmation_unknown",
+        "invalid_token_format", "dispatch_invoked", "pre_dispatch_rejected",
+    }
+    if event not in allowed:
+        return
+    try:
+        print(f"web_diagnostic event={event}", flush=True)
+    except Exception:
+        pass
+
+
 def now() -> float:
     return time.time()
 
@@ -73,6 +98,15 @@ def consume_confirmation(
         or pending.get("op") != expected_op
         or pending.get("expires", 0) < t
     ):
+        # Category is based exclusively on this actual pop and comparison.
+        if not isinstance(pending, dict):
+            diagnostic_event("nonce_missing_or_used")
+        elif pending.get("op") != expected_op:
+            diagnostic_event("operation_mismatch")
+        elif pending.get("expires", 0) < t:
+            diagnostic_event("nonce_expired")
+        else:
+            diagnostic_event("confirmation_unknown")
         return None
     return pending
 
@@ -229,9 +263,19 @@ class Handler(BaseHTTPRequestHandler):
     app: App
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        # Never log bodies/forms. Method/path/status metadata only.
-        safe_path = self.path.split("?", 1)[0]
-        print(f'{self.client_address[0]} {self.command} {safe_path} {args[1] if len(args)>1 else ""}')
+        # Strict labels only; avoid raw path, client address and log args.
+        route = ACCESS_ROUTES.get(self.path.split("?", 1)[0], "other")
+        method = self.command if self.command in ("GET", "POST") else "OTHER"
+        status = "000"
+        if len(args) > 1:
+            candidate = str(args[1])
+            if candidate.isascii() and len(candidate) == 3 and candidate.isdecimal():
+                if 100 <= int(candidate) <= 599:
+                    status = candidate
+        try:
+            print(f"web_access method={method} route={route} status={status}", flush=True)
+        except Exception:
+            pass
 
     def _source(self) -> str:
         # The backend is loopback-only. Do not trust forwarding headers for
@@ -275,12 +319,15 @@ class Handler(BaseHTTPRequestHandler):
         self.app.prune()
         sid = self._cookie_sid()
         if not sid:
+            diagnostic_event("missing_cookie")
             return None
         sess = SESSIONS.get(sid)
         if not sess:
+            diagnostic_event("unknown_session")
             return None
         t = now()
         if not session_is_valid(sess, t):
+            diagnostic_event("idle_expired" if t - float(sess["last"]) > SESSION_IDLE else "absolute_expired")
             SESSIONS.pop(sid, None)
             return None
         sess["last"] = t
@@ -428,6 +475,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         sid, sess = current
         if not self._csrf_ok(form, sess):
+            diagnostic_event("invalid_csrf")
             self._send(403, page("Rejected", "<h1>CSRF validation failed</h1>"))
             return
 
@@ -502,6 +550,7 @@ class Handler(BaseHTTPRequestHandler):
             expected_op = "remove" if path.startswith("/remove") else "recover_local"
             pending = consume_confirmation(sess, nonce, expected_op)
             if pending is None:
+                diagnostic_event("pre_dispatch_rejected")
                 self._send(403, page("Rejected", "<h1>Confirmation expired or invalid.</h1>"))
                 return
             repo = pending["repository"]
@@ -512,9 +561,13 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     validate_temporary_token(token)
                 except ValueError:
+                    diagnostic_event("invalid_token_format")
+                    diagnostic_event("pre_dispatch_rejected")
                     self._send(400, page("Invalid token", "<h1>Invalid removal token</h1>"))
                     return
                 request["token"] = token
+            if expected_op == "remove":
+                diagnostic_event("dispatch_invoked")
             result = dispatch(self.app.config, request)
             token = ""
             if result.get("ok"):

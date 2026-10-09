@@ -13,6 +13,7 @@ import grp
 import json
 import os
 import pwd
+import re
 import shutil
 import signal
 import socket
@@ -79,6 +80,20 @@ def diagnostic(stage: str, exc: BaseException | None = None, **fields: Any) -> N
     print(" ".join(parts), file=sys.stderr, flush=True)
 
 
+_WORKER_DIAG_RE = re.compile(
+    r"^worker_diag stage=(?:worker_not_root|capability_clear_failed|setgroups_failed|"
+    r"setgid_failed|setuid_failed|identity_verification_failed)"
+    r"(?: exc=[A-Za-z0-9_]+)?(?: errno=[0-9]{1,10})?$"
+)
+
+
+def forward_worker_diagnostics(stderr: str) -> None:
+    """Forward only fixed-format worker diagnostics; discard all other stderr."""
+    for line in stderr.splitlines()[:8]:
+        if len(line) <= 256 and _WORKER_DIAG_RE.fullmatch(line):
+            print(line, file=sys.stderr, flush=True)
+
+
 def unix_peer_uid(sock: socket.socket) -> int:
     import struct
 
@@ -98,6 +113,9 @@ class Runtime:
         self.worker_path = cfg.get(
             "WORKER_PATH", "/usr/local/lib/github-runner-tools/web/lifecycle_worker.py"
         )
+        # These are fixed installed paths, not caller-controlled request data.
+        self.cli_dir = "/usr/local/lib/github-runner-tools/web/cli"
+        self.pty_adapter = "/usr/local/lib/github-runner-tools/web/pty_token_adapter.py"
         self.socket_path = cfg.get("DISPATCH_SOCKET", DEFAULT_DISPATCH_SOCKET)
         self.lock_file = cfg.get("MUTATION_LOCK_FILE", DEFAULT_LOCK_FILE)
         self.timeout = int(cfg.get("MUTATION_TIMEOUT_SECONDS", "900"))
@@ -535,8 +553,8 @@ class DispatchServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
                 "GRT_PRIVILEGED_FD": str(ctrl_child.fileno()),
                 "GRT_RUNNER_USER": runtime.runner_user,
                 "GRT_RUNNER_HOME": runtime.runner_home,
-                "GRT_CLI_DIR": "/usr/local/lib/github-runner-tools/web/cli",
-                "GRT_PTY_ADAPTER": "/usr/local/lib/github-runner-tools/web/pty_token_adapter.py",
+                "GRT_CLI_DIR": runtime.cli_dir,
+                "GRT_PTY_ADAPTER": runtime.pty_adapter,
             }
             # Do not perform setgroups/setregid/setreuid in Popen's
             # fork/exec child path. The dispatcher is multi-threaded; the
@@ -592,6 +610,7 @@ class DispatchServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
             thread.start()
             try:
                 stdout, stderr = proc.communicate(timeout=runtime.timeout)
+                forward_worker_diagnostics(stderr)
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(proc.pid, signal.SIGTERM)

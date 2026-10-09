@@ -132,12 +132,12 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
 
 
     def test_token_byte_validation_before_service_mutation(self):
-        for token in (b"bad\\x00token", b"bad\\rtoken", b"bad\\ntoken", b"", b"X" * 1025,
-                      b"\\xffinvalid"):
+        for token in (b"bad\x00token", b"bad\rtoken", b"bad\ntoken", b"", b"X" * 1025,
+                      b"\xffinvalid"):
             with self.subTest(token=repr(token[:30])):
                 rc, marker, captured, ops, exists = self.run_case(token=token)
                 self.assertNotEqual(rc, 0)
-                self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=preflight_failed exit=unknown\\n")
+                self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=preflight_failed exit=unknown\n")
                 self.assertIsNone(captured)
                 self.assertEqual(ops, [])
                 self.assertTrue(exists)
@@ -147,7 +147,7 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
             with self.subTest(args=args):
                 rc, marker, captured, ops, exists = self.run_case(**args)
                 self.assertNotEqual(rc, 0)
-                self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=unknown_failed exit=unknown\\n")
+                self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=unknown_failed exit=unknown\n")
                 self.assertTrue(exists)
                 self.assertEqual(ops, ["service_stop", "service_uninstall"])
 

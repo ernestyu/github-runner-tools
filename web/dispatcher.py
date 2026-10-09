@@ -102,6 +102,30 @@ def unix_peer_uid(sock: socket.socket) -> int:
     return int(uid)
 
 
+_CAP_SETGID_BIT = 1 << 6
+_CAP_SETUID_BIT = 1 << 7
+_REQUIRED_IDENTITY_CAPS = _CAP_SETGID_BIT | _CAP_SETUID_BIT
+
+
+def dispatcher_identity_capabilities_ready() -> bool:
+    """Require SETUID/SETGID in both permitted and effective capability sets."""
+    status: dict[str, str] = {}
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    status[key] = value.strip()
+        permitted = int(status.get("CapPrm", "0"), 16)
+        effective = int(status.get("CapEff", "0"), 16)
+    except (OSError, ValueError):
+        return False
+    return (
+        permitted & _REQUIRED_IDENTITY_CAPS == _REQUIRED_IDENTITY_CAPS
+        and effective & _REQUIRED_IDENTITY_CAPS == _REQUIRED_IDENTITY_CAPS
+    )
+
+
 class Runtime:
     def __init__(self, config_path: str):
         cfg = load_key_value(config_path)
@@ -122,6 +146,9 @@ class Runtime:
         self.runner_pw = pwd.getpwnam(self.runner_user)
         self.runner_gr = grp.getgrnam(self.runner_group)
         self.web_pw = pwd.getpwnam(self.web_user)
+        if not dispatcher_identity_capabilities_ready():
+            diagnostic("dispatcher_identity_caps_missing")
+            raise RuntimeError("dispatcher identity-transition capabilities unavailable")
 
     def validate_fixed_worker(self) -> None:
         st = os.stat(self.worker_path, follow_symlinks=False)

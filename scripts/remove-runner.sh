@@ -37,6 +37,7 @@ web_remove_external() {
   fi
 }
 python3() { web_remove_external python3 "$@"; }
+cat() { web_remove_external cat "$@"; }
 jq() { web_remove_external jq "$@"; }
 tr() { web_remove_external tr "$@"; }
 sed() { web_remove_external sed "$@"; }

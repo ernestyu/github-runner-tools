@@ -40,7 +40,7 @@ REMOVE_STAGES = frozenset({
 REMOVE_MARKER = re.compile(
     rb"GRT_REMOVE_RESULT_V1 stage=(preflight_failed|service_state_failed|"
     rb"service_stop_failed|service_uninstall_failed|config_remove_failed|"
-    rb"local_cleanup_failed|unknown_failed) exit=(unknown|0|[1-9][0-9]{0,2})\\n"
+    rb"local_cleanup_failed|unknown_failed) exit=(unknown|0|[1-9][0-9]{0,2})\n"
 )
 
 

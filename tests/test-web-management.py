@@ -1277,5 +1277,36 @@ class FinalConsumerTokenTests(unittest.TestCase):
         self._run_config_fixture("remove")
 
 
+class OfficialRemoveDiagnosticsTests(unittest.TestCase):
+    def test_strict_marker_parser(self):
+        good = b"GRT_REMOVE_RESULT_V1 stage=config_remove_failed exit=9\n"
+        expected = {"ok": False, "error": "lifecycle_failed", "stage": "config_remove_failed", "exit_code": 9}
+        self.assertEqual(lifecycle_worker.parse_remove_marker(good, 1), expected)
+        fallback = {"ok": False, "error": "lifecycle_failed", "stage": "unknown_failed", "exit_code": None}
+        for raw in (b"", good * 2, b"noise" + good, good + b"noise", good[:-1],
+                    good.replace(b"9", b"999"), good.replace(b"9", b"-1"),
+                    good.replace(b"config_remove_failed", b"arbitrary"),
+                    b"GRT_REMOVE_RESULT_V1 stage=preflight_failed exit=0\n", b"X" * 129):
+            with self.subTest(raw=raw[:70]):
+                self.assertEqual(lifecycle_worker.parse_remove_marker(raw, 1), fallback)
+        self.assertEqual(lifecycle_worker.parse_remove_marker(good, -9), fallback)
+        self.assertEqual(lifecycle_worker.parse_remove_marker(good, 0), fallback)
+
+    def test_web_static_failure_mapping_is_not_injectable(self):
+        item = {"ok": False, "error": "lifecycle_failed", "stage": "service_uninstall_failed", "exit_code": 3}
+        self.assertEqual(web_app.remove_failure_message(item),
+                         "Runner service uninstall failed; check systemd state before retrying. Exit code: 3.")
+        for stage, code in (("<script>alert(1)</script>", 1), ("config_remove_failed", "SECRET_TOKEN"),
+                            ("config_remove_failed", True), ("config_remove_failed", 400)):
+            self.assertEqual(web_app.remove_failure_message(
+                {"error": "lifecycle_failed", "stage": stage, "exit_code": code}), "Runner operation failed.")
+
+    def test_official_remove_source_contract(self):
+        source = (ROOT / "scripts" / "remove-runner.sh").read_text()
+        self.assertIn('./config.sh remove --token "$TOKEN"', source)
+        self.assertIn('exec {RESULT_FD}>&-', source)
+        self.assertNotIn('--mode remove -- ./config.sh remove', source)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

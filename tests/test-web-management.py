@@ -951,6 +951,18 @@ class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
         )
         self.assertNotIn(secret, logged)
 
+    def test_dispatcher_requires_setuid_and_setgid_in_permitted_and_effective_sets(self):
+        full = "CapPrm:\t00000000000000c0\nCapEff:\t00000000000000c0\n"
+        missing_setuid = "CapPrm:\t0000000000000040\nCapEff:\t0000000000000040\n"
+        missing_effective = "CapPrm:\t00000000000000c0\nCapEff:\t0000000000000040\n"
+
+        with mock.patch("builtins.open", mock.mock_open(read_data=full)):
+            self.assertTrue(dispatcher.dispatcher_identity_capabilities_ready())
+        with mock.patch("builtins.open", mock.mock_open(read_data=missing_setuid)):
+            self.assertFalse(dispatcher.dispatcher_identity_capabilities_ready())
+        with mock.patch("builtins.open", mock.mock_open(read_data=missing_effective)):
+            self.assertFalse(dispatcher.dispatcher_identity_capabilities_ready())
+
     def test_dispatcher_peer_uid_helper_uses_unix_peer_credentials(self):
         import socket
         left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)

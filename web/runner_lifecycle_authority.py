@@ -371,8 +371,10 @@ def create_attestation(repo: str, runner: str, runner_dir: str, user: str, versi
     dirfd = _safe_directory(runner_dir)
     try:
         parent = os.fstat(dirfd)
-        if parent.st_uid != account.pw_uid or parent.st_mode & 0o022:
-            raise AuthorityError("unsafe runner directory")
+        if (parent.st_uid != account.pw_uid or parent.st_mode & 0o022 or
+                (parent.st_dev, parent.st_ino) !=
+                (state.get("directory_device"), state.get("directory_inode"))):
+            raise AuthorityError("unsafe or substituted runner directory")
         agent = _file_digest(dirfd, ".runner", account.pw_uid, account.pw_gid)
         credentials = _file_digest(dirfd, ".credentials", account.pw_uid, account.pw_gid)
         meta = os.open(".runner", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dirfd)
@@ -613,6 +615,14 @@ def create_unit_attestation(repo: str, runner: str, runner_dir: str,
     active = _current(repo, runner, runner_dir)
     if active is None:
         raise AuthorityError("Unit created without active cycle")
+    create = _cycle_record(CREATE_STATES, repo, runner, runner_dir, active["instance"])
+    if create is None or create.get("stage") not in (
+            "REGISTERED_UNIT_INCOMPLETE", "REGISTERED_START_INCOMPLETE"):
+        raise AuthorityError("Unit creation not in authorized lifecycle stage")
+    dirst = os.stat(runner_dir, follow_symlinks=False)
+    if (dirst.st_dev, dirst.st_ino) != (
+            create.get("directory_device"), create.get("directory_inode")):
+        raise AuthorityError("Unit attestation directory changed")
     item["instance"] = active["instance"]
     item["schema"] = 2
     storefd = _store(UNIT_ATTESTATIONS)

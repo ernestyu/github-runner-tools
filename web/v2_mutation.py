@@ -13,11 +13,8 @@ import fcntl
 import json
 import os
 import pwd
-import select
-import signal
 import socket
 import stat
-import threading
 import time
 from pathlib import Path
 
@@ -55,72 +52,6 @@ def lock_transaction(runtime: Runtime):
     except BaseException:
         os.close(fd)
         raise
-
-
-def serve_private_ops(runtime: Runtime, transaction: Request,
-                      connection: socket.socket, deadline: float,
-                      stop: threading.Event) -> None:
-    """Read only from the private root/CLI channel, never the public socket."""
-    connection.settimeout(0.5)
-    buffer = bytearray()
-    while not stop.is_set() and time.monotonic() < deadline:
-        try:
-            chunk = connection.recv(4096)
-        except socket.timeout:
-            continue
-        except OSError:
-            break
-        if not chunk:
-            break
-        buffer.extend(chunk)
-        if len(buffer) > MAX_PRIV_MESSAGE:
-            break
-        while b"\n" in buffer:
-            raw, _, remaining = buffer.partition(b"\n")
-            buffer = bytearray(remaining)
-            try:
-                req = json.loads(raw.decode("utf-8", "strict"))
-                from v2_binding import authorize_private_request, TransactionBindingError
-                admitted = authorize_private_request(runtime, transaction, req)
-                response = execute_privileged(runtime, admitted, deadline=deadline)
-            except (ValueError, UnicodeError, PrivilegedProtocolError, OSError):
-                response = {"ok": False, "error": "privileged_request_rejected"}
-            try:
-                connection.sendall(json.dumps(response, separators=(",", ":")).encode() + b"\n")
-            except OSError:
-                return
-
-
-def _capture_output(fd: int, buffer: bytearray, stop: threading.Event) -> None:
-    try:
-        while True:
-            fragment = os.read(fd, 8192)
-            if not fragment:
-                return
-            if len(buffer) < MAX_CLI_OUTPUT:
-                buffer.extend(fragment[:MAX_CLI_OUTPUT - len(buffer)])
-    except OSError:
-        return
-    finally:
-        os.close(fd)
-        stop.set()
-
-
-def _wait_child(pid: int, deadline: float) -> tuple[int | None, bool]:
-    while time.monotonic() < deadline:
-        try:
-            current, status = os.waitpid(pid, os.WNOHANG)
-        except ChildProcessError:
-            return None, True
-        if current == pid:
-            return status, False
-        time.sleep(0.05)
-    terminate_group(pid)
-    try:
-        os.waitpid(pid, 0)
-    except ChildProcessError:
-        pass
-    return None, True
 
 
 def execute_mutation(request: Request, secret: bytes | None,
@@ -161,32 +92,16 @@ def execute_mutation(request: Request, secret: bytes | None,
                 replacement = _fcntl.fcntl(child_fd, _fcntl.F_DUPFD_CLOEXEC, 5)
                 os.close(child_fd)
                 child_fd = replacement
-            stop = threading.Event()
-            thread = threading.Thread(
-                target=serve_private_ops,
-                args=(runtime, request, root_socket, deadline, stop),
-                daemon=True,
-            )
-            thread.start()
             try:
                 pid, output_fd = spawn_cli(request, secret, child_fd)
             except (OSError, ValueError):
                 return {"ok": False, "error": "launcher_unavailable"}
             finally:
                 os.close(child_fd)
-            output = bytearray()
-            captured = threading.Event()
-            output_thread = threading.Thread(
-                target=_capture_output,
-                args=(output_fd, output, captured),
-                daemon=True,
+            from v2_event_loop import pump_transaction
+            status, timed_out = pump_transaction(
+                runtime, request, pid, root_socket, output_fd, deadline
             )
-            output_thread.start()
-            status, timed_out = _wait_child(pid, deadline)
-            stop.set()
-            root_socket.close()
-            thread.join(timeout=2)
-            output_thread.join(timeout=2)
             if timed_out:
                 # Never synthesize CREATE_COMPLETE after a crashed CLI.
                 return {"ok": False, "error": "outcome_unknown"}

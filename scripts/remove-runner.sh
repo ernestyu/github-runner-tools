@@ -626,8 +626,16 @@ if [[ "$WEB_MODE" == "1" ]]; then
   SERVICE_NAME="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
   [[ "${#SERVICE_NAME}" -le 150 ]] || die "Unsupported service identity."
   REMOVE_STAGE="preflight_failed"
+  if [[ ! -e "$RUNNER_DIR/.service" && ! -L "$RUNNER_DIR/.service" ]]; then
+    REMOVE_STAGE="unknown_failed"
+    die "Runner service record missing; previous remote outcome requires manual review."
+  fi
+  if compgen -G "$RUNNER_DIR/.grt-service-reconcile-*" >/dev/null; then
+    REMOVE_STAGE="unknown_failed"
+    die "Previous service record quarantine requires manual review."
+  fi
   [[ -f "$RUNNER_DIR/.service" && ! -L "$RUNNER_DIR/.service" ]] ||
-    die "Runner service record missing or unsafe; manual inspection required."
+    die "Runner service record unsafe; manual inspection required."
   python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" check "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
     die "Configured service identity is unavailable or incompatible."
   REMOVE_STAGE="service_state_failed"

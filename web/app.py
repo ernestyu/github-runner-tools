@@ -158,11 +158,17 @@ def dispatch(config: dict[str, str], request: dict[str, Any]) -> dict[str, Any]:
         # Executor request formats; secrets are in separate socket frames.
         operation = request.get("op")
         try:
-            from v2_executor_client import web_list, create_runner
+            from v2_executor_client import web_list, create_runner, remove_runner
             if operation == "list":
                 return web_list()
             if operation == "create":
                 return create_runner(request.get("repository", ""),
+                                     request.get("token", ""))
+            if operation == "remove":
+                return remove_runner(request.get("repository", ""),
+                                     request.get("runner_name", ""),
+                                     request.get("runner_id"),
+                                     request.get("instance", ""),
                                      request.get("token", ""))
             return {"ok": False, "error": "not_implemented"}
         except Exception:

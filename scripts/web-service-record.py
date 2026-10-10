@@ -124,7 +124,7 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, pr
             if metadata.get("agentName") != runner:
                 raise ValueError("metadata name mismatch")
             if mode == "verify":
-                match = re.fullmatch(r"(\.grt-service-reconcile-[0-9a-f]{32}):(\d+):(\d+)", proof)
+                match = re.fullmatch(r"(\.grt-service-reconcile-[0-9a-f]{32}):(\d+):(\d+):(\d+)", proof)
                 if not match or quarantines != [match.group(1)]:
                     raise ValueError("quarantine proof mismatch")
                 try:
@@ -133,7 +133,7 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, pr
                 except FileNotFoundError:
                     pass
                 st = record(fd, match.group(1), os.getuid(), unit.encode("ascii"))
-                if (st.st_dev, st.st_ino) != (int(match.group(2)), int(match.group(3))):
+                if (st.st_dev, st.st_ino, st.st_ctime_ns) != (int(match.group(2)), int(match.group(3)), int(match.group(4))):
                     raise ValueError("quarantine replaced")
                 if not same_directory(identity, os.stat(name, dir_fd=base_fd, follow_symlinks=False)):
                     raise ValueError("directory changed")
@@ -159,7 +159,7 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, pr
                     pass
                 if not same_directory(identity, os.stat(name, dir_fd=base_fd, follow_symlinks=False)):
                     raise ValueError("runner directory changed")
-                print(f"{quarantine}:{moved.st_dev}:{moved.st_ino}", flush=True)
+                print(f"{quarantine}:{moved.st_dev}:{moved.st_ino}:{moved.st_ctime_ns}", flush=True)
             except Exception:
                 try:
                     rename_noreplace(fd, quarantine, ".service")

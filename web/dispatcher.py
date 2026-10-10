@@ -93,10 +93,17 @@ _WORKER_DIAG_RE = re.compile(
 )
 
 
+_CREATE_WORKER_DIAG_RE = re.compile(
+    r"^worker_diag stage=create_(?:preflight|release_metadata|runner_download|"
+    r"registration|post_registration|service_install|service_start) exit=(?:[1-9]|"
+    r"[1-9][0-9]{1,2})$"
+)
+
+
 def forward_worker_diagnostics(stderr: str) -> None:
     """Forward only fixed-format worker diagnostics; discard all other stderr."""
     for line in stderr.splitlines()[:8]:
-        if len(line) <= 256 and _WORKER_DIAG_RE.fullmatch(line):
+        if len(line) <= 256 and (_WORKER_DIAG_RE.fullmatch(line) or _CREATE_WORKER_DIAG_RE.fullmatch(line)):
             print(line, file=sys.stderr, flush=True)
 
 

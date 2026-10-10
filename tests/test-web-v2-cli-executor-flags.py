@@ -33,6 +33,16 @@ class PrivateExecutorFlagTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("trusted context", result.stderr)
 
+    def test_executor_remove_keeps_secret_out_of_config_argv(self):
+        script = (ROOT / "scripts" / "remove-runner.sh").read_text()
+        self.assertIn('if [[ "$EXECUTOR_MODE" != "1" ]]; then\n    web_token_from_fd', script)
+        self.assertIn('--token-fd "$TOKEN_FD" --mode remove -- ./config.sh remove', script)
+        self.assertIn('if [[ "$EXECUTOR_MODE" == "1" ]]; then\n    # V2 consumes', script)
+        # V1 backward compatibility may still use the legacy --token form;
+        # the V2 branch must precede it and never reference the Bash secret.
+        start = script.index('if [[ "$EXECUTOR_MODE" == "1" ]]; then\n    # V2 consumes')
+        end = script.index('elif ( exec {RESULT_FD}>&-;', start)
+        self.assertNotIn('"$TOKEN"', script[start:end])
     def test_executor_mode_rejects_fake_fd(self):
         for script in ("register-runner.sh", "remove-runner.sh"):
             with self.subTest(script=script):

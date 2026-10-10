@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 
 from grt_web_common import canonical_service_name, make_local_id
-from runner_lifecycle_authority import (_current, _cycle_record,
+from runner_lifecycle_authority import (AuthorityError, _current, _cycle_record,
                                          CREATE_STATES, REMOVE_STATES)
 from v2_executor_contract import Request
 from v2_privileged import admitted_operation
@@ -66,8 +66,13 @@ def authorize_private_request(runtime, transaction: Request, payload) -> dict:
             active = _current(transaction.repository, expected_runner_name, path)
             if active is None:
                 raise TransactionBindingError("missing Create instance")
-        # Existing journal remains authoritative: reject privileged service
-        # operations before CLI has persisted the relevant checkpoint.
+        # Existing root authority alone decides whether PRE_REGISTRATION may
+        # start a fresh cycle. Do not inspect or mutate a journal beforehand.
+        if (kind == "create" and op["op"] == "create_state"
+                and op["stage"] == "PRE_REGISTRATION"):
+            return op
+        # Reject privileged service operations before the corresponding
+        # durable CLI stage exists.
         active = _current(transaction.repository, expected_runner_name, path)
         if kind == "create":
             if active is None:
@@ -100,7 +105,7 @@ def authorize_private_request(runtime, transaction: Request, payload) -> dict:
             elif current != "REMOTE_REMOVE_OUTCOME_UNKNOWN":
                 raise TransactionBindingError("Remove service operation before BEGIN")
         return op
-    except (ValueError, OSError, TypeError, KeyError) as exc:
+    except (AuthorityError, ValueError, OSError, TypeError, KeyError) as exc:
         if isinstance(exc, TransactionBindingError):
             raise
         raise TransactionBindingError("privileged transaction binding rejected") from exc

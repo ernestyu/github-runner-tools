@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from runner_lifecycle_authority import AuthorityError, create_attestation, create_stage, remove_stage
+from runner_lifecycle_authority import AuthorityError, create_attestation, create_stage, remove_stage, create_unit_attestation
 
 from grt_web_common import (
     DEFAULT_CONFIG,
@@ -416,6 +416,7 @@ class Runtime:
         self._run(["systemctl", "daemon-reload"], deadline=deadline, check=True)
         self._run(["systemctl", "enable", service], deadline=deadline, check=True)
         self.validate_unit(repository, runner_dir, runner_name, service, deadline=deadline)
+        create_unit_attestation(repository, runner_name, runner_dir, service, unit_path)
         return {"ok": True, "service": service}
 
     def privileged(self, request: dict[str, Any], deadline: float | None = None) -> dict[str, Any]:

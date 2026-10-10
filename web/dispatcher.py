@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from runner_lifecycle_authority import AuthorityError, create_attestation, create_stage, remove_stage, create_unit_attestation
+from runner_lifecycle_authority import AuthorityError, create_attestation, create_stage, remove_stage, create_unit_attestation, normalize_new_registration
 
 from grt_web_common import (
     DEFAULT_CONFIG,
@@ -53,6 +53,7 @@ PRIV_FIELDS = {
     "context_check": {"op"},
     "create_state": {"op", "repository", "runner_dir", "runner_name", "stage"},
     "registration_attestation_create": {"op", "repository", "runner_dir", "runner_name", "version"},
+    "registration_permission_normalize": {"op", "repository", "runner_dir", "runner_name"},
     "remove_state": {"op", "repository", "runner_dir", "runner_name", "stage"},
     "service_install": {"op", "repository", "runner_dir", "runner_name"},
     "service_start": {"op", "repository", "runner_dir", "runner_name", "service"},
@@ -436,6 +437,10 @@ class Runtime:
             if op == "create_state":
                 strict_dir = self.validate_runner_dir(repository, runner_dir, allow_legacy=False)
                 create_stage(repository, runner_name, strict_dir, str(request["stage"]))
+                return {"ok": True}
+            if op == "registration_permission_normalize":
+                strict_dir = self.validate_runner_dir(repository, runner_dir, allow_legacy=False)
+                normalize_new_registration(repository, runner_name, strict_dir, self.runner_user)
                 return {"ok": True}
             if op == "registration_attestation_create":
                 strict_dir = self.validate_runner_dir(repository, runner_dir, allow_legacy=False)

@@ -14,8 +14,6 @@ V2_MARKER="# managed-by=github-runner-tools-web-v2"
 [[ "${2:-}" == "--backup-dir" && $# -eq 3 ]] || exit 2
 MODE="$1"
 BACKUP="$3"
-[[ "$EUID" -ne 0 && "$(id -un)" == actions ]] ||
-  { echo "Rollback must be started by the runner owner" >&2; exit 1; }
 [[ "$BACKUP" =~ ^/var/lib/github-runner-tools/web-v2-rollback\.[A-Za-z0-9]{8}$ ]] ||
   { echo "Unsafe rollback backup location" >&2; exit 1; }
 for cmd in sudo systemctl stat grep cp install; do
@@ -26,6 +24,8 @@ if [[ "$MODE" == "--dry-run" ]]; then
   echo "No runner services or state records would be modified."
   exit 0
 fi
+[[ "$EUID" -ne 0 && "$(id -un)" == actions ]] ||
+  { echo "Rollback must be started by the runner owner" >&2; exit 1; }
 sudo -v
 sudo test -d "$BACKUP" && ! sudo test -L "$BACKUP" ||
   { echo "Rollback backup missing or unsafe" >&2; exit 1; }

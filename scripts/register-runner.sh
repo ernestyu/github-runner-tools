@@ -500,11 +500,12 @@ if [[ "$WEB_MODE" == "1" ]]; then
     die "Registered Runner service has not reached a confirmed active state."
   web_create_stage CREATE_COMPLETE
 else
-  echo "==> Installing systemd service for user $RUNNER_USER ..."
-  sudo ./svc.sh install "$RUNNER_USER" ||
-    die "CLI Unit installation incomplete; remote registration preserved."
-  # The official v2.328.0 installer may create a group-writable 0664 Unit.
-  # No unsafe post-hoc chmod, no service start and no false Create success.
+  echo "==> Installing canonical root-owned 0644 systemd Unit for $RUNNER_USER ..."
+  # Use the exact same trusted installer as executor-mode Create. Do not
+  # delegate unit creation to official svc.sh install (can produce 0664).
+  cli_create_authority install - -
+  SERVICE_NAME="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
+  printf '%s\n' "$SERVICE_NAME" > "$RUNNER_DIR/.service"
   cli_create_authority unit - -
   cli_create_authority stage REGISTERED_START_INCOMPLETE -
   echo "==> Starting runner service..."

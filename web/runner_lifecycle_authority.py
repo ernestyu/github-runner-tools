@@ -19,6 +19,7 @@ ROOT = "/var/lib/github-runner-tools"
 ATTESTATIONS = "runner-attestations"
 CREATE_STATES = "create-state"
 REMOVE_STATES = "remove-state"
+UNIT_ATTESTATIONS = "unit-attestations"
 
 STAGES = (
     "PRE_REGISTRATION",
@@ -361,3 +362,54 @@ def remove_stage(repo: str, runner: str, runner_dir: str, user: str, stage: str)
         return {"complete": True}
     finally:
         os.close(fd)
+
+
+def create_unit_attestation(repo: str, runner: str, runner_dir: str,
+                            service: str, unit_path: str) -> None:
+    """Record a Unit generated in a trusted 0644 root creation transaction.
+
+    This historical proof is not permission to auto-repair a currently 0664
+    Unit without separately demonstrated same-inode writer exclusion.
+    """
+    _assert_root()
+    from grt_web_common import canonical_service_name
+    if service != canonical_service_name(repo, runner):
+        raise AuthorityError("Unit service scope mismatch")
+    if unit_path != "/etc/systemd/system/" + service:
+        raise AuthorityError("noncanonical Unit path")
+    parent = _safe_directory(os.path.dirname(unit_path))
+    try:
+        fd = os.open(service, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK |
+                     os.O_CLOEXEC, dir_fd=parent)
+        try:
+            st = os.fstat(fd)
+            if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_gid != 0
+                    or st.st_nlink != 1 or stat.S_IMODE(st.st_mode) != 0o644):
+                raise AuthorityError("unsafe initial Unit")
+            digest = hashlib.sha256()
+            size = 0
+            while True:
+                raw = os.read(fd, 8192)
+                if not raw:
+                    break
+                size += len(raw)
+                if size > 16384:
+                    raise AuthorityError("Unit too large")
+                digest.update(raw)
+            item = {"schema": 1, "issuer": "root-dispatcher-service-install",
+                    "repository": repo, "runner": runner, "runner_dir": runner_dir,
+                    "unit": service, "unit_path": unit_path,
+                    "device": st.st_dev, "inode": st.st_ino, "sha256": digest.hexdigest(),
+                    "mode": "0644", "issued_at": int(time.time())}
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent)
+    storefd = _store(UNIT_ATTESTATIONS)
+    try:
+        name = _key(repo, runner, runner_dir)
+        if _read_record(storefd, name) is not None:
+            raise AuthorityError("Unit provenance already exists")
+        _publish(storefd, name, item, replace=False)
+    finally:
+        os.close(storefd)

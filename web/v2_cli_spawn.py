@@ -21,7 +21,7 @@ import time
 from v2_executor_contract import Request
 from v2_token_fd import make_token_pipe, close_quietly
 
-LAUNCHER = "/usr/local/lib/github-runner-tools/v2_cli_launcher.py"
+LAUNCHER = "/usr/local/lib/github-runner-tools/web/v2_cli_launcher.py"
 PYTHON = "/usr/bin/python3"
 
 

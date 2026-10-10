@@ -27,7 +27,12 @@ class ExecutorDaemonTests(unittest.TestCase):
         t.start()
         try:
             with left:
-                left.sendall(frame)
+                try:
+                    left.sendall(frame)
+                except BrokenPipeError:
+                    if not authorize:
+                        return {"ok": False, "error": "rejected"}
+                    raise
                 size = int.from_bytes(left.recv(4), "big")
                 self.assertLess(size, 1048577)
                 while len(output) < size:

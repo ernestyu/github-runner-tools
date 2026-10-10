@@ -1,6 +1,6 @@
 # Web Management V2 — CLI-First Simplification SPEC
 
-Status: **PROPOSED / REVIEW REQUIRED / NOT FROZEN**
+Status: **REVISED AFTER B-01/B-02/B-03 AUDIT / REVIEW REQUIRED / NOT FROZEN**
 Date: 2026-10-10
 Repository: `ernestyu/github-runner-tools`
 Scope: Web management only. No modification to working CLI behavior or existing deployed runners.
@@ -133,3 +133,98 @@ Reviewers must answer:
 6. Are CI tiers and Debian E2E acceptance feasible and unambiguous?
 
 **Approval condition:** The reviewer must mark PASS/BLOCKED for architecture feasibility, reuse of CLI authority, least privilege, minimality, migration safety, testability, and acceptance. Unresolved privileged-call design counts as BLOCKED; do not grant implementation permission merely for a plausible-looking diagram.
+
+
+## 12. Binding amendment — concrete V2 execution contract (B-01 and B-02)
+
+This section resolves architecture options in §§3–4; where earlier prose was permissive, **this section is binding**. The selected design is **one resident root-owned bounded Executor service with a Unix-domain socket**, invoking the **same CLI scripts** as the interactive terminal. There is **no second lifecycle Worker Python process, separate privileged-loop thread, independent Web registration state machine, or two-hop Web-specific privileged lifecycle authority**. Do not implement an alternative sudoers-only architecture.
+
+### 12.1 Fixed request interface and admission
+
+- Web service: existing unprivileged \`grt-web\`, bound to \`127.0.0.1\`; Tailnet HTTPS via Tailscale Serve. Executor: systemd \`github-runner-tools-executor.service\`, \`User=root\`, \`NoNewPrivileges=true\`, \`ProtectSystem=strict\`, with only the exact write paths required for CLI lifecycle state, \`/home/actions\`, managed systemd unit installation and runtime socket/lock directories. Socket \`/run/github-runner-tools/executor.sock\`, owned \`root:grt-web\`, mode \`0660\`.
+- On every connection Executor checks kernel \`SO_PEERCRED\` for the configured \`grt-web\` UID (not JSON-supplied identity); rejects all other callers before parsing credentials. The socket pathname, server code and service files must be root-owned and not writable by \`grt-web\` or \`actions\`. Limit request size; serialize mutation requests by the **existing** shared lifecycle lock; do not introduce a second lock authority.
+- JSON metadata is exactly \`{"op":"create","repository":"OWNER/REPO"}\`, \`{"op":"remove","repository":"OWNER/REPO","runner_name":"<verified>","runner_id":<verified integer>,"instance":"<verified instance ID>"}\`, or \`{"op":"status"}\`. Reject additional/missing keys. Repository is validated by the existing shared CLI identity function. The Remove tuple is a *selection claim* only: Executor independently verifies the expected directory, registered \`.runner\` identity, root-owned attestation, GitHub runner ID where available, expected service and active state immediately before any mutation. A changed or ambiguous target yields \`TARGET_STALE\` and performs no removal. Never trust a browser-provided path, service name or CLI flag.
+- \`status\` spawns \`status-runners.sh --json\` as \`actions\`, without a token or mutation lock; filters fields returned to Web and does not change state. Create/Remove spawn fixed installed \`register-runner.sh\`/\`remove-runner.sh\` entrypoints with **no arbitrary user-supplied options**. All CLI paths must be pinned, root-owned, read-only to \`grt-web\` and to ordinary runner jobs; do not execute a writable Git checkout as authority.
+- Executor child begins as root only to set supplementary groups to empty and permanently \`setresgid(actions)\`/\`setresuid(actions)\` before \`execve\` of the CLI. Verify post-drop real/effective/saved IDs and no effective/permitted/inheritable/ambient capabilities; do not rely on an \`execve\` setuid binary. The Executor parent retains the narrowly bounded root actions described in §12.3. No API to execute scripts supplied by clients.
+- Parent → CLI private Unix \`socketpair\` for **privileged operations only**, and separate one-shot pipe for token; both passed as fixed FD numbers (e.g. \`3\` token, \`4\` privilege channel). These are **process-internal transports**, not independent privileged Web worker services. Executor checks that each internal privileged request belongs to its current authenticated operation, repository, instance and runner directory; reject any operation outside the current transaction stage.
+
+### 12.2 Frozen noninteractive CLI contract
+
+The existing interactive CLI and its implementation remain the source of lifecycle behavior. Add only an **internal executor invocation mode** to the three scripts; no public \`--token\` argument and no alternate \`web-worker\` lifecycle logic.
+
+| Operation | Fixed CLI argv after privilege drop | Secret / confirmation |
+|---|---|---|
+| Create | \`/usr/local/lib/github-runner-tools/cli/register-runner.sh --executor-mode --token-fd 3 --privileged-fd 4 --lock-already-held OWNER/REPO\` | Private token FD 3, one registration token, no TTY |
+| Remove | \`/usr/local/lib/github-runner-tools/cli/remove-runner.sh --executor-mode --token-fd 3 --privileged-fd 4 --lock-already-held OWNER/REPO\` | Private token FD 3, one removal token, no TTY |
+| Status | \`/usr/local/lib/github-runner-tools/cli/status-runners.sh --json\` | No token, no confirmation, always unprivileged |
+
+- These names and paths are **target V2 interfaces to implement**, not claims that current scripts already accept them. \`--executor-mode\` is internal: reject it absent a verified private channel whose \`SO_PEERCRED\` peer is the Executor root process and a matching request-scoped response. Reject invocation from ordinary \`actions\` shell with forged environment flags or FDs. Terminal CLI defaults to original TTY token prompt, Remove \`REMOVE\` confirmation and interactive sudo authorization.
+- Web authenticates the administrator and obtains a deliberate Remove confirmation in its session; Executor verifies a single-use confirmation nonce bound to repository, runner name, runner ID and instance, with a short expiry, consumed before any destructive operation. The CLI executor-mode treats this **verified confirmation** as the exact equivalent of its own interactive \`REMOVE\` prompt; it does not ask TTY again. \`recover_local\` is deliberately **not** a V2 Web operation; leave it CLI-only under separate manual administrator control.
+- Web sends the short-lived token once over the authenticated Unix socket with a bounded binary length field separate from JSON metadata. Executor validates bytes and never serializes them into JSON, argv, env, journal or files; creates a CLOEXEC pipe for transmission, clearing CLOEXEC **only** on the numeric read descriptor intentionally passed into the dropped child. Parent closes the token read descriptor after spawning and its write descriptor after sending once; child closes its token FD immediately after handing it to the official GitHub configuration adapter. No retries or token caching; wipe intermediate application buffers as best effort, with no claim of guaranteed memory erasure.
+- CLI stages, lock, registration, service handling, remote outcome recording and cleanup are **shared functions/branches** for interactive and executor modes; only credential/confirmation acquisition and privileged-call transport differ. Existing V1 \`--web-worker\` functions must not become an alternative lifecycle implementation. Explicitly prove shared behavior through tests calling both entry modes against the same simulated backends.
+
+### 12.3 Enumerated root operations; no general sudo
+
+Executor exposes **no direct root API to the browser**. Internal CLI ↔ Executor privileged requests have a fixed enum and typed fields bound to the active transaction:
+
+- \`create_stage\`, \`registration_attestation_create\`, \`registration_permission_normalize\`, \`unit_validate_normalize\`, \`unit_attestation_create\`, \`remove_stage\` — operate only in \`/var/lib/github-runner-tools\` with validated CLI-owned state schema and verified instance.
+- \`service_install\`, \`service_start\`, \`service_state\`, \`service_stop\`, \`service_uninstall\` — only for the canonical, validated \`actions.runner.*\` unit belonging to the exact selected runner; never arbitrary systemd unit names or shell commands.
+- \`runner_dependency_install\` — only if required for the pinned official runner distribution, using a reviewed **root-owned dependency installation entrypoint with fixed validated inputs**; no execution of downloaded \`bin/installdependencies.sh\` with unrestricted root privileges. If the required dependencies are already present, this operation is a no-op; unexpected dependency requirements fail closed for administrator-controlled host setup.
+- Existing lock initialization if needed — root-owned \`/run/lock/github-runner-tools\` with configured runner-group rights, never browser-selected locations.
+
+The Executor implements these using direct filesystem APIs or fixed \`systemctl\` argv, with strict service/unit validation and no generic \`sudo\` request. \`sudo ./svc.sh ...\` within executor-mode CLI **must be routed to the corresponding fixed privileged enum**; interactive CLI remains unchanged. Root operations require the current transaction’s immutable repository/instance/directory binding. Web cannot select privileged enum operations independently.
+
+There is one Executor privileged-operation table, one token delivery mechanism and one CLI lifecycle flow, rather than V1's separate Web worker, per-operation adapters and Web-controlled stages. For reviewer verification, implementation must include a call graph comparing V1 and V2 processes and enumerate all remaining root-owned components; merely renaming Dispatcher is not a valid simplification.
+
+### 12.4 Timeout/crash/unavailable GitHub semantics
+
+- Executor acquires the shared mutation lock **before** CLI invocation and releases it only after the CLI process group and in-flight privileged requests have terminated; requests arriving while busy receive \`BUSY\`.
+- A timeout sends TERM to the dedicated process group, then a bounded KILL after grace period, closes FDs and records \`OUTCOME_UNKNOWN\` if official GitHub Create/Remove could have started. It must **not** delete directories or re-run \`config.sh\` solely because of timeout.
+- If Executor itself crashes, systemd restarts it but **never automatically resumes** incomplete Create/Remove. Existing durable CLI state is checked on every admission; missing/ambiguous evidence fails closed. A persistent per-instance operation stage must be written **before** each external registration/removal boundary so an abrupt crash is distinguishable from confirmed completion.
+- UI displays \`COMPLETE\`, \`FAILED_PRE_EXTERNAL\`, or \`UNKNOWN_RECONCILIATION_REQUIRED\` plus a safe correlation ID. No raw token, CLI stdout/stderr or traceback reaches the UI or journal. GitHub registration/removal is not auto-retried. The administrator must use existing reviewed CLI reconciliation/recovery procedures for ambiguous cases.
+
+## 13. Binding amendment — V1 safety records and migration (B-03)
+
+**Choice: retain the existing root-owned lifecycle authority schema in V2. No migration or deletion in first V2 release.** CLI becomes the *sole calling authority* and the fixed Executor is only the root write/verify adapter. The schema's safety facts are shared by CLI and Web; the Web server never writes them. Existing state records remain at \`/var/lib/github-runner-tools\` in original layout, with ownership, permissions and historical identity preserved. Removal of V1 *application orchestration* does **not** imply removal of lifecycle evidence.
+
+| V1 data/capability | V2 binding decision | Writer / verifier |
+|---|---|---|
+| Browser sessions, confirmation forms, transient in-memory nonces | Reuse minimal Web auth/CSRF and single-use confirmation; old Web-only transient session state can expire naturally | Unprivileged Web handles UX; Executor independently verifies Remove nonce/tuple |
+| Create transaction / instance ID and active-record pointer | **KEEP unchanged**, one new instance per attempt, no overwriting old cycles | CLI shared lifecycle code via Executor |
+| Root-owned registration attestation and GitHub \`agentId\` binding | **KEEP unchanged**; missing or mismatch blocks remove, recovery or replacement | Existing CLI authority helpers via Executor |
+| Unit attestation and installed-unit provenance | **KEEP unchanged**; exact directory and service/unit identity required | Existing CLI authority helpers via Executor |
+| \`REGISTRATION_OUTCOME_UNKNOWN\` and \`REMOTE_REMOVE_OUTCOME_UNKNOWN\` | **KEEP** sticky until independently reconciled; block new Create/Remove on that identity | CLI state guard; Executor enforces admission |
+| \`REGISTERED_REMOVED_LOCAL_CLEANUP_PENDING\` | **KEEP**; only verified recovery may complete local cleanup, never repeat remote removal | Existing CLI recovery/authority; Web cannot force |
+| Completed Create/Remove cycles and history | **KEEP** immutable per-instance/cycle records | CLI authority; no silent purge |
+| Six existing Debian Runner services and their directories | **UNCHANGED**, read-only inventory only; no automatic adoption, recertification or migration | Protected external installation fixtures |
+| Web-only V1 privileged RPC framing and worker orchestration | **REMOVE AFTER V2 ACCEPTANCE**; not historical lifecycle data | No writer; do not remove until rollback window ends |
+
+Migration process is **no data conversion**: (1) snapshot existing root-owned state and SHA/ownership/mode of any records; (2) verify schema readable using the existing authority library without modification; (3) refuse deploy if an incomplete or unknown active record exists for the disposable test repo; (4) install V2 side-by-side or with a reversible service switch, leaving the V1 code/config and records archived root-only; (5) use existing records unchanged; (6) rollback reactivates V1 code/config and the **same state directory without replay, downgrade or rewriting data**. If V2 has written new records and older V1 cannot interpret them, rollback **must refuse state mutation** until a reviewed recovery plan is approved. No automatic state truncation, flattening, synthetic \`REMOVE_COMPLETE\` or migrated replacement ID.
+
+State transition invariants must be tested for active-pointer reuse, instance binding, remote unknown, cleanup pending and historical cycles in both invocation modes. No V2 path may bypass these checks because the token is temporary or Tailnet access is private.
+
+## 14. Binding amendment — Create Unit compatibility (M-01)
+
+The CLI must handle the official GitHub runner \`svc.sh install\` path without weakening provenance checks. V2 executor-mode shall **not invoke the official \`svc.sh install\` as root and then silently fix an untrusted Unit**. Instead:
+
+1. Generate/install the known canonical Unit through the Executor's fixed \`service_install\` operation using a root-owned **pinned approved template** and validated repository/runner identity, with owner \`root:root\`, mode \`0644\` from creation; the runner directory and \`runsvc.sh\` must already be validated and attested.
+2. Validate no preexisting unit or symlink; generate into same filesystem temporary file with \`O_EXCL\`, write/fsync, chmod/chown and atomically rename; run \`systemctl daemon-reload\` and \`enable\` using fixed argv.
+3. Use the existing service/Unit attestation and systemd verification logic. Any fragment/execution/drop-in mismatch fails closed and preserves state; no blanket \`chmod\` on unknown Units.
+4. Interactive CLI may retain \`svc.sh install\` only when existing official Unit provenance/permission guards accept it. V2 implementation must provide a shared validated installation function, and **CLI interactive Create must also use the known canonical template by default** so both modes reach the same known-good Unit path; changing interactive CLI behavior must be regression tested and explicitly noted as a necessary compatibility change, not concealed as a Web workaround.
+5. This affects new Runner Units only; no service-unit rewriting of six existing Runners.
+
+## 15. Binding amendment — exact Remove identity (m-01)
+
+V2 Web supports one runner per canonical repository-derived directory in the initial release. The Status row is derived from verified \`.runner\` metadata and canonical local service information (not untrusted labels alone). The UI displays \`OWNER/REPO\`, directory identity, runner name, and GitHub runner ID; before presenting Remove it resolves the root-owned attestation and active instance, otherwise disables removal. Browser sends the tuple plus a single-use confirmation bound to that identity; Executor re-reads and independently compares all identity fields. Multiple runners per repository, legacy alias directories, missing ID/attestation, service mismatch or ambiguous historical active pointer are **not supported for Web Remove** and require manual CLI administrator review. Do not infer runner identity from repository alone.
+
+## 16. Revised architecture acceptance checklist
+
+- One bounded Executor daemon with authenticated Unix socket, no separate Worker daemon, no arbitrary sudo interface.
+- CLI invocation mode and FD protocol exactly as §12; interactive TTY behavior preserved, single shared lifecycle logic.
+- Enumerated privileged operations only; execute reviewed root-owned binaries/templates, not downloaded root scripts.
+- No destructive V1 record migration; retain existing root-owned safety facts and exact history.
+- New Unit installs use fixed trustworthy root-created \`0644\` template and preserve Unit validation.
+- Remove bound to repository + runner name + verified GitHub ID + active instance, not repo string alone.
+- Prove **reduced** processes, control messages and independent lifecycle branches with a before/after inventory in implementation audit; otherwise architecture is BLOCKED.
+- Run focused Development Check for the SPEC changed HEAD; do **not** run Integration Check or deploy before separate authorization.
+

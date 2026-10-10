@@ -18,7 +18,6 @@ case "${1:---dry-run}" in
   *) echo "Usage: setup-web-management-v2.sh [--dry-run|--apply]" >&2; exit 2 ;;
 esac
 [[ "$EUID" -ne 0 ]] || { echo "Run as authorized runner owner, not root" >&2; exit 1; }
-[[ "$(id -un)" == actions ]] || { echo "This upgrade requires the configured actions runner user" >&2; exit 1; }
 for cmd in sudo systemctl install stat mktemp getent grep; do
   command -v "$cmd" >/dev/null || { echo "Missing dependency: $cmd" >&2; exit 1; }
 done
@@ -28,6 +27,10 @@ if [[ "$MODE" == "dry-run" ]]; then
   echo "DRY-RUN ONLY. Explicit --apply and separate Debian authorization required."
   exit 0
 fi
+[[ "$(id -un)" == actions ]] ||
+  { echo "This upgrade requires the configured actions runner user" >&2; exit 1; }
+systemctl is-active --quiet tailscaled ||
+  { echo "Tailscale is not active; do not expose Web backend" >&2; exit 1; }
 sudo -v
 for file in "$CONFIG" "$AUTH" "$WEB_UNIT"; do
   sudo test -f "$file" && ! sudo test -L "$file" ||

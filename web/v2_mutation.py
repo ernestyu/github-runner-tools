@@ -111,6 +111,9 @@ def execute_mutation(request: Request, secret: bytes | None,
             if os.WEXITSTATUS(status) != 0:
                 return diagnostic(runtime, request, "lifecycle_failed",
                                   exit_code=os.WEXITSTATUS(status))
+            from v2_closeout import completed_mutation
+            if not completed_mutation(runtime, request, remove_instance=request.instance):
+                return diagnostic(runtime, request, "completion_not_verified")
             return {"ok": True}
         finally:
             try:

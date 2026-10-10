@@ -8,7 +8,10 @@ REPO="owner/repo"; STAGES="$TMP/stages"; PRIV="$TMP/privileged"
 : > "$STAGES"; : > "$PRIV"
 export RUNNER_BASE_DIR="$TMP/runner-home" GRT_EXECUTOR_CONTEXT=1
 export GRT_TEST_MODE=1 GRT_TEST_LOCK_DIR="$TMP/lock"
-export GRT_PTY_ADAPTER="$ROOT/web/pty_token_adapter.py"
+cp "$ROOT/web/pty_token_adapter.py" "$TMP/pty_token_adapter.py"
+chmod 0755 "$TMP/pty_token_adapter.py"
+export GRT_PTY_ADAPTER="$TMP/pty_token_adapter.py"
+export RUNNER_NAME="local-ci-owner--repo"
 export RUNNER_TOOLS_LIB_ONLY=1
 source "$ROOT/scripts/register-runner.sh"
 web_context_check() { :; }

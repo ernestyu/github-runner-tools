@@ -15,6 +15,7 @@ LOCAL_ARCHIVE_CONFIG="/etc/github-runner-tools/archive.conf"
 MUTATION_LOCK_DIR="/run/lock/github-runner-tools"
 MUTATION_LOCK_FILE="$MUTATION_LOCK_DIR/mutation.lock"
 WEB_MODE=0
+CREATE_DIAG_STAGE=preflight
 TOKEN_FD=""
 PRIVILEGED_FD=""
 LOCK_ALREADY_HELD=0
@@ -46,6 +47,15 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 require_command() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
 
 cleanup() {
+  local exit_code="$?"
+  # Fixed vocabulary only. Never emit the temporary token or descendant output.
+  if [[ "${WEB_MODE:-0}" == 1 && "$exit_code" != 0 ]]; then
+    case "${CREATE_DIAG_STAGE:-preflight}" in
+      preflight|release_metadata|runner_download|registration|post_registration|service_install|service_start) ;;
+      *) CREATE_DIAG_STAGE=preflight ;;
+    esac
+    printf 'GRT_CREATE_DIAG_V1 stage=%s exit=%s\n' "$CREATE_DIAG_STAGE" "$exit_code" >&2
+  fi
   unset TOKEN || true
   [[ -n "${RELEASE_JSON:-}" ]] && rm -f -- "$RELEASE_JSON" || true
   [[ -n "${ARCHIVE_PATH:-}" ]] && rm -f -- "$ARCHIVE_PATH" || true
@@ -371,6 +381,7 @@ if [[ "$WEB_MODE" != "1" ]]; then
   [[ -n "$TOKEN" ]] || die "Registration token cannot be empty."
 fi
 
+CREATE_DIAG_STAGE=release_metadata
 RELEASE_JSON="$(mktemp)"
 if [[ -n "$TAG" ]]; then API_URL="https://api.github.com/repos/actions/runner/releases/tags/$TAG"; echo "==> Fetching official GitHub Actions Runner release $TAG..."; else API_URL="https://api.github.com/repos/actions/runner/releases/latest"; echo "==> Fetching latest official GitHub Actions Runner release..."; fi
 curl -fsSL --retry 3 --retry-delay 2 "$API_URL" -o "$RELEASE_JSON" || die "Could not fetch GitHub Actions Runner release metadata."
@@ -385,6 +396,7 @@ fi
 ARCHIVE="actions-runner-linux-${RUNNER_ARCH}-${VERSION}.tar.gz"
 DOWNLOAD_URL="$(jq -er --arg NAME "$ARCHIVE" '.assets[] | select(.name == $NAME) | .browser_download_url' "$RELEASE_JSON")" || die "Could not find $ARCHIVE in official release $TAG"
 DIGEST="$(jq -r --arg NAME "$ARCHIVE" '.assets[] | select(.name == $NAME) | (.digest // empty)' "$RELEASE_JSON")"
+CREATE_DIAG_STAGE=runner_download
 ARCHIVE_PATH="$RUNNER_DIR/$ARCHIVE"
 
 echo "==> Runner release: $TAG"
@@ -409,6 +421,7 @@ else
   sudo ./bin/installdependencies.sh
 fi
 
+CREATE_DIAG_STAGE=registration
 if [[ "$WEB_MODE" == "1" ]]; then
   web_create_stage PRE_REGISTRATION
 else
@@ -443,6 +456,7 @@ fi
 REGISTRATION_COMPLETE=1
 
 if [[ "$WEB_MODE" == "1" ]]; then
+  CREATE_DIAG_STAGE=post_registration
   web_create_stage REGISTERED_PERMISSION_INCOMPLETE
   NORMALIZE_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" \
     --arg runner_name "$RUNNER_NAME" \
@@ -456,6 +470,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
     --arg runner_name "$RUNNER_NAME" --arg version "$VERSION" \
     '{op:"registration_attestation_create",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,version:$version}')"
   web_priv_request "$ATTEST_REQ" || die "Root-controlled registration attestation failed."
+  CREATE_DIAG_STAGE=service_install
   web_create_stage REGISTERED_UNIT_INCOMPLETE
 else
   cli_create_authority stage REGISTERED_PERMISSION_INCOMPLETE -
@@ -478,6 +493,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
   SERVICE_NAME="$(jq -er '.service' <<<"$WEB_PRIV_RESPONSE")" || die "Privileged service installer returned invalid identity."
   printf '%s\n' "$SERVICE_NAME" > "$RUNNER_DIR/.service"
 
+  CREATE_DIAG_STAGE=service_start
   web_create_stage REGISTERED_START_INCOMPLETE
 
   START_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" --arg runner_name "$RUNNER_NAME" --arg service "$SERVICE_NAME" \

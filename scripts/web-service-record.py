@@ -78,7 +78,7 @@ def open_anchored_directory(path: str) -> int:
 
 
 def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, proof: str = "") -> None:
-    if mode not in ("check", "quarantine", "verify"):
+    if mode not in ("identity", "check", "quarantine", "verify"):
         raise ValueError("invalid mode")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("invalid repo")
@@ -167,6 +167,8 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, pr
                     raise ValueError("quarantine replaced")
                 if not same_directory(identity, os.stat(name, dir_fd=base_fd, follow_symlinks=False)):
                     raise ValueError("directory changed")
+                return
+            if mode == "identity":
                 return
             st = record(fd, ".service", os.getuid(), unit.encode("ascii"))
             if mode == "check":

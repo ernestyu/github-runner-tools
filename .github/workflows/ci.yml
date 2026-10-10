@@ -33,6 +33,7 @@ jobs:
           python3 tests/test-web-v2-cli-executor-flags.py
           python3 tests/test-web-v2-cli-launcher.py
           python3 tests/test-web-v2-executor-daemon.py
+          python3 tests/test-web-v2-integration.py
       - name: Existing pure regression
         run: |
           bash tests/test-pure.sh

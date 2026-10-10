@@ -155,6 +155,7 @@ done
 for file in register-runner.sh remove-runner.sh status-runners.sh; do
   sudo install -o root -g root -m 0755 "$ROOT/scripts/$file" "$INSTALL_ROOT/cli/$file"
 done
+sudo install -o root -g root -m 0755 "$ROOT/scripts/web-service-record.py" "$INSTALL_ROOT/cli/web-service-record.py"
 
 if sudo test -L "$CONFIG_DIR"; then die "Configuration directory must not be a symlink."; fi
 if sudo test -e "$CONFIG_DIR"; then

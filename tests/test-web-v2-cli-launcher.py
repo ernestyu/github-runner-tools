@@ -12,21 +12,21 @@ import v2_cli_launcher as launcher
 class LauncherTests(unittest.TestCase):
     def test_create_fixed_cli(self):
         self.assertEqual(launcher.resolve_action("create", "ernestyu/github-runner-tools"), (
-            "/usr/local/lib/github-runner-tools/cli/register-runner.sh",
+            "/usr/local/lib/github-runner-tools/web/cli/register-runner.sh",
             "--executor-mode", "--token-fd", "3",
             "--privileged-fd", "4", "--lock-already-held",
             "ernestyu/github-runner-tools"))
 
     def test_remove_fixed_cli(self):
         argv = launcher.resolve_action("remove", "owner/repo")
-        self.assertEqual(argv[0], "/usr/local/lib/github-runner-tools/cli/remove-runner.sh")
+        self.assertEqual(argv[0], "/usr/local/lib/github-runner-tools/web/cli/remove-runner.sh")
         self.assertEqual(argv[-1], "owner/repo")
         self.assertNotIn("bash", argv)
         self.assertNotIn("sudo", argv)
 
     def test_status_no_repo(self):
         self.assertEqual(launcher.resolve_action("status", None),
-                         ("/usr/local/lib/github-runner-tools/cli/status-runners.sh", "--json"))
+                         ("/usr/local/lib/github-runner-tools/web/cli/status-runners.sh", "--json"))
         with self.assertRaises(launcher.LaunchError):
             launcher.resolve_action("status", "owner/repo")
 

@@ -282,8 +282,10 @@ class AuthorityTests(unittest.TestCase):
         fake_systemd = self.base / "pretend-unit-root"
         fake_systemd.mkdir()
         unit = fake_systemd / service
-        unit.write_text("[Service]\nUser=fixture\nWorkingDirectory=" + self.repo +
-                        "\nExecStart=" + self.repo + "/runsvc.sh\n")
+        unit.write_text("[Unit]\nDescription=GitHub Actions Runner (example/repo)\nAfter=network.target\n\n"
+                        "[Service]\nExecStart=" + self.repo + "/runsvc.sh\nUser=fixture\nWorkingDirectory=" +
+                        self.repo + "\nKillMode=process\nKillSignal=SIGTERM\nTimeoutStopSec=5min\n\n"
+                        "[Install]\nWantedBy=multi-user.target\n")
         unit.chmod(0o664)
         real_safe = auth._safe_directory
         fake_account = SimpleNamespace(pw_uid=0, pw_gid=0, pw_dir=str(self.base))

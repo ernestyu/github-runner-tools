@@ -29,7 +29,7 @@ Options:
   --runner-name NAME       Override runner name
   --labels LIST            Override custom labels (comma-separated)
   --runner-version VERSION Pin GitHub Actions Runner version (2.328.0 or v2.328.0)
-  --clean-incomplete       Remove an existing non-empty, unconfigured target directory
+  --clean-incomplete       DISABLED (unsafe old-directory deletion; always refused)
   -h, --help               Show this help
 
 Environment variables:
@@ -246,6 +246,20 @@ configure_runner_archive_hook() {
   grt_set_runner_env_value "$env_file" ACTIONS_RUNNER_HOOK_JOB_COMPLETED "$LOCAL_ARCHIVE_HOOK" || die "Could not configure completed hook in $env_file"
 }
 
+create_target_preflight() {
+  local target="$1" first_entry
+  # This read-only gate is deliberately executed before any Create
+  # lifecycle admission, token acquisition or official registration.
+  if [[ -e "$target" || -L "$target" ]]; then
+    [[ -d "$target" && ! -L "$target" ]] ||
+      die "Runner path is not a safe directory; preserve it for administrator review."
+    first_entry="$(find "$target" -mindepth 1 -maxdepth 1 -print -quit)" ||
+      die "Unable to inspect Runner directory; preserve it for administrator review."
+    [[ -z "$first_entry" ]] ||
+      die "Existing non-empty Runner directory requires independent lifecycle review; Create will not delete it."
+  fi
+}
+
 main() {
 if [[ ${EUID} -eq 0 ]]; then die "Do not run this script as root. Run it as the user that should own the runner."; fi
 # Secure all official registration files from first creation, regardless of the
@@ -347,15 +361,8 @@ Architecture : $RUNNER_ARCH_LABEL ($RUNNER_ARCH asset)
 Runner ver.  : $RUNNER_VERSION_DISPLAY
 CONFIG
 
-# A non-empty existing directory may be a prior Create/Remove UNKNOWN state,
-# even when .runner/.credentials/.service are missing. Never delete or reuse
-# it from normal Create; only a separately authorized cleanup may do that.
-if [[ -e "$RUNNER_DIR" || -L "$RUNNER_DIR" ]]; then
-  [[ -d "$RUNNER_DIR" && ! -L "$RUNNER_DIR" ]] ||
-    die "Runner path already exists but is not a safe directory; preserve it for administrator review."
-  [[ -z "$(find "$RUNNER_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]] ||
-    die "Existing non-empty Runner directory requires independent lifecycle review; Create will not delete it."
-fi
+# No CLI flag or normal Create phase is authorized to delete an old tree.
+create_target_preflight "$RUNNER_DIR"
 if [[ ! -d "$RUNNER_DIR" ]]; then mkdir -- "$RUNNER_DIR"; CREATED_RUNNER_DIR=1; fi
 cd "$RUNNER_DIR"
 

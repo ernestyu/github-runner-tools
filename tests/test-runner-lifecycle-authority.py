@@ -107,6 +107,9 @@ class AuthorityTests(unittest.TestCase):
 
     def test_dispatcher_unit_provenance_is_root_owned_and_mode_pinned(self):
         auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_PERMISSION_INCOMPLETE")
+        auth.create_attestation(REPO, RUNNER, self.repo, "root", "2.328.0")
+        auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_UNIT_INCOMPLETE")
         service = "actions.runner.example-repo.fixture.service"
         pretend_systemd = self.base / "pretend-systemd"
         pretend_systemd.mkdir()

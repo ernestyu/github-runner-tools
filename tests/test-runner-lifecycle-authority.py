@@ -12,11 +12,13 @@ import shutil
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "web"))
 import runner_lifecycle_authority as auth
+import cli_create_authority as cli
 
 REPO = "example/repo"
 RUNNER = "fixture"
@@ -173,6 +175,47 @@ class AuthorityTests(unittest.TestCase):
             auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
         self.assertFalse((self.base / "state" / "remove-state").exists()
                          and list((self.base / "state" / "remove-state").glob("*.json")))
+
+    def test_cli_create_rejects_official_0664_unit_and_preserves_partial_stage(self):
+        service = "actions.runner.example-repo.fixture.service"
+        fake_systemd = self.base / "pretend-unit-root"
+        fake_systemd.mkdir()
+        unit = fake_systemd / service
+        unit.write_text("[Service]\\nUser=root\\nWorkingDirectory=" + self.repo +
+                        "\\nExecStart=" + self.repo + "/runsvc.sh\\n")
+        unit.chmod(0o664)
+        real_safe = auth._safe_directory
+        fake_account = SimpleNamespace(pw_uid=0, pw_gid=0, pw_dir=str(self.base))
+
+        def safe(path):
+            if path == "/etc/systemd/system":
+                return os.open(fake_systemd, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            return real_safe(path)
+
+        def invoke(operation, action, version="-"):
+            cli.main([operation, REPO, RUNNER, self.repo, action, version])
+
+        with (mock.patch.dict(os.environ, {"SUDO_USER": "fixture"}),
+              mock.patch("pwd.getpwnam", return_value=fake_account),
+              mock.patch.object(cli, "_safe_directory", side_effect=safe),
+              mock.patch.object(auth, "_safe_directory", side_effect=safe)):
+            invoke("stage", "PRE_REGISTRATION")
+            invoke("stage", "REGISTERED_PERMISSION_INCOMPLETE")
+            invoke("attest", "-", "2.328.0")
+            invoke("stage", "REGISTERED_UNIT_INCOMPLETE")
+            with self.assertRaises(auth.AuthorityError):
+                invoke("unit", "-")
+            self.assertEqual(auth._cycle_record(
+                auth.CREATE_STATES, REPO, RUNNER, self.repo,
+                auth._current(REPO, RUNNER, self.repo)["instance"])["stage"],
+                "REGISTERED_UNIT_INCOMPLETE")
+            self.assertEqual(unit.stat().st_mode & 0o777, 0o664)
+            unit.chmod(0o644)
+            invoke("unit", "-")
+            invoke("stage", "REGISTERED_START_INCOMPLETE")
+            invoke("stage", "REGISTERED_HEALTH_UNKNOWN")
+            invoke("stage", "CREATE_COMPLETE")
+        self.assertEqual(len(list((self.base / "state" / "unit-attestations").glob("*.json"))), 1)
 
     def test_same_repo_new_lifecycle_uses_distinct_proofs_and_inode(self):
         self.complete_create()

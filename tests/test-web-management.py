@@ -1333,7 +1333,7 @@ class OfficialRemoveDiagnosticsTests(unittest.TestCase):
         # exclusively uses the private FD/PTY adapter. The two contracts
         # are selected by the internal executor mode.
         self.assertIn('--mode remove -- ./config.sh remove', source)
-        start = source.index('if [[ "$EXECUTOR_MODE" == "1" ]]; then\\n    # V2 consumes')
+        start = source.index('if [[ "$EXECUTOR_MODE" == "1" ]]; then\n    # V2 consumes')
         end = source.index('elif ( exec {RESULT_FD}>&-;', start)
         self.assertNotIn('--token "$TOKEN"', source[start:end])
         self.assertIn('./config.sh remove --token "$TOKEN"', source[end:])

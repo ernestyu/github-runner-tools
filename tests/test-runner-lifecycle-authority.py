@@ -11,6 +11,7 @@ import pwd
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "web"))
@@ -93,6 +94,48 @@ class AuthorityTests(unittest.TestCase):
             auth.create_attestation(REPO, RUNNER, self.repo, "root", "2.328.0")
         self.assertFalse((self.base / "state" / "runner-attestations").exists()
                          and list((self.base / "state" / "runner-attestations").glob("*.json")))
+
+    def test_dispatcher_unit_provenance_is_root_owned_and_mode_pinned(self):
+        service = "actions.runner.example-repo.fixture.service"
+        pretend_systemd = self.base / "pretend-systemd"
+        pretend_systemd.mkdir()
+        (pretend_systemd / service).write_text("[Service]\\nUser=root\\n")
+        (pretend_systemd / service).chmod(0o644)
+        original = auth._safe_directory
+
+        def route(path):
+            if path == "/etc/systemd/system":
+                return os.open(pretend_systemd, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            return original(path)
+
+        with mock.patch.object(auth, "_safe_directory", side_effect=route):
+            auth.create_unit_attestation(REPO, RUNNER, self.repo, service,
+                                         "/etc/systemd/system/" + service)
+        proofs = list((self.base / "state" / "unit-attestations").glob("*.json"))
+        self.assertEqual(len(proofs), 1)
+        item = json.loads(proofs[0].read_text())
+        self.assertEqual(item["unit"], service)
+        self.assertEqual(item["mode"], "0644")
+        self.assertEqual(proofs[0].stat().st_mode & 0o777, 0o600)
+        self.assertNotIn("SYNTHETIC_NOT_SECRET", proofs[0].read_text())
+
+    def test_initial_group_writable_unit_is_not_trusted(self):
+        service = "actions.runner.example-repo.fixture.service"
+        folder = self.base / "pretend-systemd"
+        folder.mkdir()
+        (folder / service).write_text("[Service]\\n")
+        (folder / service).chmod(0o664)
+        original = auth._safe_directory
+
+        def route(path):
+            if path == "/etc/systemd/system":
+                return os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            return original(path)
+
+        with mock.patch.object(auth, "_safe_directory", side_effect=route):
+            with self.assertRaises(auth.AuthorityError):
+                auth.create_unit_attestation(REPO, RUNNER, self.repo, service,
+                                             "/etc/systemd/system/" + service)
 
     def test_attestation_wrong_repository_rejected(self):
         auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")

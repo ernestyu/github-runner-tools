@@ -1,0 +1,23 @@
+name: Integration Check
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install full-suite prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq rsync
+      - name: Full isolated test suite
+        run: bash tests/run-all.sh

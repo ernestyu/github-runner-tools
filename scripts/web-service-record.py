@@ -128,10 +128,17 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, pr
             quarantines = [n for n in entries if n.startswith(PREFIX)]
             if mode != "verify" and quarantines:
                 raise ValueError("stale quarantine")
+            registration_state = {}
+            for filename in (".runner", ".credentials"):
+                state = os.stat(filename, dir_fd=fd, follow_symlinks=False)
+                if (not stat.S_ISREG(state.st_mode) or state.st_uid != os.getuid()
+                        or state.st_nlink != 1 or state.st_mode & 0o022):
+                    raise ValueError("invalid registration metadata")
+                registration_state[filename] = state
             metadata_fd = os.open(".runner", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
             try:
-                if not stat.S_ISREG(os.fstat(metadata_fd).st_mode):
-                    raise ValueError("metadata type")
+                if not same(registration_state[".runner"], os.fstat(metadata_fd)):
+                    raise ValueError("metadata changed")
                 raw = os.read(metadata_fd, 16385)
                 if len(raw) > 16384:
                     raise ValueError("oversize metadata")
@@ -143,6 +150,9 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, pr
                 raise ValueError("metadata repo mismatch")
             if metadata.get("agentName") != runner:
                 raise ValueError("metadata name mismatch")
+            for filename, state in registration_state.items():
+                if not same(state, os.stat(filename, dir_fd=fd, follow_symlinks=False)):
+                    raise ValueError("registration metadata changed")
             if mode == "verify":
                 match = re.fullmatch(r"(\.grt-service-reconcile-[0-9a-f]{32}):(\d+):(\d+):(\d+)", proof)
                 if not match or quarantines != [match.group(1)]:
@@ -179,6 +189,9 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, pr
                     pass
                 if not same_directory(identity, os.stat(name, dir_fd=base_fd, follow_symlinks=False)):
                     raise ValueError("runner directory changed")
+                for filename, state in registration_state.items():
+                    if not same(state, os.stat(filename, dir_fd=fd, follow_symlinks=False)):
+                        raise ValueError("registration metadata changed")
                 print(f"{quarantine}:{moved.st_dev}:{moved.st_ino}:{moved.st_ctime_ns}", flush=True)
             except Exception:
                 try:

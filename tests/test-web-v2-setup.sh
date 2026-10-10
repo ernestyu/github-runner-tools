@@ -28,3 +28,13 @@ old_stop=$(grep -n "sudo systemctl disable --now github-runner-tools-dispatch.se
 new_start=$(grep -n "sudo systemctl enable --now github-runner-tools-executor.service" "$source_file" | head -1 | cut -d: -f1)
 [[ -n "$old_stop" && -n "$new_start" && "$old_stop" -lt "$new_start" ]]
 echo "PASS: old runtime owner is stopped before new Executor binds its socket"
+
+# A V1 writer must be excluded and V1 stopped *before* copying root state.
+cutover_lock_line=$(grep -nF 'flock -n "$CUTOVER_LOCK"' "$source_file" | head -1 | cut -d: -f1)
+state_backup_line=$(grep -nF 'BACKUP="$(sudo mktemp' "$source_file" | head -1 | cut -d: -f1)
+web_stop_line=$(grep -nF 'sudo systemctl stop github-runner-tools-web.service' "$source_file" | head -1 | cut -d: -f1)
+[[ -n "$cutover_lock_line" && -n "$state_backup_line" && -n "$web_stop_line" ]]
+[[ "$cutover_lock_line" -lt "$web_stop_line" && "$web_stop_line" -lt "$state_backup_line" ]]
+grep -Fq 'lifecycle-sha256.txt' "$source_file"
+grep -Fq 'lifecycle-metadata.txt' "$source_file"
+echo "PASS: cutover lock and quiescent V1 snapshot precede V2 code switch"

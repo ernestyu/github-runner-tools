@@ -11,6 +11,7 @@ trap cleanup EXIT
 MOCK="$TMP/mockbin"
 LOG="$TMP/sudo.log"
 OUT="$TMP/apply.out"
+UNIT_CAPTURE="$TMP/dispatcher.unit"
 mkdir -p "$MOCK"
 
 cat > "$MOCK/id" <<'MOCK'
@@ -64,6 +65,10 @@ case "\${1:-}" in
     ;;
   stat)
     fmt="\${3:-}"
+    if [[ "\${4:-}" == "/var/lib/github-runner-tools" ]]; then
+      printf '%s\\n' 'root:root:700:directory'
+      exit 0
+    fi
     case "\$fmt" in
       %U:%G:%a:%F) printf '%s\n' 'root:grt-web:640:regular file' ;;
       %U:%a) printf '%s\n' 'root:755' ;;
@@ -74,6 +79,12 @@ case "\${1:-}" in
     ;;
   grep)
     exit 1
+    ;;
+  install)
+    if [[ "\${@: -1}" == "/etc/systemd/system/github-runner-tools-dispatch.service" ]]; then
+      cp "\${@: -2:1}" "${UNIT_CAPTURE}"
+    fi
+    exit 0
     ;;
   *)
     exit 0
@@ -104,6 +115,26 @@ grep -Fq "systemctl restart github-runner-tools-dispatch.service" "$LOG" ||
   fail "--apply did not start dispatcher"
 grep -Fq "systemctl restart github-runner-tools-web.service" "$LOG" ||
   fail "--apply did not start Web frontend"
+
+grep -Fq 'install -d -o root -g root -m 0700 /var/lib/github-runner-tools' "$LOG" ||
+  fail "--apply did not provision root-only lifecycle state directory"
+[[ -f "$UNIT_CAPTURE" ]] || fail "Dispatcher Unit was not captured"
+grep -Fxq 'ProtectSystem=strict' "$UNIT_CAPTURE" ||
+  fail "Dispatcher strict filesystem protection was disabled"
+grep -Fxq 'ReadWritePaths=/root /etc/systemd/system /run/github-runner-tools /run/lock/github-runner-tools /var/lib/github-runner-tools' "$UNIT_CAPTURE" ||
+  grep -Eq '^ReadWritePaths=.+ /var/lib/github-runner-tools
+  fail "--apply unexpectedly configured a Tailscale endpoint"
+fi
+if grep -Eq 'NOPASSWD|sudoers' "$LOG"; then
+  fail "--apply attempted to create a passwordless sudo path"
+fi
+
+echo "PASS: explicit Web apply installation contract tests"
+ "$UNIT_CAPTURE" ||
+  fail "Dispatcher Unit missing narrow lifecycle state write path"
+if grep -Fq '/var/lib/github-runner-tools' "$OUT" && grep -Eq 'world-writable|permission denied' "$OUT"; then
+  fail "Lifecycle setup failed permission verification"
+fi
 
 if grep -Eq 'tailscale[[:space:]]+(serve|funnel)' "$LOG"; then
   fail "--apply unexpectedly configured a Tailscale endpoint"

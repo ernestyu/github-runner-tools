@@ -205,7 +205,7 @@ def create_stage(repo: str, runner: str, runner_dir: str, stage: str) -> None:
                                          active["instance"])
                 removed = _cycle_record(REMOVE_STATES, repo, runner, runner_dir,
                                         active["instance"])
-                if (previous is None or previous.get("stage") != "CREATE_COMPLETE"
+                if (previous is None or previous.get("stage") not in ("CREATE_COMPLETE", "LEGACY_VERIFIED")
                         or removed is None or removed.get("stage") != "REMOVE_COMPLETE"):
                     raise AuthorityError("prior cycle not closed")
             st = os.stat(runner_dir, follow_symlinks=False)
@@ -409,6 +409,72 @@ def create_attestation(repo: str, runner: str, runner_dir: str, user: str, versi
         os.close(fd)
 
 
+def _adopt_secure_legacy_remove(repo: str, runner: str, runner_dir: str,
+                                user: str) -> dict:
+    """Issue an instance identity for a currently verified legacy 0600 Runner.
+
+    Not an attestation of historical integrity, and NEVER an upgrade of 0664.
+    Allowed only when the normal Web identity gate already passed, before any
+    service or remote mutation, and there is no existing active instance.
+    """
+    if _current(repo, runner, runner_dir) is not None:
+        raise AuthorityError("legacy adoption conflicts with active cycle")
+    account = pwd.getpwnam(user)
+    fd = _safe_directory(runner_dir)
+    try:
+        st = os.fstat(fd)
+        if st.st_uid != account.pw_uid or st.st_gid != account.pw_gid or st.st_mode & 0o022:
+            raise AuthorityError("legacy directory untrusted")
+        info = {}
+        for name in (".runner", ".credentials", ".service"):
+            h = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW |
+                        os.O_CLOEXEC, dir_fd=fd)
+            try:
+                meta = os.fstat(h)
+                if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != account.pw_uid
+                        or meta.st_gid != account.pw_gid or meta.st_nlink != 1):
+                    raise AuthorityError("unsafe legacy record")
+                if name in (".runner", ".credentials") and stat.S_IMODE(meta.st_mode) != 0o600:
+                    raise AuthorityError("historical writable registration not eligible")
+                if name == ".service" and meta.st_mode & 0o022:
+                    raise AuthorityError("unsafe legacy service")
+                data = os.read(h, 16385)
+                if len(data) > 16384:
+                    raise AuthorityError("oversize legacy record")
+                info[name] = data
+            finally:
+                os.close(h)
+        metadata = json.loads(info[".runner"])
+        if (metadata.get("agentName") != runner or
+                metadata.get("gitHubUrl", "").rstrip("/").lower() !=
+                ("https://github.com/" + repo).lower()):
+            raise AuthorityError("legacy runner identity mismatch")
+        from grt_web_common import canonical_service_name
+        if info[".service"].rstrip(b"\n") != canonical_service_name(repo, runner).encode():
+            raise AuthorityError("legacy service identity mismatch")
+        path = os.stat(runner_dir, follow_symlinks=False)
+        if (st.st_dev, st.st_ino) != (path.st_dev, path.st_ino):
+            raise AuthorityError("legacy directory identity changed")
+    finally:
+        os.close(fd)
+    instance = secrets.token_hex(16)
+    item = {"schema": 2, "instance": instance, "repository": repo,
+            "runner": runner, "runner_dir": runner_dir,
+            "directory_device": st.st_dev, "directory_inode": st.st_ino,
+            "stage": "LEGACY_VERIFIED", "origin": "legacy-strict-0600",
+            "started_at": int(time.time())}
+    store = _store(CREATE_STATES)
+    try:
+        _publish(store, _instance_name(repo, runner, runner_dir, instance),
+                 item, replace=False)
+    finally:
+        os.close(store)
+    _active_update(repo, runner, runner_dir,
+                   {"schema": 2, "repository": repo, "runner": runner,
+                    "runner_dir": runner_dir, "instance": instance})
+    return item
+
+
 def remove_stage(repo: str, runner: str, runner_dir: str, user: str, stage: str) -> dict:
     """Persistent terminal cleanup evidence, managed only by root Dispatcher.
 
@@ -422,6 +488,9 @@ def remove_stage(repo: str, runner: str, runner_dir: str, user: str, stage: str)
     fd = _store(REMOVE_STATES)
     try:
         active = _current(repo, runner, runner_dir)
+        if active is None and stage == "BEGIN":
+            _adopt_secure_legacy_remove(repo, runner, runner_dir, user)
+            active = _current(repo, runner, runner_dir)
         if active is None:
             raise AuthorityError("untracked legacy runner requires admin review")
         instance = active["instance"]
@@ -429,7 +498,7 @@ def remove_stage(repo: str, runner: str, runner_dir: str, user: str, stage: str)
         previous = _read_record(fd, name)
         if stage == "BEGIN":
             created = _cycle_record(CREATE_STATES, repo, runner, runner_dir, instance)
-            if created is None or created.get("stage") != "CREATE_COMPLETE":
+            if created is None or created.get("stage") not in ("CREATE_COMPLETE", "LEGACY_VERIFIED"):
                 raise AuthorityError("creation not complete")
             if previous is not None:
                 raise AuthorityError("prior remove attempt requires review")

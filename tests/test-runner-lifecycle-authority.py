@@ -237,7 +237,7 @@ class AuthorityTests(unittest.TestCase):
         fake_systemd = self.base / "pretend-unit-root"
         fake_systemd.mkdir()
         unit = fake_systemd / service
-        unit.write_text("[Service]\nUser=root\nWorkingDirectory=" + self.repo +
+        unit.write_text("[Service]\nUser=fixture\nWorkingDirectory=" + self.repo +
                         "\nExecStart=" + self.repo + "/runsvc.sh\n")
         unit.chmod(0o664)
         real_safe = auth._safe_directory

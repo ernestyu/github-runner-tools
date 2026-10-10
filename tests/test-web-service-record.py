@@ -34,8 +34,10 @@ class ServiceRecordSecurityTests(unittest.TestCase):
         (self.sibling / ".service").write_text("SIBLING-DO-NOT-TOUCH")
         self.metadata = self.runner / ".runner"
         self.metadata.write_text(json.dumps({"agentName": RUNNER, "gitHubUrl": "https://github.com/example/repo"}))
+        self.metadata.chmod(0o600)
         self.credentials = self.runner / ".credentials"
         self.credentials.write_text("SYNTHETIC-CREDENTIAL-NOT-REAL")
+        self.credentials.chmod(0o600)
         self.record = self.runner / ".service"
         self.record.write_text(UNIT + "\n")
 

@@ -15,6 +15,7 @@ LOCAL_ARCHIVE_CONFIG="/etc/github-runner-tools/archive.conf"
 MUTATION_LOCK_DIR="/run/lock/github-runner-tools"
 MUTATION_LOCK_FILE="$MUTATION_LOCK_DIR/mutation.lock"
 WEB_MODE=0
+EXECUTOR_MODE=0
 TOKEN_FD=""
 PRIVILEGED_FD=""
 LOCK_ALREADY_HELD=0
@@ -276,6 +277,7 @@ while [[ $# -gt 0 ]]; do
     --runner-version) [[ $# -ge 2 ]] || die "--runner-version requires a value"; CLI_RUNNER_VERSION="$2"; shift 2 ;;
     --clean-incomplete) die "--clean-incomplete is disabled: unverified historical Runner directories must be preserved for independent administrator review." ;;
     --web-worker) WEB_MODE=1; shift ;;
+    --executor-mode) WEB_MODE=1; EXECUTOR_MODE=1; shift ;;
     --token-fd) [[ $# -ge 2 ]] || die "--token-fd requires a value"; TOKEN_FD="$2"; shift 2 ;;
     --privileged-fd) [[ $# -ge 2 ]] || die "--privileged-fd requires a value"; PRIVILEGED_FD="$2"; shift 2 ;;
     --lock-already-held) LOCK_ALREADY_HELD=1; shift ;;
@@ -289,7 +291,12 @@ set -- "${POSITIONAL[@]}"
 [[ $# -eq 1 ]] || { usage; exit 1; }
 
 if [[ "$WEB_MODE" == "1" ]]; then
-  [[ "${GRT_WEB_CONTEXT:-0}" == "1" ]] || die "Internal Web mode requires dispatcher context."
+  if [[ "$EXECUTOR_MODE" == "1" ]]; then
+    [[ "${GRT_EXECUTOR_CONTEXT:-0}" == "1" ]] || die "Internal Executor mode requires trusted context."
+    [[ "${GRT_WEB_CONTEXT:-0}" != "1" ]] || die "Mixed Web/Executor modes forbidden."
+  else
+    [[ "${GRT_WEB_CONTEXT:-0}" == "1" ]] || die "Internal Web mode requires dispatcher context."
+  fi
   [[ "$TOKEN_FD" =~ ^[0-9]+$ && "$PRIVILEGED_FD" =~ ^[0-9]+$ && "$LOCK_ALREADY_HELD" == "1" ]] ||
     die "Incomplete internal Web lifecycle context."
 elif [[ -n "$TOKEN_FD" || -n "$PRIVILEGED_FD" || "$LOCK_ALREADY_HELD" == "1" ]]; then

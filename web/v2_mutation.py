@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 from dispatcher import Runtime
-from v2_cli_spawn import spawn_cli, terminate_group
+from v2_cli_spawn import spawn_cli, SpawnError
 from v2_executor_contract import Request
 from v2_privileged import execute_privileged, PrivilegedProtocolError
 
@@ -94,7 +94,7 @@ def execute_mutation(request: Request, secret: bytes | None,
                 child_fd = replacement
             try:
                 pid, output_fd = spawn_cli(request, secret, child_fd)
-            except (OSError, ValueError):
+            except (OSError, ValueError, SpawnError):
                 return {"ok": False, "error": "launcher_unavailable"}
             finally:
                 os.close(child_fd)

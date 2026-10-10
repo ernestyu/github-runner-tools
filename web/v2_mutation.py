@@ -138,11 +138,16 @@ def execute_mutation(request: Request, secret: bytes | None,
         return {"ok": False, "error": "state_unavailable"}
 
     try:
-        # Remove identity must come from root-owned durable lifecycle authority.
-        # Until independently verified here, fail closed rather than rely on
-        # the repository-only CLI argv to select a deletion target.
+        # Independently compare the exact Web Remove tuple with root-owned
+        # cycle, registration attestation, .runner ID and validated Unit.
+        # Existing CLI then performs the durable BEGIN checkpoint before
+        # contacting GitHub, preventing ordinary retry after UNKNOWN.
         if request.op == "remove":
-            return {"ok": False, "error": "remove_attestation_not_wired"}
+            from v2_remove_guard import check_remove_target, RemoveGuardError
+            try:
+                check_remove_target(runtime, request)
+            except RemoveGuardError:
+                return {"ok": False, "error": "remove_identity_rejected"}
         deadline = time.monotonic() + min(runtime.timeout, 900)
         root_socket, child_socket = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         try:

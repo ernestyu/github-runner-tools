@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Root-owned Create journal and registration attestation authority.
+
+The dispatcher calls these functions under its existing mutation lock.
+No runner-owned process can provide a content digest or ledger destination.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import pwd
+import secrets
+import stat
+import time
+
+ROOT = "/var/lib/github-runner-tools"
+ATTESTATIONS = "runner-attestations"
+CREATE_STATES = "create-state"
+
+STAGES = (
+    "PRE_REGISTRATION",
+    "REGISTERED_PERMISSION_INCOMPLETE",
+    "REGISTERED_UNIT_INCOMPLETE",
+    "REGISTERED_START_INCOMPLETE",
+    "REGISTERED_HEALTH_UNKNOWN",
+    "CREATE_COMPLETE",
+)
+UNKNOWN = "REGISTRATION_OUTCOME_UNKNOWN"
+
+
+class AuthorityError(RuntimeError):
+    pass
+
+
+def _assert_root() -> None:
+    if os.geteuid() != 0:
+        raise AuthorityError("root authority required")
+
+
+def _safe_directory(path: str) -> int:
+    """Reject symlinks in any directory component, including ancestors."""
+    if not path.startswith("/") or os.path.normpath(path) != path:
+        raise AuthorityError("invalid directory")
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for part in path.split("/")[1:]:
+            if part:
+                nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY |
+                              os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+                os.close(fd)
+                fd = nxt
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _store(subdir: str) -> int:
+    _assert_root()
+    # Parent is a fixed root-controlled location. A pre-existing unexpected
+    # object or mode is an error, not a reason to repair it implicitly.
+    parent = os.path.dirname(ROOT)
+    parentfd = _safe_directory(parent)
+    try:
+        try:
+            os.mkdir(os.path.basename(ROOT), mode=0o700, dir_fd=parentfd)
+        except FileExistsError:
+            pass
+        rootfd = os.open(os.path.basename(ROOT), os.O_RDONLY | os.O_DIRECTORY |
+                         os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parentfd)
+        try:
+            st = os.fstat(rootfd)
+            if st.st_uid != 0 or stat.S_IMODE(st.st_mode) != 0o700:
+                raise AuthorityError("unsafe state store")
+            try:
+                os.mkdir(subdir, mode=0o700, dir_fd=rootfd)
+            except FileExistsError:
+                pass
+            fd = os.open(subdir, os.O_RDONLY | os.O_DIRECTORY |
+                         os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=rootfd)
+            st = os.fstat(fd)
+            if st.st_uid != 0 or stat.S_IMODE(st.st_mode) != 0o700:
+                os.close(fd)
+                raise AuthorityError("unsafe state subdirectory")
+            return fd
+        finally:
+            os.close(rootfd)
+    finally:
+        os.close(parentfd)
+
+
+def _key(repo: str, runner: str, runner_dir: str) -> str:
+    if not runner or "\0" in runner:
+        raise AuthorityError("invalid identity")
+    return hashlib.sha256((repo + "\0" + runner + "\0" + runner_dir).encode()).hexdigest() + ".json"
+
+
+def _read_record(fd: int, filename: str) -> dict | None:
+    try:
+        h = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW |
+                    os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=fd)
+    except FileNotFoundError:
+        return None
+    try:
+        st = os.fstat(h)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or stat.S_IMODE(st.st_mode) != 0o600 or st.st_nlink != 1:
+            raise AuthorityError("invalid ledger metadata")
+        raw = os.read(h, 16385)
+        if len(raw) > 16384:
+            raise AuthorityError("ledger too large")
+        item = json.loads(raw)
+        if not isinstance(item, dict):
+            raise AuthorityError("invalid ledger")
+        return item
+    finally:
+        os.close(h)
+
+
+def _publish(fd: int, filename: str, item: dict, *, replace: bool) -> None:
+    blob = (json.dumps(item, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if len(blob) > 16384:
+        raise AuthorityError("ledger oversized")
+    tmp = ".tmp-" + secrets.token_hex(16)
+    f = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=fd)
+    try:
+        os.write(f, blob)
+        os.fsync(f)
+    finally:
+        os.close(f)
+    try:
+        if replace:
+            os.replace(tmp, filename, src_dir_fd=fd, dst_dir_fd=fd)
+        else:
+            os.link(tmp, filename, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+    finally:
+        os.unlink(tmp, dir_fd=fd) if _exists(fd, tmp) else None
+    os.fsync(fd)
+
+
+def _exists(fd: int, filename: str) -> bool:
+    try:
+        os.stat(filename, dir_fd=fd, follow_symlinks=False)
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def create_stage(repo: str, runner: str, runner_dir: str, stage: str) -> None:
+    _assert_root()
+    if stage not in STAGES and stage != UNKNOWN:
+        raise AuthorityError("invalid create stage")
+    fd = _store(CREATE_STATES)
+    try:
+        name = _key(repo, runner, runner_dir)
+        prior = _read_record(fd, name)
+        if prior is None:
+            if stage != STAGES[0]:
+                raise AuthorityError("missing transaction")
+            item = {"schema": 1, "repository": repo, "runner": runner,
+                    "runner_dir": runner_dir, "stage": stage,
+                    "attempt": secrets.token_hex(16), "started_at": int(time.time())}
+            _publish(fd, name, item, replace=False)
+            return
+        if (prior.get("schema"), prior.get("repository"), prior.get("runner"),
+                prior.get("runner_dir")) != (1, repo, runner, runner_dir):
+            raise AuthorityError("ledger identity mismatch")
+        previous = prior.get("stage")
+        if previous == stage:
+            # PRE_REGISTRATION cannot be restarted: first config.sh may have
+            # completed remotely before any local result was recorded.
+            if stage == STAGES[0]:
+                raise AuthorityError("create already in progress")
+            return
+        if previous not in STAGES or previous == STAGES[-1]:
+            raise AuthorityError("create cannot be restarted")
+        if stage == UNKNOWN:
+            pass
+        elif STAGES.index(stage) != STAGES.index(previous) + 1:
+            raise AuthorityError("create stage skipped")
+        item = {**prior, "stage": stage, "updated_at": int(time.time())}
+        _publish(fd, name, item, replace=True)
+    finally:
+        os.close(fd)
+
+
+def _file_digest(dirfd: int, name: str, uid: int, gid: int) -> dict:
+    st = os.stat(name, dir_fd=dirfd, follow_symlinks=False)
+    if (not stat.S_ISREG(st.st_mode) or st.st_uid != uid or st.st_gid != gid
+            or st.st_nlink != 1 or stat.S_IMODE(st.st_mode) != 0o600):
+        raise AuthorityError("unsafe registration file")
+    h = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK |
+                os.O_CLOEXEC, dir_fd=dirfd)
+    try:
+        actual = os.fstat(h)
+        if (actual.st_dev, actual.st_ino, actual.st_ctime_ns) != (st.st_dev, st.st_ino, st.st_ctime_ns):
+            raise AuthorityError("registration changed")
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            buf = os.read(h, 8192)
+            if not buf:
+                break
+            total += len(buf)
+            if total > 65536:
+                raise AuthorityError("registration file too large")
+            digest.update(buf)
+        if os.fstat(h).st_mtime_ns != st.st_mtime_ns:
+            raise AuthorityError("registration modified")
+        return {"device": st.st_dev, "inode": st.st_ino,
+                "sha256": digest.hexdigest(), "size": total, "mode": "0600"}
+    finally:
+        os.close(h)
+
+
+def create_attestation(repo: str, runner: str, runner_dir: str, user: str, version: str) -> None:
+    _assert_root()
+    account = pwd.getpwnam(user)
+    dirfd = _safe_directory(runner_dir)
+    try:
+        parent = os.fstat(dirfd)
+        if parent.st_uid != account.pw_uid or parent.st_mode & 0o022:
+            raise AuthorityError("unsafe runner directory")
+        agent = _file_digest(dirfd, ".runner", account.pw_uid, account.pw_gid)
+        credentials = _file_digest(dirfd, ".credentials", account.pw_uid, account.pw_gid)
+        meta = os.open(".runner", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dirfd)
+        try:
+            config = json.loads(os.read(meta, 16385))
+            if (config.get("agentName") != runner or
+                config.get("gitHubUrl", "").rstrip("/").lower() !=
+                    ("https://github.com/" + repo).lower()):
+                raise AuthorityError("registration identity mismatch")
+        finally:
+            os.close(meta)
+        if (os.fstat(dirfd).st_dev, os.fstat(dirfd).st_ino) != (parent.st_dev, parent.st_ino):
+            raise AuthorityError("runner directory replaced")
+        item = {
+            "schema": 1, "issuer": "root-dispatcher-create", "issued_at": int(time.time()),
+            "repository": repo, "runner": runner, "runner_dir": runner_dir,
+            "runner_uid": account.pw_uid, "runner_gid": account.pw_gid,
+            "directory_device": parent.st_dev, "directory_inode": parent.st_ino,
+            "files": {".runner": agent, ".credentials": credentials},
+            "runner_version": version, "capture_stage": "registered-secure-before-service",
+        }
+    finally:
+        os.close(dirfd)
+    fd = _store(ATTESTATIONS)
+    try:
+        name = _key(repo, runner, runner_dir)
+        if _read_record(fd, name) is not None:
+            raise AuthorityError("attestation already exists")
+        _publish(fd, name, item, replace=False)
+    finally:
+        os.close(fd)

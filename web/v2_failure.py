@@ -25,7 +25,12 @@ SAFE_STAGES = frozenset({
 
 def diagnostic(runtime, request, error: str, *,
                exit_code: int | None = None) -> dict:
+    # A failed external call may have succeeded remotely. Never describe
+    # such an outcome as a definitive failure or offer an automatic retry.
+    unknown = error in ("outcome_unknown", "completion_not_verified")
     result = {"ok": False, "error": error,
+              "outcome": ("UNKNOWN_RECONCILIATION_REQUIRED" if unknown
+                          else "FAILED_PRE_EXTERNAL"),
               "correlation_id": secrets.token_hex(6)}
     if type(exit_code) is int and 0 < exit_code <= 255:
         result["exit_code"] = exit_code
@@ -42,6 +47,13 @@ def diagnostic(runtime, request, error: str, *,
             record = _cycle_record(store, repo, runner, directory, active["instance"])
             if record and record.get("stage") in SAFE_STAGES:
                 result["stage"] = record["stage"]
+                if record["stage"] in (
+                    "REGISTRATION_OUTCOME_UNKNOWN", "REGISTERED_PERMISSION_INCOMPLETE",
+                    "REGISTERED_UNIT_INCOMPLETE", "REGISTERED_START_INCOMPLETE",
+                    "REGISTERED_HEALTH_UNKNOWN", "REMOTE_REMOVE_OUTCOME_UNKNOWN",
+                    "REGISTERED_REMOVED_LOCAL_CLEANUP_PENDING",
+                ):
+                    result["outcome"] = "UNKNOWN_RECONCILIATION_REQUIRED"
     except (AuthorityError, OSError, TypeError, ValueError, KeyError):
         pass
     return result

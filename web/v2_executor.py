@@ -24,8 +24,11 @@ MAX_RESPONSE = 1048576
 
 
 def execute(request, secret):
-    if request.op != "status":
-        return {"ok": False, "error": "not_implemented"}
+    if request.op == "create":
+        from v2_mutation import execute_mutation
+        return execute_mutation(request, secret)
+    if request.op == "remove":
+        return {"ok": False, "error": "remove_attestation_not_wired"}
     if secret is not None:
         return {"ok": False, "error": "invalid_request"}
     return status_as_runner()

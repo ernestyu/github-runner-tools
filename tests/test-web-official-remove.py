@@ -33,11 +33,12 @@ web_context_check() { :; }
 web_service_state() {
     python3 -c 'import json,os; f=os.environ["GRT_PROBE_FILE"]; r=os.environ["GRT_CHECK_RESULT_FD"]; t=os.environ["GRT_PROBE_TOKEN_FD"]; record=json.dumps({"result_fd":os.path.exists("/proc/self/fd/"+r),"token_fd":os.path.exists("/proc/self/fd/"+t)}); open(f,"w").write(record)'
     if [[ "$GRT_FAIL_STAGE" == "service_state" ]]; then return 1; fi
-    printf active
+    if [[ -e "$GRT_UNINSTALLED_FLAG" || "$GRT_INITIAL_ABSENT" == "1" ]]; then printf absent; else printf active; fi
 }
 web_service_operation() {
     printf '%s\n' "$1" >> "$GRT_EVENT_FILE"
     if [[ "$GRT_FAIL_STAGE" == "$1" ]]; then return 1; fi
+    if [[ "$1" == "service_uninstall" ]]; then : > "$GRT_UNINSTALLED_FLAG"; fi
 }
 if [[ "$GRT_FAIL_STAGE" == "local_cleanup" ]]; then
     rm() {
@@ -54,7 +55,7 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
             base = Path(temp)
             runner = base / "actions-runner-example--repo"
             runner.mkdir()
-            (runner / ".runner").write_text(json.dumps({"agentName": "fixture"}))
+            (runner / ".runner").write_text(json.dumps({"agentName": "fixture", "gitHubUrl": "https://github.com/example/repo"}))
             (runner / ".service").write_text("actions.runner.example-repo.fixture.service\n")
             (runner / "svc.sh").write_text("#!/bin/sh\nexit 0\n")
             (runner / "config.sh").write_text(STUB)
@@ -79,7 +80,9 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
                     "GRT_PROBE_TOKEN_FD": str(token_r),
                     "GRT_CONFIG_EXIT": str(config_exit),
                     "GRT_CONFIG_SIGNAL": config_signal,
-                    "GRT_FAIL_STAGE": fail_stage}
+                    "GRT_FAIL_STAGE": fail_stage,
+                    "GRT_UNINSTALLED_FLAG": str(base / "uninstalled.flag"),
+                    "GRT_INITIAL_ABSENT": "0"}
                 proc = subprocess.run(
                     ["bash", "-c", DRIVER, "_", str(ROOT / "scripts/remove-runner.sh"), str(token_r), str(result_w)],
                     env=env, pass_fds=(token_r, result_w),

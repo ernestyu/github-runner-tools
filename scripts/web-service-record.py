@@ -135,7 +135,7 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, pr
                         or state.st_gid != os.getgid() or state.st_nlink != 1
                         or (state.st_mode & 0o777) not in (0o600, 0o644, 0o664)):
                     raise ValueError("invalid registration metadata")
-                if mode != "identity" and state.st_mode & 0o022:
+                if mode != "identity" and (state.st_mode & 0o777) != 0o600:
                     raise ValueError("invalid registration metadata")
                 registration_state[filename] = state
             metadata_fd = os.open(".runner", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)

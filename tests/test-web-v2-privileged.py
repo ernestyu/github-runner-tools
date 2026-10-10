@@ -32,6 +32,15 @@ class PrivilegeTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(PrivilegedProtocolError):
                 admitted_operation({**BASE, "runner_dir": path})
 
+    def test_exact_shared_cli_create_stages(self):
+        for stage in ("PRE_REGISTRATION", "REGISTRATION_OUTCOME_UNKNOWN",
+                      "REGISTERED_PERMISSION_INCOMPLETE", "REGISTERED_UNIT_INCOMPLETE",
+                      "REGISTERED_START_INCOMPLETE", "REGISTERED_HEALTH_UNKNOWN",
+                      "CREATE_COMPLETE"):
+            with self.subTest(stage=stage):
+                value = admitted_operation({**BASE, "op": "create_state", "stage": stage})
+                self.assertEqual(value["stage"], stage)
+
     def test_reject_bad_stages(self):
         for op, stage in (("create_state", "COMPLETE"), ("remove_state", "FORCE"),
                           ("remove_state", "RESET_UNKNOWN")):

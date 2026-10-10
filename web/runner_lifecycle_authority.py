@@ -286,6 +286,72 @@ def _file_digest(dirfd: int, name: str, uid: int, gid: int) -> dict:
         os.close(h)
 
 
+def normalize_new_registration(repo: str, runner: str, runner_dir: str, user: str) -> None:
+    """Constrain chmod to a just-registered, root-tracked Create cycle."""
+    _assert_root()
+    active = _current(repo, runner, runner_dir)
+    if active is None:
+        raise AuthorityError("no trusted Create instance")
+    state = _cycle_record(CREATE_STATES, repo, runner, runner_dir, active["instance"])
+    if state is None or state.get("stage") != "REGISTERED_PERMISSION_INCOMPLETE":
+        raise AuthorityError("registration permissions not in Create stage")
+    account = pwd.getpwnam(user)
+    fd = _safe_directory(runner_dir)
+    try:
+        parent = os.fstat(fd)
+        if ((parent.st_dev, parent.st_ino) !=
+              (state["directory_device"], state["directory_inode"]) or
+              parent.st_uid != account.pw_uid or parent.st_mode & 0o022):
+            raise AuthorityError("Create directory ownership changed")
+        meta_fd = os.open(".runner", os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW |
+                          os.O_CLOEXEC, dir_fd=fd)
+        try:
+            raw = os.read(meta_fd, 16385)
+            if len(raw) > 16384:
+                raise AuthorityError("oversize Runner identity")
+            meta = json.loads(raw)
+            if (meta.get("agentName") != runner or
+                    meta.get("gitHubUrl", "").rstrip("/").lower() !=
+                    ("https://github.com/" + repo).lower()):
+                raise AuthorityError("new registration identity mismatch")
+        finally:
+            os.close(meta_fd)
+        # Validate both entries before altering either; refuse links and ownership
+        # anomalies even when chmod would mechanically be possible.
+        st_map = {}
+        handles = {}
+        try:
+            for name in (".runner", ".credentials"):
+                h = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW |
+                            os.O_CLOEXEC, dir_fd=fd)
+                handles[name] = h
+                st = os.fstat(h)
+                if (not stat.S_ISREG(st.st_mode) or st.st_uid != account.pw_uid
+                        or st.st_gid != account.pw_gid or st.st_nlink != 1
+                        or stat.S_IMODE(st.st_mode) not in (0o600, 0o644, 0o664)):
+                    raise AuthorityError("new registration metadata untrusted")
+                path_st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if (st.st_dev, st.st_ino, st.st_ctime_ns) != (
+                        path_st.st_dev, path_st.st_ino, path_st.st_ctime_ns):
+                    raise AuthorityError("registration path replaced")
+                st_map[name] = st
+            for name, h in handles.items():
+                os.fchmod(h, 0o600)
+                after = os.fstat(h)
+                path = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if (stat.S_IMODE(after.st_mode) != 0o600 or
+                        (after.st_dev, after.st_ino) != (path.st_dev, path.st_ino)):
+                    raise AuthorityError("registration normalization race")
+        finally:
+            for h in handles.values():
+                os.close(h)
+        path_st = os.stat(runner_dir, follow_symlinks=False)
+        if (parent.st_dev, parent.st_ino) != (path_st.st_dev, path_st.st_ino):
+            raise AuthorityError("Create target replaced")
+    finally:
+        os.close(fd)
+
+
 def create_attestation(repo: str, runner: str, runner_dir: str, user: str, version: str) -> None:
     _assert_root()
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):

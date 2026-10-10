@@ -12,11 +12,42 @@ import os
 
 from dispatcher import Runtime
 from grt_web_common import make_local_id
-from runner_lifecycle_authority import _current
+from runner_lifecycle_authority import _key, _safe_directory, ROOT, ACTIVE_INSTANCES
 from v2_executor_contract import Request
 from v2_remove_guard import check_remove_target, RemoveGuardError
 
 CONFIG = "/etc/github-runner-tools/web.conf"
+
+def _read_active_without_mutation(repo: str, name: str, directory: str):
+    """Open existing root state only; Status must never mkdir a state store."""
+    import stat
+    state_dir = ROOT + "/" + ACTIVE_INSTANCES
+    try:
+        fd = _safe_directory(state_dir)
+    except FileNotFoundError:
+        return None
+    try:
+        opened = os.open(_key(repo, name, directory), os.O_RDONLY | os.O_CLOEXEC |
+                         os.O_NOFOLLOW, dir_fd=fd)
+        try:
+            st = os.fstat(opened)
+            if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
+                return None
+            raw = os.read(opened, 16385)
+            if len(raw) > 16384:
+                return None
+            active = json.loads(raw)
+            if (active.get("repository"), active.get("runner"),
+                    active.get("runner_dir")) != (repo, name, directory):
+                return None
+            return active
+        finally:
+            os.close(opened)
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return None
+    finally:
+        os.close(fd)
+
 
 
 def annotate_inventory(result: dict) -> dict:
@@ -46,7 +77,7 @@ def annotate_inventory(result: dict) -> dict:
                 )
                 # Root-owned active record is immutable across an individual
                 # cycle; the final Remove still independently rechecks it.
-                active = _current(repo, name, directory)
+                active = _read_active_without_mutation(repo, name, directory)
                 if active is None:
                     raise RemoveGuardError("untracked runner")
                 dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY |

@@ -713,7 +713,12 @@ if [[ "$WEB_MODE" == "1" ]]; then
     # Never expose the token in CLI argv, env or persistent state.
     PTY_ADAPTER="${GRT_PTY_ADAPTER:-/usr/local/lib/github-runner-tools/web/pty_token_adapter.py}"
     [[ -x "$PTY_ADAPTER" ]] || die "Trusted removal token adapter unavailable."
-    if python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode remove -- ./config.sh remove >/dev/null 2>&1; then
+    if (
+      # Root privilege FD4 belongs only to the trusted CLI shell. The
+      # external GitHub config and PTY adapter must never inherit it.
+      exec 4>&-
+      python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode remove -- ./config.sh remove >/dev/null 2>&1
+    ); then
       REMOVE_RC=0
     else
       REMOVE_RC=$?

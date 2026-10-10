@@ -156,6 +156,10 @@ def v2_failure_text(result: dict[str, Any], operation: str) -> str:
     """Only fixed, non-secret Executor diagnostics reach the browser."""
     import re
     safe = [f"{operation} was not confirmed. Review lifecycle state before retrying."]
+    outcome = result.get("outcome")
+    if outcome in ("COMPLETE", "FAILED_PRE_EXTERNAL",
+                   "UNKNOWN_RECONCILIATION_REQUIRED"):
+        safe.append("Outcome: " + outcome)
     stage = result.get("stage")
     if isinstance(stage, str) and re.fullmatch(r"[A-Z_]{3,60}", stage):
         safe.append("Stage: " + stage)

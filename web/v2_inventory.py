@@ -49,8 +49,20 @@ def annotate_inventory(result: dict) -> dict:
                 active = _current(repo, name, directory)
                 if active is None:
                     raise RemoveGuardError("untracked runner")
-                with open(os.path.join(directory, ".runner"), "rb") as handle:
-                    metadata = json.load(handle)
+                dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY |
+                                 os.O_CLOEXEC | os.O_NOFOLLOW)
+                try:
+                    reg_fd = os.open(".runner", os.O_RDONLY | os.O_CLOEXEC |
+                                     os.O_NOFOLLOW, dir_fd=dir_fd)
+                    try:
+                        raw = os.read(reg_fd, 16385)
+                        if len(raw) > 16384:
+                            raise RemoveGuardError("metadata too large")
+                        metadata = json.loads(raw)
+                    finally:
+                        os.close(reg_fd)
+                finally:
+                    os.close(dir_fd)
                 runner_id = metadata.get("agentId")
                 if type(runner_id) is not int or runner_id <= 0:
                     raise RemoveGuardError("runner ID missing")

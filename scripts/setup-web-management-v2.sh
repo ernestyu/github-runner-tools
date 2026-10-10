@@ -56,7 +56,20 @@ BACKUP="$(sudo mktemp -d "$STATE_DIR/web-v2-rollback.XXXXXXXX")"
 sudo chmod 0700 "$BACKUP"
 sudo cp -a "$CONFIG" "$AUTH" "$WEB_UNIT" "$BACKUP/"
 sudo cp -a "$INSTALL_ROOT" "$BACKUP/installed-web"
-echo "Root-only backup recorded under $STATE_DIR (path redacted)"
+sudo install -d -o root -g root -m 0700 "$BACKUP/lifecycle-snapshot"
+# Snapshot only known root-owned authority folders. Never recursively copy
+# STATE_DIR into its own backup, and never rewrite existing V1 records.
+for state_subdir in active-instances runner-attestations unit-attestations \
+                    create-state remove-state; do
+  if sudo test -L "$STATE_DIR/$state_subdir"; then
+    echo "Unsafe lifecycle state symlink: $state_subdir" >&2
+    exit 1
+  fi
+  if sudo test -d "$STATE_DIR/$state_subdir"; then
+    sudo cp -a "$STATE_DIR/$state_subdir" "$BACKUP/lifecycle-snapshot/"
+  fi
+done
+echo "Root-only config, code and lifecycle snapshots recorded (path redacted)"
 
 # Install V2 source + existing authority and scripts into root-owned paths.
 for file in v2_executor_contract.py v2_executor_transport.py v2_token_fd.py \

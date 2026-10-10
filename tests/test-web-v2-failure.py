@@ -37,6 +37,16 @@ class FailureTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "UNKNOWN_RECONCILIATION_REQUIRED")
         self.assertFalse(result["ok"])
 
+    def test_nonzero_after_any_checkpoint_is_never_reported_as_safe_retry(self):
+        runtime = Mock(runner_home="/home/actions")
+        for stage in ("PRE_REGISTRATION", "CREATE_COMPLETE",
+                      "REGISTERED_UNIT_INCOMPLETE"):
+            with self.subTest(stage=stage), \
+                 patch.object(f, "_current", return_value={"instance":"aa"*16}), \
+                 patch.object(f, "_cycle_record", return_value={"stage":stage}):
+                result = f.diagnostic(runtime, REQ, "lifecycle_failed", exit_code=7)
+            self.assertEqual(result["outcome"], "UNKNOWN_RECONCILIATION_REQUIRED")
+
     def test_definite_pre_external_failure_is_distinct(self):
         runtime = Mock(runner_home="/home/actions")
         with patch.object(f, "_current", return_value=None):

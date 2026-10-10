@@ -280,7 +280,7 @@ sudo install -o root -g root -m 0644 "$TMP_WEB_UNIT" "$WEB_UNIT"
 sudo install -o root -g root -m 0644 "$TMP_DISPATCH_UNIT" "$DISPATCH_UNIT"
 rm -f -- "$TMP_WEB_UNIT" "$TMP_DISPATCH_UNIT"
 
-for installed in "$INSTALL_ROOT"/*.py "$INSTALL_ROOT"/cli/*.sh; do
+for installed in "$INSTALL_ROOT"/*.py "$INSTALL_ROOT"/cli/*.sh "$INSTALL_ROOT/cli/web-service-record.py"; do
   [[ "$(sudo stat -c '%U:%a' "$installed")" == root:* ]] || die "Installed code is not root-owned: $installed"
   mode="$(sudo stat -c '%a' "$installed")"
   [[ "$mode" =~ ^[0-7]{3,4}$ ]] || die "Installed code has invalid mode: $installed"

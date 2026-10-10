@@ -293,8 +293,11 @@ def create_attestation(repo: str, runner: str, runner_dir: str, user: str, versi
     # Provenance must arise from the active, known successful registration stage.
     statefd = _store(CREATE_STATES)
     try:
-        state = _read_record(statefd, _key(repo, runner, runner_dir))
-        if state is None or state.get("stage") != "REGISTERED_PERMISSION_INCOMPLETE":
+        active = _current(repo, runner, runner_dir)
+        state = None if active is None else _read_record(
+            statefd, _instance_name(repo, runner, runner_dir, active["instance"]))
+        if (state is None or state.get("stage") != "REGISTERED_PERMISSION_INCOMPLETE"
+                or state.get("instance") != active["instance"]):
             raise AuthorityError("attestation not in registration transaction")
     finally:
         os.close(statefd)
@@ -321,7 +324,7 @@ def create_attestation(repo: str, runner: str, runner_dir: str, user: str, versi
         if (path_state.st_dev, path_state.st_ino) != (parent.st_dev, parent.st_ino):
             raise AuthorityError("runner directory path replaced")
         item = {
-            "schema": 1, "issuer": "root-dispatcher-create", "issued_at": int(time.time()),
+            "schema": 2, "instance": active["instance"], "issuer": "root-dispatcher-create", "issued_at": int(time.time()),
             "repository": repo, "runner": runner, "runner_dir": runner_dir,
             "runner_uid": account.pw_uid, "runner_gid": account.pw_gid,
             "directory_device": parent.st_dev, "directory_inode": parent.st_ino,
@@ -332,7 +335,7 @@ def create_attestation(repo: str, runner: str, runner_dir: str, user: str, versi
         os.close(dirfd)
     fd = _store(ATTESTATIONS)
     try:
-        name = _key(repo, runner, runner_dir)
+        name = _instance_name(repo, runner, runner_dir, active["instance"])
         if _read_record(fd, name) is not None:
             raise AuthorityError("attestation already exists")
         _publish(fd, name, item, replace=False)
@@ -352,9 +355,16 @@ def remove_stage(repo: str, runner: str, runner_dir: str, user: str, stage: str)
         raise AuthorityError("unknown remove checkpoint")
     fd = _store(REMOVE_STATES)
     try:
-        name = _key(repo, runner, runner_dir)
+        active = _current(repo, runner, runner_dir)
+        if active is None:
+            raise AuthorityError("untracked legacy runner requires admin review")
+        instance = active["instance"]
+        name = _instance_name(repo, runner, runner_dir, instance)
         previous = _read_record(fd, name)
         if stage == "BEGIN":
+            created = _cycle_record(CREATE_STATES, repo, runner, runner_dir, instance)
+            if created is None or created.get("stage") != "CREATE_COMPLETE":
+                raise AuthorityError("creation not complete")
             if previous is not None:
                 raise AuthorityError("prior remove attempt requires review")
             account = pwd.getpwnam(user)
@@ -383,7 +393,9 @@ def remove_stage(repo: str, runner: str, runner_dir: str, user: str, stage: str)
                     os.close(metadata)
             finally:
                 os.close(runnerfd)
-            item = {"schema": 1, "repository": repo, "runner": runner,
+            if (created.get("directory_device"), created.get("directory_inode")) != (st.st_dev, st.st_ino):
+                raise AuthorityError("create/remove inode mismatch")
+            item = {"schema": 2, "instance": instance, "repository": repo, "runner": runner,
                     "runner_dir": runner_dir, "directory_device": st.st_dev,
                     "directory_inode": st.st_ino, "github_runner_id": remote_id,
                     "stage": "REMOTE_REMOVE_OUTCOME_UNKNOWN",
@@ -392,7 +404,7 @@ def remove_stage(repo: str, runner: str, runner_dir: str, user: str, stage: str)
             return {"device": st.st_dev, "inode": st.st_ino}
         if previous is None or (previous.get("repository"), previous.get("runner"),
                                  previous.get("runner_dir"), previous.get("schema")) != (
-                                     repo, runner, runner_dir, 1):
+                                     repo, runner, runner_dir, 2) or previous.get("instance") != instance:
             raise AuthorityError("missing verified remove ledger")
         old = previous.get("stage")
         if stage == "CONFIRM_REMOTE_REMOVED":
@@ -463,9 +475,14 @@ def create_unit_attestation(repo: str, runner: str, runner_dir: str,
             os.close(fd)
     finally:
         os.close(parent)
+    active = _current(repo, runner, runner_dir)
+    if active is None:
+        raise AuthorityError("Unit created without active cycle")
+    item["instance"] = active["instance"]
+    item["schema"] = 2
     storefd = _store(UNIT_ATTESTATIONS)
     try:
-        name = _key(repo, runner, runner_dir)
+        name = _instance_name(repo, runner, runner_dir, active["instance"])
         if _read_record(storefd, name) is not None:
             raise AuthorityError("Unit provenance already exists")
         _publish(storefd, name, item, replace=False)

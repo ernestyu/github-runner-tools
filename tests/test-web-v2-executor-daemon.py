@@ -62,10 +62,13 @@ class ExecutorDaemonTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0], request)
         self.assertEqual(run.call_args.args[1], b"temporary")
 
-    def test_remove_fails_closed_until_attested(self):
+    def test_remove_uses_same_attested_mutation_engine(self):
         request = decode_request(b'{"op":"remove","repository":"owner/repo","runner_name":"r","runner_id":7,"instance":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}')
-        result = self.request(encode_request_frame(request, b"temporary"))
-        self.assertEqual(result["error"], "remove_attestation_not_wired")
+        with patch("v2_mutation.execute_mutation",
+                   return_value={"ok": False, "error": "remove_identity_rejected"}) as run:
+            result = self.request(encode_request_frame(request, b"temporary"))
+        self.assertEqual(result["error"], "remove_identity_rejected")
+        run.assert_called_once_with(request, b"temporary")
 
     def test_peer_denied_before_executor(self):
         status = decode_request(b'{"op":"status"}')

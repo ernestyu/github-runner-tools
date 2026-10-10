@@ -41,6 +41,9 @@ def resolve_action(op: str, repo: str | None) -> tuple[str, ...]:
         req = decode_request(json.dumps({"op": "create", "repository": repo}).encode())
     except AdmissionError as exc:
         raise LaunchError("invalid repository") from exc
+    owner, name = req.repository.split("/", 1)
+    if owner in (".", "..") or name in (".", ".."):
+        raise LaunchError("unsafe repository component")
     return (*CLI_ARGV[op], req.repository)
 
 

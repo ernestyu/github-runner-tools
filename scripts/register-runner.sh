@@ -433,6 +433,10 @@ REGISTRATION_COMPLETE=1
 
 if [[ "$WEB_MODE" == "1" ]]; then
   web_create_stage REGISTERED_PERMISSION_INCOMPLETE
+  NORMALIZE_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" \
+    --arg runner_name "$RUNNER_NAME" \
+    '{op:"registration_permission_normalize",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name}')"
+  web_priv_request "$NORMALIZE_REQ" || die "New registration permissions could not be normalized safely."
   CANONICAL_SERVICE="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
   python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" registration_check \
     "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$CANONICAL_SERVICE" ||
@@ -444,6 +448,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
   web_create_stage REGISTERED_UNIT_INCOMPLETE
 else
   cli_create_authority stage REGISTERED_PERMISSION_INCOMPLETE -
+  cli_create_authority normalize - -
   CANONICAL_SERVICE="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
   python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" registration_check \
     "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$CANONICAL_SERVICE" ||

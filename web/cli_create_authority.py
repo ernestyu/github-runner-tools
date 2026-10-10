@@ -13,7 +13,7 @@ from pathlib import Path
 
 from grt_web_common import canonical_service_name, make_local_id, validate_repository
 from runner_lifecycle_authority import (
-    AuthorityError, create_attestation, create_stage, create_unit_attestation,
+    AuthorityError, create_attestation, create_stage, create_unit_attestation, normalize_new_registration,
     _safe_directory, _current, _cycle_record, CREATE_STATES,
 )
 
@@ -31,7 +31,7 @@ def main(argv: list[str]) -> None:
     if user == "root":
         raise AuthorityError("non-root Runner owner required")
     account = pwd.getpwnam(user)
-    if len(argv) != 6 or argv[0] not in ("stage", "attest", "unit"):
+    if len(argv) != 6 or argv[0] not in ("stage", "attest", "unit", "normalize"):
         raise AuthorityError("invalid operation")
     op, repo, runner_name, directory, action, version = argv
     repo = validate_repository(repo)
@@ -53,6 +53,10 @@ def main(argv: list[str]) -> None:
         if action not in ALLOWED or version != "-":
             raise AuthorityError("invalid CLI stage")
         create_stage(repo, runner_name, directory, action)
+    elif op == "normalize":
+        if action != "-" or version != "-":
+            raise AuthorityError("invalid CLI normalize invocation")
+        normalize_new_registration(repo, runner_name, directory, user)
     elif op == "attest":
         if action != "-" or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
             raise AuthorityError("invalid attestation request")

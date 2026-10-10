@@ -101,7 +101,7 @@ for file in v2_executor_contract.py v2_executor_transport.py v2_token_fd.py \
             v2_event_loop.py v2_remove_guard.py v2_inventory.py v2_unit_installer.py \
             v2_failure.py v2_closeout.py app.py dispatcher.py lifecycle_worker.py \
             grt_web_common.py runner_lifecycle_authority.py \
-            cli_create_authority.py pty_token_adapter.py; do
+            cli_create_authority.py cli_remove_authority.py pty_token_adapter.py; do
   [[ -f "$ROOT/web/$file" && ! -L "$ROOT/web/$file" ]] ||
     { echo "Missing fixed V2 module $file" >&2; exit 1; }
   sudo install -o root -g root -m 0755 "$ROOT/web/$file" "$INSTALL_ROOT/$file"

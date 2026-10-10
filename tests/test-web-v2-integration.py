@@ -27,13 +27,21 @@ class WebV2StatusTests(unittest.TestCase):
         self.assertFalse(response["runners"][0]["can_remove"])
         self.assertFalse(response["runners"][0]["can_recover_local"])
 
-    def test_v2_never_falls_back_to_v1_mutations(self):
-        for op in ("create","remove","recover_local","shell"):
-            with self.subTest(op=op), patch.object(client,"fetch_status") as fetch:
-                resp = app.dispatch({"V2_EXECUTOR_MODE":"1"},
-                                    {"op":op,"repository":"o/r","token":"sample"})
+    def test_v2_create_uses_only_executor_client(self):
+        with patch.object(client, "create_runner",
+                          return_value={"ok": False, "error": "operation_in_progress"}) as create:
+            resp = app.dispatch({"V2_EXECUTOR_MODE": "1"},
+                                {"op": "create", "repository": "o/r", "token": "sample"})
+        self.assertEqual(resp["error"], "operation_in_progress")
+        create.assert_called_once_with("o/r", "sample")
+
+    def test_v2_remove_never_falls_back_to_v1(self):
+        for op in ("remove", "recover_local", "shell"):
+            with self.subTest(op=op), patch.object(client, "fetch_status") as fetch:
+                resp = app.dispatch({"V2_EXECUTOR_MODE": "1"},
+                                    {"op": op, "repository": "o/r", "token": "sample"})
                 self.assertFalse(resp["ok"])
-                self.assertEqual(resp["error"],"not_implemented")
+                self.assertEqual(resp["error"], "not_implemented")
                 fetch.assert_not_called()
 
     def test_v2_status_error_is_fail_closed(self):

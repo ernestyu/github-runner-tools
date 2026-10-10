@@ -628,7 +628,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
   REMOVE_STAGE="preflight_failed"
   [[ -f "$RUNNER_DIR/.service" && ! -L "$RUNNER_DIR/.service" ]] ||
     die "Runner service record missing or unsafe; manual inspection required."
-  python3 "$(dirname -- "${BASH_SOURCE[0]}")/web-service-record.py" check "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" check "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
     die "Configured service identity is unavailable or incompatible."
   REMOVE_STAGE="service_state_failed"
   SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
@@ -646,7 +646,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
     die "Cannot verify final service state before record reconciliation."
   [[ "$FINAL_SERVICE_STATE" == "absent" ]] ||
     die "Systemd unit still exists; preserving service record."
-  python3 "$(dirname -- "${BASH_SOURCE[0]}")/web-service-record.py" quarantine "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" quarantine "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
     die "Local service record reconciliation failed."
   FINAL_SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
     die "Cannot verify final service state after record reconciliation."

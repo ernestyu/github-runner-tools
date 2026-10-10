@@ -21,3 +21,10 @@ bash -n "$rollback"
 rollback_plan="$(bash "$rollback" --dry-run --backup-dir /var/lib/github-runner-tools/web-v2-rollback.ABCDEFGH)"
 [[ "$rollback_plan" == *"No runner services or state records would be modified."* ]]
 echo "PASS: V2 rollback preview preserves existing lifecycle records"
+
+# Stopping V1 after V2 socket is created may remove the shared systemd
+# RuntimeDirectory; assert that the old dispatcher is stopped first.
+old_stop=$(grep -n "sudo systemctl disable --now github-runner-tools-dispatch.service" "$source_file" | head -1 | cut -d: -f1)
+new_start=$(grep -n "sudo systemctl enable --now github-runner-tools-executor.service" "$source_file" | head -1 | cut -d: -f1)
+[[ -n "$old_stop" && -n "$new_start" && "$old_stop" -lt "$new_start" ]]
+echo "PASS: old runtime owner is stopped before new Executor binds its socket"

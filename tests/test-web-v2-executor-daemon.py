@@ -53,15 +53,19 @@ class ExecutorDaemonTests(unittest.TestCase):
         self.assertEqual(result, {"ok":True,"data":{"runners":[]}})
         cli.assert_called_once_with()
 
-    def test_create_and_remove_fail_closed(self):
-        for raw in (
-            b'{"op":"create","repository":"owner/repo"}',
-            b'{"op":"remove","repository":"owner/repo","runner_name":"r","runner_id":7,"instance":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
-        ):
-            with self.subTest(raw=raw):
-                request = decode_request(raw)
-                result = self.request(encode_request_frame(request, b"temporary"))
-                self.assertEqual(result["error"], "not_implemented")
+    def test_create_forwards_only_to_restricted_mutation(self):
+        request = decode_request(b'{"op":"create","repository":"owner/repo"}')
+        with patch("v2_mutation.execute_mutation",
+                   return_value={"ok": False, "error": "operation_in_progress"}) as run:
+            result = self.request(encode_request_frame(request, b"temporary"))
+        self.assertEqual(result["error"], "operation_in_progress")
+        self.assertEqual(run.call_args.args[0], request)
+        self.assertEqual(run.call_args.args[1], b"temporary")
+
+    def test_remove_fails_closed_until_attested(self):
+        request = decode_request(b'{"op":"remove","repository":"owner/repo","runner_name":"r","runner_id":7,"instance":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}')
+        result = self.request(encode_request_frame(request, b"temporary"))
+        self.assertEqual(result["error"], "remove_attestation_not_wired")
 
     def test_peer_denied_before_executor(self):
         status = decode_request(b'{"op":"status"}')

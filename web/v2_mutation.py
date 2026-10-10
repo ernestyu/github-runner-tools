@@ -102,11 +102,15 @@ def execute_mutation(request: Request, secret: bytes | None,
             status, timed_out = pump_transaction(
                 runtime, request, pid, root_socket, output_fd, deadline
             )
+            from v2_failure import diagnostic
             if timed_out:
                 # Never synthesize CREATE_COMPLETE after a crashed CLI.
-                return {"ok": False, "error": "outcome_unknown"}
-            if status is None or not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
-                return {"ok": False, "error": "lifecycle_failed"}
+                return diagnostic(runtime, request, "outcome_unknown")
+            if status is None or not os.WIFEXITED(status):
+                return diagnostic(runtime, request, "outcome_unknown")
+            if os.WEXITSTATUS(status) != 0:
+                return diagnostic(runtime, request, "lifecycle_failed",
+                                  exit_code=os.WEXITSTATUS(status))
             return {"ok": True}
         finally:
             try:

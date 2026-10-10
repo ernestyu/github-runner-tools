@@ -18,7 +18,7 @@ remove_result() {
   [[ "$WEB_MODE" == "1" && -n "$RESULT_FD" && "$REMOVE_MARKED" == "0" && "$rc" -ne 0 ]] || return 0
   REMOVE_MARKED=1
   case "$REMOVE_STAGE" in
-    preflight_failed|service_state_failed|service_stop_failed|service_uninstall_failed|service_record_reconcile_failed|config_remove_failed|local_cleanup_failed|unknown_failed) ;;
+    preflight_failed|service_state_failed|service_stop_failed|service_uninstall_failed|service_record_reconcile_failed|permission_reconcile_failed|config_remove_failed|local_cleanup_failed|unknown_failed) ;;
     *) REMOVE_STAGE="unknown_failed" ;;
   esac
   value="$REMOVE_EXIT"

@@ -1282,6 +1282,14 @@ class OfficialRemoveDiagnosticsTests(unittest.TestCase):
         good = b"GRT_REMOVE_RESULT_V1 stage=config_remove_failed exit=9\n"
         expected = {"ok": False, "error": "lifecycle_failed", "stage": "config_remove_failed", "exit_code": 9}
         self.assertEqual(lifecycle_worker.parse_remove_marker(good, 1), expected)
+        reconciled = b"GRT_REMOVE_RESULT_V1 stage=service_record_reconcile_failed exit=unknown\n"
+        self.assertEqual(lifecycle_worker.parse_remove_marker(reconciled, 1),
+                         {"ok": False, "error": "lifecycle_failed",
+                          "stage": "service_record_reconcile_failed", "exit_code": None})
+        self.assertEqual(web_app.remove_failure_message({
+            "ok": False, "error": "lifecycle_failed",
+            "stage": "service_record_reconcile_failed", "exit_code": None}),
+            "Runner service record reconciliation failed; GitHub removal was not attempted. Inspect local service state.")
         fallback = {"ok": False, "error": "lifecycle_failed", "stage": "unknown_failed", "exit_code": None}
         for raw in (b"", good * 2, b"noise" + good, good + b"noise", good[:-1],
                     good.replace(b"9", b"999"), good.replace(b"9", b"-1"),

@@ -18,7 +18,7 @@ remove_result() {
   [[ "$WEB_MODE" == "1" && -n "$RESULT_FD" && "$REMOVE_MARKED" == "0" && "$rc" -ne 0 ]] || return 0
   REMOVE_MARKED=1
   case "$REMOVE_STAGE" in
-    preflight_failed|service_state_failed|service_stop_failed|service_uninstall_failed|config_remove_failed|local_cleanup_failed|unknown_failed) ;;
+    preflight_failed|service_state_failed|service_stop_failed|service_uninstall_failed|service_record_reconcile_failed|config_remove_failed|local_cleanup_failed|unknown_failed) ;;
     *) REMOVE_STAGE="unknown_failed" ;;
   esac
   value="$REMOVE_EXIT"
@@ -623,7 +623,24 @@ cd "$RUNNER_DIR"
 if [[ "$WEB_MODE" == "1" ]]; then
   web_token_from_fd || die "Invalid Web removal token input."
   RUNNER_NAME="$(jq -er '.agentName' "$RUNNER_DIR/.runner")" || die "Configured runner name is unavailable."
-  SERVICE_NAME="$(read_service_name_strict "$RUNNER_DIR/.service")" || die "Configured service identity is unavailable."
+  SERVICE_NAME="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
+  [[ "${#SERVICE_NAME}" -le 150 ]] || die "Unsupported service identity."
+  REMOVE_STAGE="preflight_failed"
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" identity "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
+    die "Configured runner identity cannot be verified."
+  if [[ ! -e "$RUNNER_DIR/.service" && ! -L "$RUNNER_DIR/.service" ]]; then
+    REMOVE_STAGE="unknown_failed"
+    die "Runner service record missing; previous remote outcome requires manual review."
+  fi
+  if compgen -G "$RUNNER_DIR/.grt-service-reconcile-*" >/dev/null; then
+    REMOVE_STAGE="unknown_failed"
+    die "Previous service record quarantine requires manual review."
+  fi
+  REMOVE_STAGE="service_record_reconcile_failed"
+  [[ -f "$RUNNER_DIR/.service" && ! -L "$RUNNER_DIR/.service" ]] ||
+    die "Runner service record unsafe; manual inspection required."
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" check "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
+    die "Configured service identity is unavailable or incompatible."
   REMOVE_STAGE="service_state_failed"
   SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
     die "Could not validate privileged systemd service state."
@@ -635,6 +652,22 @@ if [[ "$WEB_MODE" == "1" ]]; then
     web_service_operation service_uninstall "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME" ||
       die "Privileged service uninstall failed."
   fi
+  REMOVE_STAGE="service_uninstall_failed"
+  FINAL_SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
+    die "Cannot verify final service state before record reconciliation."
+  [[ "$FINAL_SERVICE_STATE" == "absent" ]] ||
+    die "Systemd unit still exists; preserving service record."
+  REMOVE_STAGE="service_record_reconcile_failed"
+  RECORD_PROOF="$(python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" quarantine "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME")" ||
+    die "Local service record reconciliation failed."
+  REMOVE_STAGE="service_uninstall_failed"
+  FINAL_SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
+    die "Cannot verify final service state after record reconciliation."
+  [[ "$FINAL_SERVICE_STATE" == "absent" ]] ||
+    die "Systemd service state changed after reconciliation."
+  REMOVE_STAGE="service_record_reconcile_failed"
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" verify "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" "$RECORD_PROOF" ||
+    die "Local service record identity changed after reconciliation."
 else
   echo "==> Stopping service..."
   if ! sudo ./svc.sh stop; then

@@ -386,6 +386,9 @@ def create_attestation(repo: str, runner: str, runner_dir: str, user: str, versi
                 raise AuthorityError("registration identity mismatch")
         finally:
             os.close(meta)
+        runner_id = config.get("agentId")
+        if isinstance(runner_id, bool) or not isinstance(runner_id, int) or runner_id <= 0:
+            raise AuthorityError("official registration ID absent or invalid")
         if (os.fstat(dirfd).st_dev, os.fstat(dirfd).st_ino) != (parent.st_dev, parent.st_ino):
             raise AuthorityError("runner directory replaced")
         path_state = os.stat(runner_dir, follow_symlinks=False)
@@ -394,7 +397,7 @@ def create_attestation(repo: str, runner: str, runner_dir: str, user: str, versi
         item = {
             "schema": 2, "instance": active["instance"], "issuer": "root-dispatcher-create", "issued_at": int(time.time()),
             "repository": repo, "runner": runner, "runner_dir": runner_dir,
-            "runner_uid": account.pw_uid, "runner_gid": account.pw_gid,
+            "github_runner_id": runner_id, "runner_uid": account.pw_uid, "runner_gid": account.pw_gid,
             "directory_device": parent.st_dev, "directory_inode": parent.st_ino,
             "files": {".runner": agent, ".credentials": credentials},
             "runner_version": version, "capture_stage": "registered-secure-before-service",
@@ -524,8 +527,14 @@ def remove_stage(repo: str, runner: str, runner_dir: str, user: str, stage: str)
                             ("https://github.com/" + repo).lower()):
                         raise AuthorityError("runner identity mismatch")
                     remote_id = reg.get("agentId")
-                    if remote_id is not None and not isinstance(remote_id, int):
+                    if remote_id is not None and (isinstance(remote_id, bool) or
+                                                   not isinstance(remote_id, int) or remote_id <= 0):
                         raise AuthorityError("invalid runner ID")
+                    if created.get("stage") == "CREATE_COMPLETE":
+                        att = _cycle_record(ATTESTATIONS, repo, runner, runner_dir, instance)
+                        if (att is None or att.get("instance") != instance or
+                                att.get("github_runner_id") != remote_id):
+                            raise AuthorityError("new-cycle remote Runner ID mismatch")
                 finally:
                     os.close(metadata)
             finally:

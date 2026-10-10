@@ -642,7 +642,9 @@ fi
 
 cd "$RUNNER_DIR"
 if [[ "$WEB_MODE" == "1" ]]; then
-  web_token_from_fd || die "Invalid Web removal token input."
+  if [[ "$EXECUTOR_MODE" != "1" ]]; then
+    web_token_from_fd || die "Invalid Web removal token input."
+  fi
   RUNNER_NAME="$(jq -er '.agentName' "$RUNNER_DIR/.runner")" || die "Configured runner name is unavailable."
   SERVICE_NAME="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
   [[ "${#SERVICE_NAME}" -le 150 ]] || die "Unsupported service identity."
@@ -706,7 +708,22 @@ fi
 echo "==> Removing runner registration from GitHub..."
 if [[ "$WEB_MODE" == "1" ]]; then
   REMOVE_STAGE="config_remove_failed"
-  if ( exec {RESULT_FD}>&-; ./config.sh remove --token "$TOKEN" >/dev/null 2>&1 ); then
+  if [[ "$EXECUTOR_MODE" == "1" ]]; then
+    # V2 consumes the one-shot FD through the existing PTY adapter.
+    # Never expose the token in CLI argv, env or persistent state.
+    PTY_ADAPTER="/usr/local/lib/github-runner-tools/web/pty_token_adapter.py"
+    [[ -x "$PTY_ADAPTER" ]] || die "Trusted removal token adapter unavailable."
+    if python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode remove -- ./config.sh remove >/dev/null 2>&1; then
+      REMOVE_RC=0
+    else
+      REMOVE_RC=$?
+    fi
+  elif ( exec {RESULT_FD}>&-; ./config.sh remove --token "$TOKEN" >/dev/null 2>&1 ); then
+    REMOVE_RC=0
+  else
+    REMOVE_RC=$?
+  fi
+  if [[ "$REMOVE_RC" == "0" ]]; then
     unset TOKEN
     REMOVE_STAGE="local_cleanup_failed"
     web_remove_state CONFIRM_REMOTE_REMOVED ||
@@ -716,7 +733,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
     REMOVE_PROOF_INODE="$(jq -er '.inode | numbers' <<<"$WEB_PRIV_RESPONSE")" ||
       die "Cleanup authority returned invalid target inode."
   else
-    REMOVE_EXIT="$?"
+    REMOVE_EXIT="$REMOVE_RC"
     # Bash's 128+signal convention cannot distinguish a killed child from
     # a normal program deliberately exiting with the same numeric status.
     # All such ambiguous statuses are conservatively unknown.

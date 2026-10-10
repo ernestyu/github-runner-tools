@@ -199,9 +199,17 @@ EOF
 sudo install -o root -g root -m 0644 "$TMP_WEB" "$WEB_UNIT"
 sudo install -o root -g root -m 0644 "$TMP_EXEC" "$EXEC_UNIT"
 rm -f "$TMP_WEB" "$TMP_EXEC"
+# The V1 dispatcher and V2 Executor both use RuntimeDirectory=github-runner-tools.
+# Stop the old owner *before* starting the new owner; stopping V1 later
+# could remove the shared runtime directory and unlink the new socket.
+sudo systemctl stop github-runner-tools-web.service
+sudo systemctl disable --now github-runner-tools-dispatch.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now github-runner-tools-executor.service
 sudo systemctl restart github-runner-tools-web.service
-sudo systemctl disable --now github-runner-tools-dispatch.service
-echo "V2 Web switch attempted; verify status and authenticate before acceptance."
+sudo systemctl is-active --quiet github-runner-tools-executor.service ||
+  { echo "Executor failed to remain active; stop and restore reviewed backup" >&2; exit 1; }
+sudo systemctl is-active --quiet github-runner-tools-web.service ||
+  { echo "Web failed to remain active; stop and restore reviewed backup" >&2; exit 1; }
+echo "V2 Web switch attempted; verify authenticated Create/Status/Remove before acceptance."
 echo "If verification fails, stop operations and restore the reviewed V1 backup; never rewrite lifecycle records."

@@ -176,6 +176,25 @@ class AuthorityTests(unittest.TestCase):
         self.assertFalse((self.base / "state" / "remove-state").exists()
                          and list((self.base / "state" / "remove-state").glob("*.json")))
 
+    def test_fresh_create_only_normalizes_0664_registration(self):
+        (self.runner / ".runner").chmod(0o664)
+        (self.runner / ".credentials").chmod(0o664)
+        auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_PERMISSION_INCOMPLETE")
+        auth.normalize_new_registration(REPO, RUNNER, self.repo, "root")
+        self.assertEqual((self.runner / ".runner").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.runner / ".credentials").stat().st_mode & 0o777, 0o600)
+        auth.create_attestation(REPO, RUNNER, self.repo, "root", "2.328.0")
+        auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_UNIT_INCOMPLETE")
+        with self.assertRaises(auth.AuthorityError):
+            auth.normalize_new_registration(REPO, RUNNER, self.repo, "root")
+
+    def test_existing_untracked_0664_cannot_be_normalized(self):
+        (self.runner / ".credentials").chmod(0o664)
+        with self.assertRaises(auth.AuthorityError):
+            auth.normalize_new_registration(REPO, RUNNER, self.repo, "root")
+        self.assertEqual((self.runner / ".credentials").stat().st_mode & 0o777, 0o664)
+
     def test_cli_create_rejects_official_0664_unit_and_preserves_partial_stage(self):
         service = "actions.runner.example-repo.fixture.service"
         fake_systemd = self.base / "pretend-unit-root"

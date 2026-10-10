@@ -626,6 +626,8 @@ if [[ "$WEB_MODE" == "1" ]]; then
   SERVICE_NAME="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
   [[ "${#SERVICE_NAME}" -le 150 ]] || die "Unsupported service identity."
   REMOVE_STAGE="preflight_failed"
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" identity "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
+    die "Configured runner identity cannot be verified."
   if [[ ! -e "$RUNNER_DIR/.service" && ! -L "$RUNNER_DIR/.service" ]]; then
     REMOVE_STAGE="unknown_failed"
     die "Runner service record missing; previous remote outcome requires manual review."
@@ -634,6 +636,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
     REMOVE_STAGE="unknown_failed"
     die "Previous service record quarantine requires manual review."
   fi
+  REMOVE_STAGE="service_record_reconcile_failed"
   [[ -f "$RUNNER_DIR/.service" && ! -L "$RUNNER_DIR/.service" ]] ||
     die "Runner service record unsafe; manual inspection required."
   python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" check "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||

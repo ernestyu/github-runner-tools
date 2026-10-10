@@ -45,6 +45,7 @@ jobs:
           bash tests/test-web-v2-setup.sh
           python3 tests/test-web-v2-real-private-channel.py
           python3 tests/test-web-v2-install-manifest.py
+          python3 tests/test-web-v2-real-spawn.py
       - name: Existing pure and Web compatibility regression
         run: |
           bash tests/test-pure.sh

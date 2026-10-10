@@ -3,6 +3,7 @@ set -Eeuo pipefail
 # Explicit V1 -> V2 Web service switch. Does not mutate runner services.
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 INSTALL_ROOT="/usr/local/lib/github-runner-tools/web"
+CLI_ROOT="/usr/local/lib/github-runner-tools/cli"
 STATE_DIR="/var/lib/github-runner-tools"
 CONFIG="/etc/github-runner-tools/web.conf"
 AUTH="/etc/github-runner-tools/web-auth.conf"
@@ -96,11 +97,23 @@ for file in v2_executor_contract.py v2_executor_transport.py v2_token_fd.py \
     { echo "Missing fixed V2 module $file" >&2; exit 1; }
   sudo install -o root -g root -m 0755 "$ROOT/web/$file" "$INSTALL_ROOT/$file"
 done
+# V2 has one pinned CLI authority under /usr/local/lib/github-runner-tools/cli.
+# Keep the old V1 Web CLI files available only for an explicitly authorized
+# rollback. Never allow either grt-web or actions to write the V2 CLI root.
+if sudo test -L "$CLI_ROOT"; then
+  echo "Symlinked V2 CLI directory refused" >&2; exit 1
+fi
+if sudo test -e "$CLI_ROOT"; then
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$CLI_ROOT")" == "root:root:755:directory" ]] ||
+    { echo "Unexpected CLI directory owner or mode" >&2; exit 1; }
+else
+  sudo install -d -o root -g root -m 0755 "$CLI_ROOT"
+fi
 for file in register-runner.sh remove-runner.sh status-runners.sh \
             web-service-record.py web-runner-cleanup.py; do
   [[ -f "$ROOT/scripts/$file" && ! -L "$ROOT/scripts/$file" ]] ||
     { echo "Missing fixed CLI artifact $file" >&2; exit 1; }
-  sudo install -o root -g root -m 0755 "$ROOT/scripts/$file" "$INSTALL_ROOT/cli/$file"
+  sudo install -o root -g root -m 0755 "$ROOT/scripts/$file" "$CLI_ROOT/$file"
 done
 
 # Preserve all existing configuration fields; only opt into V2 routing.

@@ -80,7 +80,11 @@ def install_canonical_unit(repo: str, runner_name: str, directory: str,
             # check is necessary but cannot replace a final directory audit.
             if os.path.lexists(path):
                 raise UnitInstallError("Unit appeared during installation")
-            os.rename(tmp, service, src_dir_fd=unit_dir, dst_dir_fd=unit_dir)
+            # Hard-link publishing fails with EEXIST instead of overwriting a
+            # concurrently created systemd Unit. Unlink the private staging
+            # name afterward, leaving a single-link root-owned target.
+            os.link(tmp, service, src_dir_fd=unit_dir, dst_dir_fd=unit_dir,
+                    follow_symlinks=False)
         finally:
             try:
                 os.unlink(tmp, dir_fd=unit_dir)

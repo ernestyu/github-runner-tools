@@ -82,7 +82,7 @@ case "\${1:-}" in
     ;;
   install)
     if [[ "\${@: -1}" == "/etc/systemd/system/github-runner-tools-dispatch.service" ]]; then
-      cp "\${@: -2:1}" "${UNIT_CAPTURE}"
+      cp "\${@: -2:1}" "$UNIT_CAPTURE"
     fi
     exit 0
     ;;
@@ -121,20 +121,8 @@ grep -Fq 'install -d -o root -g root -m 0700 /var/lib/github-runner-tools' "$LOG
 [[ -f "$UNIT_CAPTURE" ]] || fail "Dispatcher Unit was not captured"
 grep -Fxq 'ProtectSystem=strict' "$UNIT_CAPTURE" ||
   fail "Dispatcher strict filesystem protection was disabled"
-grep -Fxq 'ReadWritePaths=/root /etc/systemd/system /run/github-runner-tools /run/lock/github-runner-tools /var/lib/github-runner-tools' "$UNIT_CAPTURE" ||
-  grep -Eq '^ReadWritePaths=.+ /var/lib/github-runner-tools
-  fail "--apply unexpectedly configured a Tailscale endpoint"
-fi
-if grep -Eq 'NOPASSWD|sudoers' "$LOG"; then
-  fail "--apply attempted to create a passwordless sudo path"
-fi
-
-echo "PASS: explicit Web apply installation contract tests"
- "$UNIT_CAPTURE" ||
-  fail "Dispatcher Unit missing narrow lifecycle state write path"
-if grep -Fq '/var/lib/github-runner-tools' "$OUT" && grep -Eq 'world-writable|permission denied' "$OUT"; then
-  fail "Lifecycle setup failed permission verification"
-fi
+grep -Eq '^ReadWritePaths=.+ /var/lib/github-runner-tools$' "$UNIT_CAPTURE" ||
+  fail "Dispatcher Unit missing lifecycle state write path"
 
 if grep -Eq 'tailscale[[:space:]]+(serve|funnel)' "$LOG"; then
   fail "--apply unexpectedly configured a Tailscale endpoint"

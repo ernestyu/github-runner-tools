@@ -251,6 +251,26 @@ web_priv_request() {
   jq -e '.ok == true' <<<"$response" >/dev/null 2>&1
 }
 
+cli_remove_authority() {
+  local stage="$1" authority="/usr/local/lib/github-runner-tools/web/cli_remove_authority.py"
+  [[ "$WEB_MODE" != "1" ]] || die "Interactive Remove root authority forbidden in Web context."
+  [[ -f "$authority" && ! -L "$authority" ]] ||
+    die "Trusted interactive Remove authority unavailable."
+  [[ "$(stat -c '%U:%G:%a' "$authority")" == "root:root:755" ]] ||
+    die "Interactive Remove authority ownership or mode invalid."
+  sudo /usr/bin/python3 "$authority" "$REPO" "$RUNNER_NAME" "$RUNNER_DIR" "$stage" ||
+    die "Durable Remove lifecycle checkpoint failed; reconcile before retry."
+}
+
+remove_lifecycle_stage() {
+  local stage="$1"
+  if [[ "$WEB_MODE" == "1" ]]; then
+    web_remove_state "$stage"
+  else
+    cli_remove_authority "$stage"
+  fi
+}
+
 web_remove_state() {
   local stage="$1" payload
   [[ "$WEB_MODE" == "1" ]] || return 1
@@ -633,11 +653,14 @@ Before continuing, open:
 Select the runner, choose Remove, and copy the temporary removal token.
 INFO
 
+RUNNER_NAME="$(jq -er '.agentName' "$RUNNER_DIR/.runner")" ||
+  die "Configured Runner name is unavailable."
 if [[ "$WEB_MODE" != "1" ]]; then
   TOKEN="$(read_tty_line "Paste GitHub removal token: " 1)"
   [[ -n "$TOKEN" ]] || die "Removal token cannot be empty."
   CONFIRM="$(read_tty_line "Type REMOVE to unregister and delete this runner: ")"
   [[ "$CONFIRM" == "REMOVE" ]] || die "Cancelled."
+  remove_lifecycle_stage BEGIN
 fi
 
 cd "$RUNNER_DIR"
@@ -668,7 +691,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
   python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" check "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
     die "Configured service identity is unavailable or incompatible."
   REMOVE_STAGE="preflight_failed"
-  web_remove_state BEGIN || die "Cannot persist removal attempt identity; no service mutation started."
+  remove_lifecycle_stage BEGIN || die "Cannot persist removal attempt identity; no service mutation started."
   REMOVE_STAGE="service_state_failed"
   SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
     die "Could not validate privileged systemd service state."
@@ -734,7 +757,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
   if [[ "$REMOVE_RC" == "0" ]]; then
     unset TOKEN
     REMOVE_STAGE="local_cleanup_failed"
-    web_remove_state CONFIRM_REMOTE_REMOVED ||
+    remove_lifecycle_stage CONFIRM_REMOTE_REMOVED ||
       die "Official unregister succeeded but durable local cleanup authorization failed."
     REMOVE_PROOF_DEVICE="$(jq -er '.device | numbers' <<<"$WEB_PRIV_RESPONSE")" ||
       die "Cleanup authority returned invalid target device."
@@ -755,6 +778,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
 else
   ./config.sh remove --token "$TOKEN"
   unset TOKEN
+  remove_lifecycle_stage CONFIRM_REMOTE_REMOVED
 fi
 
 REMOVE_STAGE="local_cleanup_failed"
@@ -766,11 +790,12 @@ if [[ "$WEB_MODE" == "1" ]]; then
   python3 "${BASH_SOURCE[0]%/*}/web-runner-cleanup.py" \
     "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$REMOVE_PROOF_DEVICE" "$REMOVE_PROOF_INODE" ||
     die "Runner local directory cleanup failed; remote unregister was already completed."
-  web_remove_state COMPLETE || die "Runner directory was deleted but terminal completion verification failed."
+  remove_lifecycle_stage COMPLETE || die "Runner directory was deleted but terminal completion verification failed."
 else
   rm -rf -- "$RUNNER_DIR"
   [[ ! -e "$RUNNER_DIR" && ! -L "$RUNNER_DIR" ]] ||
     die "Runner directory still exists after local cleanup."
+  remove_lifecycle_stage COMPLETE
 fi
 
 echo

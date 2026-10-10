@@ -65,6 +65,20 @@ fi
 [[ "$(sudo stat -c '%U:%G:%a:%F' "$INSTALL_ROOT")" == "root:root:755:directory" ]] ||
   { echo "Untrusted installed executable path" >&2; exit 1; }
 
+# The shared lock must remain held throughout the migration cutover.
+# This excludes any active Create/Remove, and stopping V1 before snapshot
+# prevents a concurrent V1 writer from making the root journal inconsistent.
+MUTATION_LOCK="/run/lock/github-runner-tools/mutation.lock"
+[[ -f "$MUTATION_LOCK" && ! -L "$MUTATION_LOCK" ]] ||
+  { echo "Existing root mutation lock is missing or unsafe" >&2; exit 1; }
+[[ "$(stat -c '%u:%g:%a' "$MUTATION_LOCK")" == "0:$(id -g):660" ]] ||
+  { echo "Unexpected root mutation lock ownership" >&2; exit 1; }
+exec {CUTOVER_LOCK}<>"$MUTATION_LOCK"
+flock -n "$CUTOVER_LOCK" ||
+  { echo "Lifecycle mutation is active; abort before service switch" >&2; exit 1; }
+sudo systemctl stop github-runner-tools-web.service
+sudo systemctl disable --now github-runner-tools-dispatch.service
+
 # Preserve V1 Web settings, credentials and Unit for reviewed rollback.
 BACKUP="$(sudo mktemp -d "$STATE_DIR/web-v2-rollback.XXXXXXXX")"
 sudo chmod 0700 "$BACKUP"
@@ -92,6 +106,14 @@ for state_subdir in active-instances runner-attestations unit-attestations \
     sudo cp -a "$STATE_DIR/$state_subdir" "$BACKUP/lifecycle-snapshot/"
   fi
 done
+# Immutable review evidence for the exact copied V1 authority state: file
+# content digests and metadata are kept under the root-only 0700 backup,
+# not logged or placed in the public Web directory.
+sudo find "$BACKUP/lifecycle-snapshot" -type f -exec sha256sum -- {} + |
+  sudo tee "$BACKUP/lifecycle-sha256.txt" >/dev/null
+sudo find "$BACKUP/lifecycle-snapshot" -type f -printf '%m %u %g %p\n' |
+  sudo tee "$BACKUP/lifecycle-metadata.txt" >/dev/null
+sudo chmod 0600 "$BACKUP/lifecycle-sha256.txt" "$BACKUP/lifecycle-metadata.txt"
 echo "Root-only config, code and lifecycle snapshots recorded (path redacted)"
 
 # Install V2 source + existing authority and scripts into root-owned paths.
@@ -199,11 +221,8 @@ EOF
 sudo install -o root -g root -m 0644 "$TMP_WEB" "$WEB_UNIT"
 sudo install -o root -g root -m 0644 "$TMP_EXEC" "$EXEC_UNIT"
 rm -f "$TMP_WEB" "$TMP_EXEC"
-# The V1 dispatcher and V2 Executor both use RuntimeDirectory=github-runner-tools.
-# Stop the old owner *before* starting the new owner; stopping V1 later
-# could remove the shared runtime directory and unlink the new socket.
-sudo systemctl stop github-runner-tools-web.service
-sudo systemctl disable --now github-runner-tools-dispatch.service
+# The V1 process has already been quiesced under the same mutation lock.
+# Only then bind the new RuntimeDirectory/Executor socket and switch Web.
 sudo systemctl daemon-reload
 sudo systemctl enable --now github-runner-tools-executor.service
 sudo systemctl restart github-runner-tools-web.service

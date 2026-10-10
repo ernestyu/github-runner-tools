@@ -40,6 +40,13 @@ class AuthorityTests(unittest.TestCase):
         for name in (".runner", ".credentials"):
             (self.runner / name).chmod(0o600)
 
+    def complete_create(self):
+        auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_PERMISSION_INCOMPLETE")
+        auth.create_attestation(REPO, RUNNER, self.repo, "root", "2.328.0")
+        for stage in auth.STAGES[2:]:
+            auth.create_stage(REPO, RUNNER, self.repo, stage)
+
     def test_full_stage_transitions_and_restart_block(self):
         auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
         with self.assertRaises(auth.AuthorityError):
@@ -52,7 +59,7 @@ class AuthorityTests(unittest.TestCase):
             auth.create_stage(REPO, RUNNER, self.repo, stage)
         with self.assertRaises(auth.AuthorityError):
             auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
-        ledger = list((self.base / "state" / "create-state").glob("*.json"))
+        ledger = list((self.base / "state" / "create-state").glob("*.*.json"))
         self.assertEqual(len(ledger), 1)
         self.assertEqual(json.loads(ledger[0].read_text())["stage"], "CREATE_COMPLETE")
         self.assertEqual(ledger[0].stat().st_mode & 0o777, 0o600)
@@ -97,6 +104,7 @@ class AuthorityTests(unittest.TestCase):
                          and list((self.base / "state" / "runner-attestations").glob("*.json")))
 
     def test_dispatcher_unit_provenance_is_root_owned_and_mode_pinned(self):
+        auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
         service = "actions.runner.example-repo.fixture.service"
         pretend_systemd = self.base / "pretend-systemd"
         pretend_systemd.mkdir()
@@ -139,6 +147,7 @@ class AuthorityTests(unittest.TestCase):
                                              "/etc/systemd/system/" + service)
 
     def test_remove_terminal_state_is_durable_and_nonretryable(self):
+        self.complete_create()
         first = auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
         self.assertEqual(first["inode"], self.runner.stat().st_ino)
         with self.assertRaises(auth.AuthorityError):
@@ -152,11 +161,12 @@ class AuthorityTests(unittest.TestCase):
                          {"complete": True})
         with self.assertRaises(auth.AuthorityError):
             auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
-        states = list((self.base / "state" / "remove-state").glob("*.json"))
+        states = list((self.base / "state" / "remove-state").glob("*.*.json"))
         self.assertEqual(len(states), 1)
         self.assertEqual(json.loads(states[0].read_text())["stage"], "REMOVE_COMPLETE")
 
     def test_remove_ledger_rejects_mismatched_metadata(self):
+        self.complete_create()
         (self.runner / ".runner").write_text(json.dumps({
             "agentName": RUNNER, "gitHubUrl": "https://github.com/foreign/repo"}))
         with self.assertRaises(auth.AuthorityError):

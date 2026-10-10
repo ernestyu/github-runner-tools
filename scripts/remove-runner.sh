@@ -453,6 +453,27 @@ uninstall_service_safely() {
   esac
 }
 
+remove_local_runner_dir() {
+  # One post-confirmation cleanup path, shared by both modes. The Web
+  # transport receives inode/device proof from the existing root authority;
+  # interactive CLI uses its user-owned scoped directory deletion.
+  [[ -n "$RUNNER_DIR" && "$RUNNER_DIR" != "/" ]] ||
+    die "Cannot delete an empty or root Runner directory."
+  case "$RUNNER_DIR" in
+    "$RUNNER_BASE_DIR"/actions-runner-*) ;;
+    *) die "Unexpected local runner deletion scope." ;;
+  esac
+  if [[ "$WEB_MODE" == "1" ]]; then
+    python3 "${BASH_SOURCE[0]%/*}/web-runner-cleanup.py" \
+      "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$REMOVE_PROOF_DEVICE" "$REMOVE_PROOF_INODE" ||
+      die "Runner local directory cleanup failed; remote unregister was already completed."
+  else
+    rm -rf -- "$RUNNER_DIR"
+    [[ ! -e "$RUNNER_DIR" && ! -L "$RUNNER_DIR" ]] ||
+      die "Runner directory still exists after local cleanup."
+  fi
+}
+
 main() {
 if [[ ${EUID} -eq 0 ]]; then die "Do not run this script as root. Run it as the runner owner."; fi
 for cmd in jq id awk tr sed sha256sum cut find systemctl flock stat python3; do require_command "$cmd"; done
@@ -786,17 +807,9 @@ cd "$RUNNER_BASE_DIR"
 case "$RUNNER_DIR" in "$RUNNER_BASE_DIR"/actions-runner-*) ;; *) die "Safety check failed; refusing to delete unexpected path: $RUNNER_DIR" ;; esac
 
 echo "==> Deleting local runner directory..."
-if [[ "$WEB_MODE" == "1" ]]; then
-  python3 "${BASH_SOURCE[0]%/*}/web-runner-cleanup.py" \
-    "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$REMOVE_PROOF_DEVICE" "$REMOVE_PROOF_INODE" ||
-    die "Runner local directory cleanup failed; remote unregister was already completed."
-  remove_lifecycle_stage COMPLETE || die "Runner directory was deleted but terminal completion verification failed."
-else
-  rm -rf -- "$RUNNER_DIR"
-  [[ ! -e "$RUNNER_DIR" && ! -L "$RUNNER_DIR" ]] ||
-    die "Runner directory still exists after local cleanup."
-  remove_lifecycle_stage COMPLETE
-fi
+remove_local_runner_dir
+remove_lifecycle_stage COMPLETE ||
+  die "Runner directory deletion completed but durable Remove closeout failed."
 
 echo
 cat <<DONE

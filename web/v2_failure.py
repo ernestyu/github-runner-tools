@@ -47,13 +47,12 @@ def diagnostic(runtime, request, error: str, *,
             record = _cycle_record(store, repo, runner, directory, active["instance"])
             if record and record.get("stage") in SAFE_STAGES:
                 result["stage"] = record["stage"]
-                if record["stage"] in (
-                    "REGISTRATION_OUTCOME_UNKNOWN", "REGISTERED_PERMISSION_INCOMPLETE",
-                    "REGISTERED_UNIT_INCOMPLETE", "REGISTERED_START_INCOMPLETE",
-                    "REGISTERED_HEALTH_UNKNOWN", "REMOTE_REMOVE_OUTCOME_UNKNOWN",
-                    "REGISTERED_REMOVED_LOCAL_CLEANUP_PENDING",
-                ):
-                    result["outcome"] = "UNKNOWN_RECONCILIATION_REQUIRED"
+                # A journal record means the operation crossed the
+                # admission/checkpoint boundary. Even PRE_REGISTRATION may
+                # precede an externally successful call whose result was
+                # lost by crash; a later CLI nonzero is not proof that
+                # GitHub or systemd were untouched. Be conservative.
+                result["outcome"] = "UNKNOWN_RECONCILIATION_REQUIRED"
     except (AuthorityError, OSError, TypeError, ValueError, KeyError):
         pass
     return result

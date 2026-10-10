@@ -40,8 +40,36 @@ class BindingTests(unittest.TestCase):
         with patch.object(binding, "_current", return_value={"instance":"bb"*16}):
             with self.assertRaises(binding.TransactionBindingError):
                 binding.authorize_private_request(self.runtime, REMOVE, req)
-        with patch.object(binding, "_current", return_value={"instance":"aa"*16}):
+        with patch.object(binding, "_current", return_value={"instance":"aa"*16}), \
+             patch.object(binding, "_cycle_record", return_value=None):
             self.assertEqual(binding.authorize_private_request(self.runtime, REMOVE, req), req)
+
+    def test_remove_service_requires_durable_begin(self):
+        req = {"op":"service_stop","repository":"owner/repo",
+               "runner_dir":"/home/actions/actions-runner-owner--repo",
+               "runner_name":"runner",
+               "service":"actions.runner.owner-repo.runner.service"}
+        with patch.object(binding, "_current", return_value={"instance":"aa"*16}), \
+             patch.object(binding, "_cycle_record", return_value=None):
+            with self.assertRaises(binding.TransactionBindingError):
+                binding.authorize_private_request(self.runtime, REMOVE, req)
+        with patch.object(binding, "_current", return_value={"instance":"aa"*16}), \
+             patch.object(binding, "_cycle_record",
+                          return_value={"stage":"REMOTE_REMOVE_OUTCOME_UNKNOWN"}):
+            self.assertEqual(binding.authorize_private_request(self.runtime, REMOVE, req), req)
+
+    def test_create_service_requires_registration_stage(self):
+        req = {"op":"service_install","repository":"owner/repo",
+               "runner_dir":"/home/actions/actions-runner-owner--repo",
+               "runner_name":"local-ci-owner--repo"}
+        with patch.object(binding, "_current", return_value={"instance":"aa"*16}), \
+             patch.object(binding, "_cycle_record", return_value={"stage":"PRE_REGISTRATION"}):
+            with self.assertRaises(binding.TransactionBindingError):
+                binding.authorize_private_request(self.runtime, CREATE, req)
+        with patch.object(binding, "_current", return_value={"instance":"aa"*16}), \
+             patch.object(binding, "_cycle_record",
+                          return_value={"stage":"REGISTERED_UNIT_INCOMPLETE"}):
+            self.assertEqual(binding.authorize_private_request(self.runtime, CREATE, req), req)
 
     def test_cross_transaction_ops_refused(self):
         base = {"repository":"owner/repo", "runner_dir":"/home/actions/actions-runner-owner--repo",

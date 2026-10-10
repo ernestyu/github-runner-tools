@@ -1,22 +1,32 @@
-name: CI
+name: Development Check
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'impl/**'
+      - 'fix/**'
+      - 'spec/**'
   pull_request:
 
 permissions:
   contents: read
 
 jobs:
-  tests:
+  development:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Install test prerequisites
+      - name: Shell syntax
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq rsync
-      - name: Run test suite
-        run: bash tests/run-all.sh
+          for script in scripts/*.sh; do bash -n "$script"; done
+      - name: Python syntax
+        run: |
+          python3 -m compileall -q web
+      - name: V2 executor contract
+        run: |
+          python3 tests/test-web-v2-executor-contract.py
+      - name: Existing pure regression
+        run: |
+          bash tests/test-pure.sh

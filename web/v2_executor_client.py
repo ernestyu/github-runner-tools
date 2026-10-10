@@ -26,7 +26,10 @@ def send_request(request, token: bytes | None, socket_path: str = EXECUTOR_SOCKE
         raise ExecutorClientError("unapproved Executor endpoint")
     frame = encode_request_frame(request, token)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.settimeout(20)
+    # Create and Remove may take the Executor's bounded 900-second deadline.
+    # A 20s client timeout would falsely signal failure while a mutation
+    # continues, inviting unsafe duplicate submissions.
+    sock.settimeout(20 if request.op == "status" else 930)
     try:
         sock.connect(socket_path)
         sock.sendall(frame)

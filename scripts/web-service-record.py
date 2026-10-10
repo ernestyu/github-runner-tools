@@ -47,7 +47,7 @@ def record(fd: int, basename: str, uid: int, expected: bytes) -> os.stat_result:
         raise ValueError("unsafe record metadata")
     if st.st_size > 160:
         raise ValueError("oversize record")
-    h = os.open(basename, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+    h = os.open(basename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=fd)
     try:
         current = os.fstat(h)
         data = os.read(h, 161)

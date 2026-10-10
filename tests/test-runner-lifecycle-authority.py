@@ -174,6 +174,37 @@ class AuthorityTests(unittest.TestCase):
         self.assertFalse((self.base / "state" / "remove-state").exists()
                          and list((self.base / "state" / "remove-state").glob("*.json")))
 
+    def test_same_repo_new_lifecycle_uses_distinct_proofs_and_inode(self):
+        self.complete_create()
+        first = auth._current(REPO, RUNNER, self.repo)["instance"]
+        old_attest = auth._cycle_record(auth.ATTESTATIONS, REPO, RUNNER, self.repo, first)
+        self.assertEqual(old_attest["instance"], first)
+        auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        auth.remove_stage(REPO, RUNNER, self.repo, "root", "CONFIRM_REMOTE_REMOVED")
+        shutil.rmtree(self.runner)
+        auth.remove_stage(REPO, RUNNER, self.repo, "root", "COMPLETE")
+        self.runner.mkdir()
+        (self.runner / ".runner").write_text(json.dumps({
+            "agentName": RUNNER, "gitHubUrl": "https://github.com/example/repo"}))
+        (self.runner / ".credentials").write_text("SECOND_CYCLE_SYNTHETIC")
+        for name in (".runner", ".credentials"):
+            (self.runner / name).chmod(0o600)
+        auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        second = auth._current(REPO, RUNNER, self.repo)["instance"]
+        self.assertNotEqual(first, second)
+        self.assertIsNone(auth._cycle_record(auth.ATTESTATIONS, REPO, RUNNER, self.repo, second))
+        with self.assertRaises(auth.AuthorityError):
+            auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_UNIT_INCOMPLETE")
+        auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_PERMISSION_INCOMPLETE")
+        auth.create_attestation(REPO, RUNNER, self.repo, "root", "2.328.0")
+        new_attest = auth._cycle_record(auth.ATTESTATIONS, REPO, RUNNER, self.repo, second)
+        self.assertNotEqual(old_attest["files"][".credentials"]["sha256"],
+                            new_attest["files"][".credentials"]["sha256"])
+        self.assertEqual(auth._cycle_record(auth.ATTESTATIONS, REPO, RUNNER, self.repo, first),
+                         old_attest)
+        with self.assertRaises(auth.AuthorityError):
+            auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+
     def test_attestation_wrong_repository_rejected(self):
         auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
         auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_PERMISSION_INCOMPLETE")

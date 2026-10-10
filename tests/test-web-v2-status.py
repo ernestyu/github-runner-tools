@@ -29,7 +29,7 @@ class StatusBoundaryTests(unittest.TestCase):
              patch.object(v2_status.subprocess, "run", return_value=result) as run:
             self.assertEqual(v2_status.status_as_runner()["data"], {"runners": []})
         args, kwargs = run.call_args
-        self.assertEqual(args[0], ["/usr/local/lib/github-runner-tools/cli/status-runners.sh", "--json"])
+        self.assertEqual(args[0], ["/usr/local/lib/github-runner-tools/web/cli/status-runners.sh", "--json"])
         self.assertEqual(kwargs["user"], 1000)
         self.assertEqual(kwargs["group"], 1000)
         self.assertEqual(kwargs["extra_groups"], [])

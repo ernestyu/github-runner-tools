@@ -35,8 +35,17 @@ class WebV2StatusTests(unittest.TestCase):
         self.assertEqual(resp["error"], "operation_in_progress")
         create.assert_called_once_with("o/r", "sample")
 
-    def test_v2_remove_never_falls_back_to_v1(self):
-        for op in ("remove", "recover_local", "shell"):
+    def test_v2_remove_uses_attested_executor_contract(self):
+        with patch.object(client, "remove_runner",
+                          return_value={"ok": False, "error": "remove_identity_rejected"}) as remove:
+            result = app.dispatch({"V2_EXECUTOR_MODE": "1"}, {
+                "op": "remove", "repository": "o/r", "runner_name": "runner",
+                "runner_id": 7, "instance": "aa" * 16, "token": "sample"})
+        self.assertEqual(result["error"], "remove_identity_rejected")
+        remove.assert_called_once_with("o/r", "runner", 7, "aa" * 16, "sample")
+
+    def test_v2_never_falls_back_to_legacy_recovery(self):
+        for op in ("recover_local", "shell"):
             with self.subTest(op=op), patch.object(client, "fetch_status") as fetch:
                 resp = app.dispatch({"V2_EXECUTOR_MODE": "1"},
                                     {"op": op, "repository": "o/r", "token": "sample"})

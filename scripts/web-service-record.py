@@ -78,7 +78,7 @@ def open_anchored_directory(path: str) -> int:
 
 
 def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, proof: str = "") -> None:
-    if mode not in ("identity", "check", "quarantine", "verify"):
+    if mode not in ("identity", "registration_check", "check", "quarantine", "verify"):
         raise ValueError("invalid mode")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("invalid repo")
@@ -132,7 +132,10 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, pr
             for filename in (".runner", ".credentials"):
                 state = os.stat(filename, dir_fd=fd, follow_symlinks=False)
                 if (not stat.S_ISREG(state.st_mode) or state.st_uid != os.getuid()
-                        or state.st_nlink != 1 or state.st_mode & 0o022):
+                        or state.st_gid != os.getgid() or state.st_nlink != 1
+                        or (state.st_mode & 0o777) not in (0o600, 0o644, 0o664)):
+                    raise ValueError("invalid registration metadata")
+                if mode != "identity" and state.st_mode & 0o022:
                     raise ValueError("invalid registration metadata")
                 registration_state[filename] = state
             metadata_fd = os.open(".runner", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
@@ -168,7 +171,7 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, pr
                 if not same_directory(identity, os.stat(name, dir_fd=base_fd, follow_symlinks=False)):
                     raise ValueError("directory changed")
                 return
-            if mode == "identity":
+            if mode in ("identity", "registration_check"):
                 return
             st = record(fd, ".service", os.getuid(), unit.encode("ascii"))
             if mode == "check":

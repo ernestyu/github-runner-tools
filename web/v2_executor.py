@@ -28,7 +28,8 @@ def execute(request, secret):
         from v2_mutation import execute_mutation
         return execute_mutation(request, secret)
     if request.op == "remove":
-        return {"ok": False, "error": "remove_attestation_not_wired"}
+        from v2_mutation import execute_mutation
+        return execute_mutation(request, secret)
     if secret is not None:
         return {"ok": False, "error": "invalid_request"}
     return status_as_runner()

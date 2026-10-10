@@ -8,6 +8,7 @@ import os
 import pwd
 import re
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -134,6 +135,30 @@ def main(argv: list[str]) -> None:
                 os.close(fd)
         finally:
             os.close(fd_dir)
+        result = subprocess.run(
+            ["/usr/bin/systemctl", "show", service, "--no-pager",
+             "-p", "LoadState", "-p", "FragmentPath", "-p", "DropInPaths",
+             "-p", "User", "-p", "WorkingDirectory", "-p", "ExecStart"],
+            capture_output=True, text=True, timeout=15, check=False)
+        if result.returncode != 0:
+            raise AuthorityError("systemd Unit state cannot be checked")
+        fields = {}
+        for line in result.stdout.splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                fields[key] = value
+        runsvc = directory + "/runsvc.sh"
+        loaded_exec = fields.get("ExecStart", "")
+        if (fields.get("LoadState") != "loaded" or
+                fields.get("FragmentPath") != str(unit) or
+                fields.get("DropInPaths", "").strip() or
+                fields.get("User") != user or
+                fields.get("WorkingDirectory") != directory or
+                loaded_exec.count("path=") != 1 or
+                loaded_exec.count("argv[]=") != 1 or
+                "path=" + runsvc not in loaded_exec or
+                "argv[]=" + runsvc not in loaded_exec):
+            raise AuthorityError("systemd resolved Unit identity mismatch")
         create_unit_attestation(repo, runner_name, directory, service, str(unit))
 
 

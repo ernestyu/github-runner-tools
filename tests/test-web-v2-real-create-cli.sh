@@ -8,8 +8,18 @@ REPO="owner/repo"; STAGES="$TMP/stages"; PRIV="$TMP/privileged"
 : > "$STAGES"; : > "$PRIV"
 export RUNNER_BASE_DIR="$TMP/runner-home" GRT_EXECUTOR_CONTEXT=1
 export GRT_TEST_MODE=1 GRT_TEST_LOCK_DIR="$TMP/lock"
-cp "$ROOT/web/pty_token_adapter.py" "$TMP/pty_token_adapter.py"
+cat > "$TMP/pty_token_adapter.py" <<'PY'
+import os, runpy
+try:
+    os.fstat(4)
+except OSError:
+    pass
+else:
+    raise SystemExit("SECURITY FAILURE: external adapter inherited privileged FD4")
+runpy.run_path(os.environ["GRT_PTY_ORIGINAL"], run_name="__main__")
+PY
 chmod 0755 "$TMP/pty_token_adapter.py"
+export GRT_PTY_ORIGINAL="$ROOT/web/pty_token_adapter.py"
 export GRT_PTY_ADAPTER="$TMP/pty_token_adapter.py"
 export RUNNER_NAME="local-ci-owner--repo"
 export RUNNER_TOOLS_LIB_ONLY=1

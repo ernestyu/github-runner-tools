@@ -718,6 +718,9 @@ if [[ "$WEB_MODE" == "1" ]]; then
     else
       REMOVE_RC=$?
     fi
+    # The adapter owns the single read; close Bash's inherited copy before
+    # any subsequent privileged file or service operation, on both outcomes.
+    exec {TOKEN_FD}<&-
   elif ( exec {RESULT_FD}>&-; ./config.sh remove --token "$TOKEN" >/dev/null 2>&1 ); then
     REMOVE_RC=0
   else

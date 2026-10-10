@@ -150,7 +150,7 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
     def test_runner_metadata_identity_failure_remains_preflight(self):
         rc, marker, captured, ops, exists = self.run_case(metadata_identity="mismatch")
         self.assertNotEqual(rc, 0)
-        self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=preflight_failed exit=unknown\\n".replace("\\\\n", "\\n"))
+        self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=preflight_failed exit=unknown\n")
         self.assertIsNone(captured)
         self.assertEqual(ops, [])
         self.assertTrue(exists)

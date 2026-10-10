@@ -70,6 +70,15 @@ BACKUP="$(sudo mktemp -d "$STATE_DIR/web-v2-rollback.XXXXXXXX")"
 sudo chmod 0700 "$BACKUP"
 sudo cp -a "$CONFIG" "$AUTH" "$WEB_UNIT" "$BACKUP/"
 sudo cp -a "$INSTALL_ROOT" "$BACKUP/installed-web"
+# Existing root-owned CLI installation, if present, must be restorable.
+# Do not use symlinked or runner-writable code as a deployment source.
+if sudo test -e "$CLI_ROOT" || sudo test -L "$CLI_ROOT"; then
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$CLI_ROOT")" == "root:root:755:directory" ]] ||
+    { echo "Untrusted existing CLI root" >&2; exit 1; }
+  sudo cp -a "$CLI_ROOT" "$BACKUP/installed-cli"
+else
+  sudo install -o root -g root -m 0600 /dev/null "$BACKUP/cli-root-did-not-exist"
+fi
 sudo install -d -o root -g root -m 0700 "$BACKUP/lifecycle-snapshot"
 # Snapshot only known root-owned authority folders. Never recursively copy
 # STATE_DIR into its own backup, and never rewrite existing V1 records.

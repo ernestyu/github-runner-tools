@@ -4,6 +4,7 @@ set -Eeuo pipefail
 # or revert lifecycle records; only a reviewed state-compatible rollback.
 STATE_DIR="/var/lib/github-runner-tools"
 INSTALL_ROOT="/usr/local/lib/github-runner-tools/web"
+CLI_ROOT="/usr/local/lib/github-runner-tools/cli"
 CONFIG="/etc/github-runner-tools/web.conf"
 AUTH="/etc/github-runner-tools/web-auth.conf"
 WEB_UNIT="/etc/systemd/system/github-runner-tools-web.service"
@@ -47,6 +48,15 @@ echo "Rollback preserves current lifecycle state; verify schema compatibility fi
 sudo systemctl stop github-runner-tools-web.service
 sudo systemctl stop github-runner-tools-executor.service
 sudo cp -a "$BACKUP/installed-web/." "$INSTALL_ROOT/"
+# Restore the pre-V2 pinned CLI implementation if it existed. Deliberately
+# preserve current lifecycle records, which are never rolled back.
+if sudo test -d "$BACKUP/installed-cli" && ! sudo test -L "$BACKUP/installed-cli"; then
+  sudo test -d "$CLI_ROOT" && ! sudo test -L "$CLI_ROOT" ||
+    { echo "Canonical CLI directory changed; review required" >&2; exit 1; }
+  sudo cp -a "$BACKUP/installed-cli/." "$CLI_ROOT/"
+elif ! sudo test -f "$BACKUP/cli-root-did-not-exist"; then
+  echo "Canonical CLI rollback evidence missing" >&2; exit 1
+fi
 sudo install -o root -g grt-web -m 0640 "$BACKUP/web.conf" "$CONFIG"
 sudo install -o root -g grt-web -m 0640 "$BACKUP/web-auth.conf" "$AUTH"
 sudo install -o root -g root -m 0644 "$BACKUP/github-runner-tools-web.service" "$WEB_UNIT"

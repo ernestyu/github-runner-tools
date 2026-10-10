@@ -41,6 +41,22 @@ web_service_operation() {
     if [[ "$GRT_FAIL_STAGE" == "$1" ]]; then return 1; fi
     if [[ "$1" == "service_uninstall" ]]; then : > "$GRT_UNINSTALLED_FLAG"; fi
 }
+web_remove_state() {
+    case "$1" in
+      BEGIN) WEB_PRIV_RESPONSE='{"ok":true}' ;;
+      CONFIRM_REMOTE_REMOVED)
+        local device inode
+        device="$(stat -c '%d' "$RUNNER_DIR")"
+        inode="$(stat -c '%i' "$RUNNER_DIR")"
+        WEB_PRIV_RESPONSE="{\"ok\":true,\"device\":$device,\"inode\":$inode}"
+        ;;
+      COMPLETE)
+        [[ ! -e "$RUNNER_DIR" && ! -L "$RUNNER_DIR" ]] || return 1
+        WEB_PRIV_RESPONSE='{"ok":true,"complete":true}'
+        ;;
+      *) return 1 ;;
+    esac
+}
 if [[ "$GRT_FAIL_STAGE" == "record_reconcile" ]]; then
     python3() {
         if [[ "$*" == *web-service-record.py*quarantine* ]]; then return 1; fi
@@ -48,9 +64,9 @@ if [[ "$GRT_FAIL_STAGE" == "record_reconcile" ]]; then
     }
 fi
 if [[ "$GRT_FAIL_STAGE" == "local_cleanup" ]]; then
-    rm() {
-        if [[ "$*" == *actions-runner-example--repo* ]]; then return 42; fi
-        command rm "$@"
+    python3() {
+        if [[ "$*" == *web-runner-cleanup.py* ]]; then return 42; fi
+        web_remove_external python3 "$@"
     }
 fi
 main --base-dir "$GRT_BASE_DIR" --web-worker --token-fd "$2" --result-fd "$3" --privileged-fd 99 --lock-already-held example/repo

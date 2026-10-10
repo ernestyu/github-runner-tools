@@ -62,6 +62,22 @@ def parse_remove_marker(raw: bytes, returncode: int) -> dict[str, Any]:
     return {"ok": False, "error": "lifecycle_failed",
             "stage": stage, "exit_code": exit_code}
 
+CREATE_DIAG_RE = re.compile(
+    r"^GRT_CREATE_DIAG_V1 stage=(preflight|release_metadata|runner_download|"
+    r"registration|post_registration|service_install|service_start) exit=([1-9][0-9]{0,2})$"
+)
+
+
+def forward_create_diagnostic(stderr: str) -> None:
+    # Only forward a fixed marker, never untrusted stderr or tokens.
+    for line in stderr.splitlines()[-16:]:
+        match = CREATE_DIAG_RE.fullmatch(line)
+        if match and int(match.group(2)) <= 255:
+            print(f"worker_diag stage=create_{match.group(1)} exit={match.group(2)}",
+                  file=sys.stderr, flush=True)
+            return
+
+
 class _CapHeader(ctypes.Structure):
     _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
 
@@ -402,6 +418,8 @@ def main() -> int:
             if op == "remove":
                 print(json.dumps(parse_remove_marker(marker, proc.returncode)))
             else:
+                if op == "create":
+                    forward_create_diagnostic(proc.stderr)
                 print(json.dumps({"ok": False, "error": "lifecycle_failed"}))
             return 0
         if op == "list":

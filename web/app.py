@@ -429,6 +429,21 @@ class Handler(BaseHTTPRequestHandler):
                 return True
         return False
 
+    def _v2_remove_target(self, repository: str) -> dict[str, Any] | None:
+        if self.app.config.get("V2_EXECUTOR_MODE") != "1":
+            return None
+        response = dispatch(self.app.config, {"op": "list"})
+        if not response.get("ok") or not isinstance(response.get("runners"), list):
+            return None
+        eligible = [item for item in response["runners"]
+                    if isinstance(item, dict)
+                    and item.get("repository") == repository
+                    and item.get("can_remove") is True
+                    and isinstance(item.get("runner_name"), str)
+                    and type(item.get("runner_id")) is int
+                    and isinstance(item.get("instance"), str)]
+        return eligible[0] if len(eligible) == 1 else None
+
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
         if path == "/login":
@@ -573,10 +588,24 @@ class Handler(BaseHTTPRequestHandler):
             if not self._listed_eligible(repo, operation):
                 self._send(409, page("State changed", "<h1>This runner is not currently eligible for that operation.</h1>"))
                 return
+            v2_target = None
+            if operation == "remove" and self.app.config.get("V2_EXECUTOR_MODE") == "1":
+                v2_target = self._v2_remove_target(repo)
+                if v2_target is None:
+                    self._send(409, page("State changed", "<h1>Remove identity is no longer eligible.</h1>"))
+                    return
             nonce = secure_random_token(24)
-            sess["confirm"][nonce] = {"op": operation, "repository": repo, "expires": now() + CONFIRM_TTL}
+            confirmation = {"op": operation, "repository": repo, "expires": now() + CONFIRM_TTL}
+            if v2_target is not None:
+                confirmation.update(runner_name=v2_target["runner_name"],
+                                    runner_id=v2_target["runner_id"],
+                                    instance=v2_target["instance"])
+            sess["confirm"][nonce] = confirmation
             if operation == "remove":
                 extra = '<label>Temporary removal token</label><br><input type="password" name="token" maxlength="1024" autocomplete="off" required><br><br>'
+                if v2_target is not None:
+                    extra = (f'<p>Runner: <strong>{html.escape(v2_target["runner_name"])}</strong>'
+                             f' · GitHub ID: <strong>{v2_target["runner_id"]}</strong></p>' + extra)
                 label = "Remove runner"
                 target = "/remove/confirm"
             else:
@@ -616,6 +645,17 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, page("Invalid token", "<h1>Invalid removal token</h1>"))
                     return
                 request["token"] = token
+                if self.app.config.get("V2_EXECUTOR_MODE") == "1":
+                    current_target = self._v2_remove_target(repo)
+                    if current_target is None or any(
+                        current_target.get(key) != pending.get(key)
+                        for key in ("runner_name", "runner_id", "instance")
+                    ):
+                        self._send(409, page("State changed", "<h1>Runner identity changed. Remove rejected.</h1>"))
+                        return
+                    request.update(runner_name=pending["runner_name"],
+                                   runner_id=pending["runner_id"],
+                                   instance=pending["instance"])
             if expected_op == "remove":
                 diagnostic_event("dispatch_invoked")
             result = dispatch(self.app.config, request)

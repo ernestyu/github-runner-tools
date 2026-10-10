@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import shutil
 import sys
 import tempfile
 import unittest
@@ -136,6 +137,32 @@ class AuthorityTests(unittest.TestCase):
             with self.assertRaises(auth.AuthorityError):
                 auth.create_unit_attestation(REPO, RUNNER, self.repo, service,
                                              "/etc/systemd/system/" + service)
+
+    def test_remove_terminal_state_is_durable_and_nonretryable(self):
+        first = auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        self.assertEqual(first["inode"], self.runner.stat().st_ino)
+        with self.assertRaises(auth.AuthorityError):
+            auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        proof = auth.remove_stage(REPO, RUNNER, self.repo, "root", "CONFIRM_REMOTE_REMOVED")
+        self.assertEqual(proof, first)
+        with self.assertRaises(auth.AuthorityError):
+            auth.remove_stage(REPO, RUNNER, self.repo, "root", "COMPLETE")
+        shutil.rmtree(self.runner)
+        self.assertEqual(auth.remove_stage(REPO, RUNNER, self.repo, "root", "COMPLETE"),
+                         {"complete": True})
+        with self.assertRaises(auth.AuthorityError):
+            auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        states = list((self.base / "state" / "remove-state").glob("*.json"))
+        self.assertEqual(len(states), 1)
+        self.assertEqual(json.loads(states[0].read_text())["stage"], "REMOVE_COMPLETE")
+
+    def test_remove_ledger_rejects_mismatched_metadata(self):
+        (self.runner / ".runner").write_text(json.dumps({
+            "agentName": RUNNER, "gitHubUrl": "https://github.com/foreign/repo"}))
+        with self.assertRaises(auth.AuthorityError):
+            auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        self.assertFalse((self.base / "state" / "remove-state").exists()
+                         and list((self.base / "state" / "remove-state").glob("*.json")))
 
     def test_attestation_wrong_repository_rejected(self):
         auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")

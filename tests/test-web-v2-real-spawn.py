@@ -23,12 +23,16 @@ class RealSpawnTests(unittest.TestCase):
         read_token = make_token_pipe(b"fixture-only-token")
         parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         out_read, out_write = os.pipe2(os.O_CLOEXEC)
-        child_source = os.dup(child.fileno())
-        if child_source < 5:
-            import fcntl
-            fd = fcntl.fcntl(child_source, fcntl.F_DUPFD_CLOEXEC, 5)
-            os.close(child_source)
-            child_source = fd
+        import fcntl
+        def above_reserved(fd):
+            if fd >= 5:
+                return fd
+            new = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 5)
+            os.close(fd)
+            return new
+        read_token = above_reserved(read_token)
+        child_source = fcntl.fcntl(child.fileno(), fcntl.F_DUPFD_CLOEXEC, 5)
+        out_write = above_reserved(out_write)
         try:
             self.assertTrue(len({read_token, child_source, out_write}) == 3)
             actions = child_file_actions(read_token, child_source, out_write)

@@ -10,7 +10,8 @@ from __future__ import annotations
 import os
 
 from grt_web_common import canonical_service_name, make_local_id
-from runner_lifecycle_authority import _current
+from runner_lifecycle_authority import (_current, _cycle_record,
+                                         CREATE_STATES, REMOVE_STATES)
 from v2_executor_contract import Request
 from v2_privileged import admitted_operation
 
@@ -65,6 +66,39 @@ def authorize_private_request(runtime, transaction: Request, payload) -> dict:
             active = _current(transaction.repository, expected_runner_name, path)
             if active is None:
                 raise TransactionBindingError("missing Create instance")
+        # Existing journal remains authoritative: reject privileged service
+        # operations before CLI has persisted the relevant checkpoint.
+        active = _current(transaction.repository, expected_runner_name, path)
+        if kind == "create":
+            if active is None:
+                if op["op"] == "create_state" and op["stage"] == "PRE_REGISTRATION":
+                    return op
+                raise TransactionBindingError("missing Create checkpoint")
+            record = _cycle_record(CREATE_STATES, transaction.repository,
+                                   expected_runner_name, path, active["instance"])
+            stage = record.get("stage") if record else None
+            allowed_stage = {
+                "registration_permission_normalize": "REGISTERED_PERMISSION_INCOMPLETE",
+                "registration_attestation_create": "REGISTERED_PERMISSION_INCOMPLETE",
+                "service_install": "REGISTERED_UNIT_INCOMPLETE",
+                "service_start": "REGISTERED_START_INCOMPLETE",
+                "service_state": "REGISTERED_HEALTH_UNKNOWN",
+            }.get(op["op"])
+            if allowed_stage is not None and stage != allowed_stage:
+                raise TransactionBindingError("Create checkpoint mismatch")
+        else:
+            ledger = _cycle_record(REMOVE_STATES, transaction.repository,
+                                   expected_runner_name, path, transaction.instance)
+            current = ledger.get("stage") if ledger else None
+            if op["op"] == "remove_state":
+                stage = op["stage"]
+                expected = {"BEGIN": None,
+                            "CONFIRM_REMOTE_REMOVED": "REMOTE_REMOVE_OUTCOME_UNKNOWN",
+                            "COMPLETE": "REGISTERED_REMOVED_LOCAL_CLEANUP_PENDING"}[stage]
+                if current != expected:
+                    raise TransactionBindingError("Remove checkpoint mismatch")
+            elif current != "REMOTE_REMOVE_OUTCOME_UNKNOWN":
+                raise TransactionBindingError("Remove service operation before BEGIN")
         return op
     except (ValueError, OSError, TypeError, KeyError) as exc:
         if isinstance(exc, TransactionBindingError):

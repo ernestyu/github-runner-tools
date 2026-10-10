@@ -47,6 +47,7 @@ jobs:
           python3 tests/test-web-v2-install-manifest.py
           python3 tests/test-web-v2-real-spawn.py
           python3 tests/test-web-v2-real-pty-cli.py
+          bash tests/test-web-v2-shared-create.sh
       - name: Existing pure and Web compatibility regression
         run: |
           bash tests/test-pure.sh

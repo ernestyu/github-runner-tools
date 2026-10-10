@@ -37,7 +37,7 @@ class AuthorityTests(unittest.TestCase):
         self.runner.mkdir()
         self.repo = str(self.runner)
         (self.runner / ".runner").write_text(json.dumps({
-            "agentName": RUNNER, "gitHubUrl": "https://github.com/example/repo"}))
+            "agentName": RUNNER, "agentId": 101, "gitHubUrl": "https://github.com/example/repo"}))
         (self.runner / ".credentials").write_text("SYNTHETIC_NOT_SECRET")
         for name in (".runner", ".credentials"):
             (self.runner / name).chmod(0o600)
@@ -229,6 +229,16 @@ class AuthorityTests(unittest.TestCase):
         with self.assertRaises(auth.AuthorityError):
             auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
         self.assertEqual(original["inode"], self.runner.stat().st_ino)
+
+    def test_same_name_but_changed_remote_agent_id_blocks_remove(self):
+        self.complete_create()
+        (self.runner / ".runner").write_text(json.dumps({
+            "agentName": RUNNER, "agentId": 202,
+            "gitHubUrl": "https://github.com/example/repo"}))
+        (self.runner / ".runner").chmod(0o600)
+        with self.assertRaises(auth.AuthorityError):
+            auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        self.assertFalse(list((self.base / "state" / "remove-state").glob("*.json")))
 
     def test_legacy_0664_cannot_receive_cleanup_cycle(self):
         service = self.runner / ".service"

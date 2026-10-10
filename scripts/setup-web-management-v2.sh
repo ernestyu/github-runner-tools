@@ -12,10 +12,15 @@ RUNNER_HOME="/home/actions"
 MARKER_V1="# managed-by=github-runner-tools-web-v1"
 MARKER_V2="# managed-by=github-runner-tools-web-v2"
 MODE="dry-run"
+EXPECTED_SHA=""
 case "${1:---dry-run}" in
   --dry-run) [[ $# -le 1 ]] || exit 2 ;;
-  --apply) [[ $# -eq 1 ]] || exit 2; MODE="apply" ;;
-  *) echo "Usage: setup-web-management-v2.sh [--dry-run|--apply]" >&2; exit 2 ;;
+  --apply)
+    [[ $# -eq 3 && "${2:-}" == "--expected-sha" ]] || {
+      echo "Usage: setup-web-management-v2.sh --apply --expected-sha FULL40HEX" >&2; exit 2;
+    }
+    MODE="apply"; EXPECTED_SHA="$3" ;;
+  *) echo "Usage: setup-web-management-v2.sh [--dry-run|--apply --expected-sha FULL40HEX]" >&2; exit 2 ;;
 esac
 [[ "$EUID" -ne 0 ]] || { echo "Run as authorized runner owner, not root" >&2; exit 1; }
 for cmd in sudo systemctl install stat mktemp getent grep; do
@@ -27,6 +32,14 @@ if [[ "$MODE" == "dry-run" ]]; then
   echo "DRY-RUN ONLY. Explicit --apply and separate Debian authorization required."
   exit 0
 fi
+[[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+  { echo "A full immutable implementation SHA is required" >&2; exit 1; }
+command -v git >/dev/null ||
+  { echo "Git is required to verify the implementation SHA" >&2; exit 1; }
+[[ "$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)" == "$EXPECTED_SHA" ]] ||
+  { echo "Checked-out implementation does not match approved SHA" >&2; exit 1; }
+[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=no)" ]] ||
+  { echo "Working tree contains local changes; refusing deploy" >&2; exit 1; }
 [[ "$(id -un)" == actions ]] ||
   { echo "This upgrade requires the configured actions runner user" >&2; exit 1; }
 systemctl is-active --quiet tailscaled ||

@@ -58,13 +58,16 @@ main --base-dir "$GRT_BASE_DIR" --web-worker --token-fd "$2" --result-fd "$3" --
 
 class OfficialWebRemoveScriptTests(unittest.TestCase):
     def run_case(self, *, token=TOKEN, config_exit=0, fail_stage="", config_signal="",
-                 service_record="normal", initial_absent=False):
+                 service_record="normal", initial_absent=False, metadata_identity="normal"):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             runner = base / "actions-runner-example--repo"
             runner.mkdir()
             (runner / ".runner").write_text(json.dumps({"agentName": "fixture", "gitHubUrl": "https://github.com/example/repo"}))
             (runner / ".service").write_text("actions.runner.example-repo.fixture.service\n")
+            if metadata_identity == "mismatch":
+                (runner / ".runner").write_text(json.dumps({"agentName": "fixture", "gitHubUrl": "https://github.com/foreign/repo"}))
+
             (runner / ".credentials").write_text("SYNTHETIC_NONSECRET")
             if service_record == "missing":
                 (runner / ".service").unlink()
@@ -144,12 +147,20 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
                 self.assertTrue(exists)
                 self.assertEqual(self.last_state["credential"], "SYNTHETIC_NONSECRET")
 
+    def test_runner_metadata_identity_failure_remains_preflight(self):
+        rc, marker, captured, ops, exists = self.run_case(metadata_identity="mismatch")
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=preflight_failed exit=unknown\\n".replace("\\\\n", "\\n"))
+        self.assertIsNone(captured)
+        self.assertEqual(ops, [])
+        self.assertTrue(exists)
+
     def test_invalid_record_identity_blocks_before_service_mutation(self):
         for kind in ("mismatch", "symlink"):
             with self.subTest(kind=kind):
                 rc, marker, captured, ops, exists = self.run_case(service_record=kind)
                 self.assertNotEqual(rc, 0)
-                self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=preflight_failed exit=unknown\n")
+                self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=service_record_reconcile_failed exit=unknown\n")
                 self.assertIsNone(captured)
                 self.assertEqual(ops, [])
                 self.assertTrue(exists)

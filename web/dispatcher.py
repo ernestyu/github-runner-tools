@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from runner_lifecycle_authority import AuthorityError, create_attestation, create_stage
+from runner_lifecycle_authority import AuthorityError, create_attestation, create_stage, remove_stage
 
 from grt_web_common import (
     DEFAULT_CONFIG,
@@ -53,6 +53,7 @@ PRIV_FIELDS = {
     "context_check": {"op"},
     "create_state": {"op", "repository", "runner_dir", "runner_name", "stage"},
     "registration_attestation_create": {"op", "repository", "runner_dir", "runner_name", "version"},
+    "remove_state": {"op", "repository", "runner_dir", "runner_name", "stage"},
     "service_install": {"op", "repository", "runner_dir", "runner_name"},
     "service_start": {"op", "repository", "runner_dir", "runner_name", "service"},
     "service_stop": {"op", "repository", "runner_dir", "runner_name", "service"},
@@ -440,6 +441,18 @@ class Runtime:
                 create_attestation(repository, runner_name, strict_dir,
                                    self.runner_user, str(request["version"]))
                 return {"ok": True}
+            if op == "remove_state":
+                stage = str(request["stage"])
+                if stage in ("CONFIRM_REMOTE_REMOVED", "COMPLETE"):
+                    canonical = canonical_service_name(repository, runner_name)
+                    current, _ = self.validate_unit(
+                        repository, runner_dir, runner_name, canonical,
+                        allow_absent=True, deadline=deadline)
+                    if current != "absent":
+                        raise DispatchError("cannot finalize cleanup while Unit exists")
+                result = remove_stage(repository, runner_name, runner_dir,
+                                      self.runner_user, stage)
+                return {"ok": True, **result}
             if op == "service_install":
                 return self.install_service(request, deadline=deadline)
 

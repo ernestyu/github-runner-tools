@@ -12,6 +12,10 @@ MOCK="$TMP/mockbin"
 LOG="$TMP/sudo.log"
 OUT="$TMP/apply.out"
 UNIT_CAPTURE="$TMP/dispatcher.unit"
+SCENARIO="$TMP/scenario"
+STATE_RECORD="$TMP/lifecycle.record"
+printf '%s\n' fresh > "$SCENARIO"
+printf 'persistent lifecycle state; must survive reinstall\n' > "$STATE_RECORD"
 mkdir -p "$MOCK"
 
 cat > "$MOCK/id" <<'MOCK'
@@ -60,13 +64,29 @@ printf '%s\n' "\$*" >> "$LOG"
 if [[ "\${1:-}" == "-v" ]]; then exit 0; fi
 case "\${1:-}" in
   test)
-    # Fresh-host simulation: no managed Web path or conflicting symlink exists.
+    if [[ "\${3:-}" == "/var/lib/github-runner-tools" ]]; then
+      state="\$(cat "$SCENARIO")"
+      if [[ "\${2:-}" == "-L" ]]; then
+        [[ "\$state" == symlink ]]; exit \$?
+      fi
+      if [[ "\${2:-}" == "-e" ]]; then
+        [[ "\$state" != fresh ]]; exit \$?
+      fi
+    fi
+    # All other managed Web paths are absent.
     exit 1
     ;;
   stat)
     fmt="\${3:-}"
     if [[ "\${4:-}" == "/var/lib/github-runner-tools" ]]; then
-      printf '%s\\n' 'root:root:700:directory'
+      case "\$(cat "$SCENARIO")" in
+        fresh|valid) printf '%s\\n' 'root:root:700:directory' ;;
+        mode0755) printf '%s\\n' 'root:root:755:directory' ;;
+        otherowner) printf '%s\\n' 'grt-web:root:700:directory' ;;
+        regularfile) printf '%s\\n' 'root:root:700:regular file' ;;
+        symlink) printf '%s\\n' 'root:root:700:symbolic link' ;;
+        *) exit 97 ;;
+      esac
       exit 0
     fi
     case "\$fmt" in
@@ -130,5 +150,55 @@ fi
 if grep -Eq 'NOPASSWD|sudoers' "$LOG"; then
   fail "--apply attempted to create a passwordless sudo path"
 fi
+
+
+# Exercise the existing-state branch, not only the fresh-install branch.
+# script -e propagates the installer's exit status through the disposable PTY.
+run_existing_case() {
+  local scenario="$1" expected="$2" before after
+  printf '%s\n' "$scenario" > "$SCENARIO"
+  : > "$LOG"
+  before="$(cksum < "$STATE_RECORD")"
+  if printf 'test-web-password\ntest-web-password\n' |
+    script -e -q -c "PATH='$MOCK':\$PATH bash '$ROOT/scripts/setup-web-management.sh' --apply" /dev/null >"$OUT" 2>&1; then
+    [[ "$expected" == success ]] || fail "$scenario: unsafe state accepted"
+  else
+    [[ "$expected" == reject ]] || { cat "$OUT" >&2; fail "$scenario: valid existing state rejected"; }
+  fi
+  after="$(cksum < "$STATE_RECORD")"
+  [[ "$before" == "$after" ]] || fail "$scenario: persisted lifecycle record changed"
+  grep -Fq 'test -L /var/lib/github-runner-tools' "$LOG" ||
+    fail "$scenario: symlink test not performed"
+  if [[ "$scenario" != symlink ]]; then
+    grep -Fq 'test -e /var/lib/github-runner-tools' "$LOG" ||
+      fail "$scenario: existing path check not performed"
+  fi
+  if [[ "$expected" == success ]]; then
+    grep -Fq "stat -c %U:%G:%a:%F /var/lib/github-runner-tools" "$LOG" ||
+      fail "$scenario: existing directory metadata not checked"
+    grep -Fq 'systemctl restart github-runner-tools-dispatch.service' "$LOG" ||
+      fail "$scenario: valid existing directory prevented installation"
+    if grep -Fq 'install -d -o root -g root -m 0700 /var/lib/github-runner-tools' "$LOG"; then
+      fail "$scenario: existing lifecycle state directory recreated"
+    fi
+  else
+    grep -Eq 'ERROR: (Lifecycle state directory must not be a symlink|Existing lifecycle state directory has unexpected ownership/mode/type)' "$OUT" ||
+      fail "$scenario: expected fail-closed diagnostic missing"
+    if grep -Eq '(^| )(chmod|chown|rm|mv)( |$)|^install -d .* /var/lib/github-runner-tools$|^systemctl (enable|restart|daemon-reload)' "$LOG"; then
+      fail "$scenario: unsafe state triggered mutation or service activation"
+    fi
+    if grep -Eq '^install .* /usr/local/lib/github-runner-tools/web|^install .* /etc/systemd/system/' "$LOG"; then
+      fail "$scenario: unsafe state allowed code/unit installation"
+    fi
+  fi
+}
+
+run_existing_case valid success
+run_existing_case mode0755 reject
+run_existing_case otherowner reject
+run_existing_case regularfile reject
+run_existing_case symlink reject
+
+echo "PASS: existing lifecycle-state validation, fail-closed behavior and record preservation"
 
 echo "PASS: explicit Web apply installation contract tests"

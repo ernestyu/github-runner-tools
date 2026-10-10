@@ -62,18 +62,40 @@ def main(argv: list[str]) -> None:
             raise AuthorityError("invalid Unit verification")
         service = canonical_service_name(repo, runner_name)
         unit = Path("/etc/systemd/system") / service
-        st = os.stat(unit, follow_symlinks=False)
-        if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_gid != 0
-                or st.st_nlink != 1 or stat.S_IMODE(st.st_mode) != 0o644):
-            raise AuthorityError("official CLI Unit needs administrative review")
-        with unit.open("r", encoding="utf-8") as handle:
-            lines = handle.read(16385)
-        if (len(lines) > 16384 or
-            f"User={user}\n" not in lines or
-            f"WorkingDirectory={directory}\n" not in lines or
-            f"ExecStart={directory}/runsvc.sh\n" not in lines or
-            any(x in lines for x in ("ExecStartPre=", "ExecStartPost=", "ExecStop=", "ExecStopPost=", "ExecReload="))):
-            raise AuthorityError("unexpected CLI Unit definition")
+        fd_dir = _safe_directory("/etc/systemd/system")
+        try:
+            fd = os.open(service, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK |
+                         os.O_CLOEXEC, dir_fd=fd_dir)
+            try:
+                st = os.fstat(fd)
+                if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_gid != 0
+                        or st.st_nlink != 1 or stat.S_IMODE(st.st_mode) != 0o644):
+                    raise AuthorityError("official CLI Unit needs administrative review")
+                content = os.read(fd, 16385)
+                if len(content) > 16384:
+                    raise AuthorityError("Unit too large")
+                lines = content.decode("utf-8").splitlines()
+                allowed_keys = {"User", "WorkingDirectory", "ExecStart"}
+                for field, expected in (
+                    ("User", user), ("WorkingDirectory", directory),
+                    ("ExecStart", directory + "/runsvc.sh")):
+                    if lines.count(field + "=" + expected) != 1:
+                        raise AuthorityError("CLI Unit identity mismatch")
+                if any(line.startswith((
+                        "ExecStartPre=", "ExecStartPost=", "ExecStop=",
+                        "ExecStopPost=", "ExecReload=")) for line in lines):
+                    raise AuthorityError("unsupported unit exec hook")
+                path_st = os.stat(service, dir_fd=fd_dir, follow_symlinks=False)
+                after = os.fstat(fd)
+                if ((st.st_dev, st.st_ino, st.st_ctime_ns) !=
+                    (path_st.st_dev, path_st.st_ino, path_st.st_ctime_ns) or
+                    (st.st_dev, st.st_ino, st.st_mtime_ns) !=
+                    (after.st_dev, after.st_ino, after.st_mtime_ns)):
+                    raise AuthorityError("CLI Unit changed during validation")
+            finally:
+                os.close(fd)
+        finally:
+            os.close(fd_dir)
         create_unit_attestation(repo, runner_name, directory, service, str(unit))
 
 

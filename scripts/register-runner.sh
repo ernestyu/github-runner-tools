@@ -440,12 +440,18 @@ echo "==> Registering runner for https://github.com/$REPO ..."
 if [[ "$WEB_MODE" == "1" ]]; then
   PTY_ADAPTER="${GRT_PTY_ADAPTER:-/usr/local/lib/github-runner-tools/web/pty_token_adapter.py}"
   [[ -x "$PTY_ADAPTER" ]] || die "Web PTY token adapter is unavailable."
-  if python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode create -- \
-    ./config.sh \
-      --url "https://github.com/$REPO" \
-      --name "$RUNNER_NAME" \
-      --labels "$RUNNER_LABELS" \
-      --work "_work"; then
+  if (
+    # The untrusted external config.sh and PTY adapter must never inherit
+    # Executor's FD4 root privileged socket. Retain FD4 only in the parent
+    # CLI shell, for exact root operation requests.
+    if [[ "$EXECUTOR_MODE" == "1" ]]; then exec 4>&-; fi
+    python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode create -- \
+      ./config.sh \
+        --url "https://github.com/$REPO" \
+        --name "$RUNNER_NAME" \
+        --labels "$RUNNER_LABELS" \
+        --work "_work"
+  ); then
     exec {TOKEN_FD}<&-
   else
     exec {TOKEN_FD}<&-

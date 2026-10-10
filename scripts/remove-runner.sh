@@ -641,17 +641,22 @@ if [[ "$WEB_MODE" == "1" ]]; then
     web_service_operation service_uninstall "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME" ||
       die "Privileged service uninstall failed."
   fi
-  REMOVE_STAGE="service_record_reconcile_failed"
+  REMOVE_STAGE="service_uninstall_failed"
   FINAL_SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
     die "Cannot verify final service state before record reconciliation."
   [[ "$FINAL_SERVICE_STATE" == "absent" ]] ||
     die "Systemd unit still exists; preserving service record."
-  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" quarantine "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
+  REMOVE_STAGE="service_record_reconcile_failed"
+  RECORD_PROOF="$(python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" quarantine "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME")" ||
     die "Local service record reconciliation failed."
+  REMOVE_STAGE="service_uninstall_failed"
   FINAL_SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
     die "Cannot verify final service state after record reconciliation."
-  [[ "$FINAL_SERVICE_STATE" == "absent" && ! -e "$RUNNER_DIR/.service" && ! -L "$RUNNER_DIR/.service" ]] ||
-    die "Local service state changed after reconciliation."
+  [[ "$FINAL_SERVICE_STATE" == "absent" ]] ||
+    die "Systemd service state changed after reconciliation."
+  REMOVE_STAGE="service_record_reconcile_failed"
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" verify "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" "$RECORD_PROOF" ||
+    die "Local service record identity changed after reconciliation."
 else
   echo "==> Stopping service..."
   if ! sudo ./svc.sh stop; then

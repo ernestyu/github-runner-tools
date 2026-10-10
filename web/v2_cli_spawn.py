@@ -12,6 +12,7 @@ lock, check durable lifecycle state and serve the root privilege socket.
 from __future__ import annotations
 
 import os
+import fcntl
 import pwd
 import signal
 import socket
@@ -78,9 +79,23 @@ def spawn_cli(request: Request, token: bytes, privilege_fd: int) -> tuple[int, i
     token_read = make_token_pipe(token)
     output_read, output_write = os.pipe2(os.O_CLOEXEC)
     try:
-        for fd in (token_read, output_write):
-            if fd in (0, 1, 2, 3, 4):
-                raise SpawnError("reserved source descriptor")
+        # Rehome low-numbered pipe FDs, which can arise under a daemon whose
+        # stdin/stdout/stderr are closed. Never reject valid inputs merely
+        # because the kernel returned descriptor 3 or 4.
+        if token_read < 5:
+            relocated = fcntl.fcntl(token_read, fcntl.F_DUPFD_CLOEXEC, 5)
+            close_quietly(token_read)
+            token_read = relocated
+        if output_write < 5 or output_write in (token_read, privilege_fd):
+            relocated = fcntl.fcntl(output_write, fcntl.F_DUPFD_CLOEXEC, 5)
+            close_quietly(output_write)
+            output_write = relocated
+        if token_read == privilege_fd:
+            relocated = fcntl.fcntl(token_read, fcntl.F_DUPFD_CLOEXEC, 5)
+            close_quietly(token_read)
+            token_read = relocated
+        if len({token_read, privilege_fd, output_write}) != 3:
+            raise SpawnError("descriptor collision")
         actions = child_file_actions(token_read, privilege_fd, output_write)
         argv = [PYTHON, LAUNCHER, request.op, request.repository]
         env = {"PATH": "/usr/local/bin:/usr/bin:/bin"}

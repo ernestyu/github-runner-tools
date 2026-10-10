@@ -42,6 +42,7 @@ jobs:
           python3 tests/test-web-v2-event-loop.py
           python3 tests/test-web-v2-unit-installer.py
           python3 tests/test-web-v2-failure.py
+          bash tests/test-web-v2-setup.sh
       - name: Existing pure regression
         run: |
           bash tests/test-pure.sh

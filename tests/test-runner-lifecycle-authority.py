@@ -176,6 +176,32 @@ class AuthorityTests(unittest.TestCase):
         self.assertFalse((self.base / "state" / "remove-state").exists()
                          and list((self.base / "state" / "remove-state").glob("*.json")))
 
+    def test_strict_legacy_0600_remove_gets_isolated_non_attested_instance(self):
+        record = self.runner / ".service"
+        record.write_text("actions.runner.example-repo.fixture.service\n")
+        record.chmod(0o644)
+        original = auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        active = auth._current(REPO, RUNNER, self.repo)
+        self.assertIsNotNone(active)
+        creation = auth._cycle_record(auth.CREATE_STATES, REPO, RUNNER, self.repo,
+                                      active["instance"])
+        self.assertEqual(creation["stage"], "LEGACY_VERIFIED")
+        self.assertEqual(creation["origin"], "legacy-strict-0600")
+        self.assertIsNone(auth._cycle_record(
+            auth.ATTESTATIONS, REPO, RUNNER, self.repo, active["instance"]))
+        with self.assertRaises(auth.AuthorityError):
+            auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        self.assertEqual(original["inode"], self.runner.stat().st_ino)
+
+    def test_legacy_0664_cannot_receive_cleanup_cycle(self):
+        service = self.runner / ".service"
+        service.write_text("actions.runner.example-repo.fixture.service\n")
+        service.chmod(0o644)
+        (self.runner / ".credentials").chmod(0o664)
+        with self.assertRaises(auth.AuthorityError):
+            auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        self.assertIsNone(auth._current(REPO, RUNNER, self.repo))
+
     def test_create_crash_after_remote_side_effect_before_ack_blocks_retry(self):
         auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
         # Simulate a lost process after remote success, before the next record.

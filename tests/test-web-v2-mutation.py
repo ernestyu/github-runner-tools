@@ -20,16 +20,18 @@ class MutationTests(unittest.TestCase):
         self.assertEqual(result["error"], "executor_configuration_rejected")
         runtime.assert_not_called()
 
-    def test_remove_blocks_prior_to_runtime_lookup(self):
+    def test_remove_guard_rejects_before_cli_spawn(self):
         req = decode_request(b'{"op":"remove","repository":"owner/repo","runner_name":"r","runner_id":7,"instance":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}')
-        runtime = MagicMock()
+        from v2_remove_guard import RemoveGuardError
         with patch.object(m.os, "geteuid", return_value=0), \
-             patch.object(m, "Runtime", return_value=runtime), \
+             patch.object(m, "Runtime"), \
              patch.object(m, "lock_transaction", return_value=123), \
-             patch.object(m.fcntl, "flock"), patch.object(m.os, "close") as close:
+             patch("v2_remove_guard.check_remove_target", side_effect=RemoveGuardError("denied")), \
+             patch.object(m.fcntl, "flock"), patch.object(m.os, "close"), \
+             patch.object(m, "spawn_cli") as spawn:
             result = m.execute_mutation(req, b"temporary")
-        self.assertEqual(result["error"], "remove_attestation_not_wired")
-        close.assert_called_once_with(123)
+        self.assertEqual(result["error"], "remove_identity_rejected")
+        spawn.assert_not_called()
 
     def test_create_busy_rejected_before_spawning(self):
         req = decode_request(b'{"op":"create","repository":"owner/repo"}')

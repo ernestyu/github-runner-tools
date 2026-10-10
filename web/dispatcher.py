@@ -373,51 +373,19 @@ class Runtime:
         return "present", props
 
     def install_service(self, request: dict[str, Any], deadline: float | None = None) -> dict[str, Any]:
+        from v2_unit_installer import install_canonical_unit
         repository = validate_repository(str(request["repository"]))
         runner_dir = self.validate_runner_dir(
             repository, str(request["runner_dir"]), allow_legacy=False
         )
         runner_name = str(request["runner_name"])
-        service = canonical_service_name(repository, runner_name)
-        runsvc = os.path.join(runner_dir, "runsvc.sh")
-        st = os.stat(runsvc, follow_symlinks=False)
-        if not stat.S_ISREG(st.st_mode) or not (st.st_mode & stat.S_IXUSR):
-            raise DispatchError("runner_service_entrypoint_invalid")
-
-        unit_path = f"/etc/systemd/system/{service}"
-        if os.path.lexists(unit_path):
-            raise DispatchError("unit_already_exists")
-
-        unit = (
-            "[Unit]\n"
-            f"Description=GitHub Actions Runner ({repository})\n"
-            "After=network-online.target\n"
-            "Wants=network-online.target\n\n"
-            "[Service]\n"
-            "Type=simple\n"
-            f"User={self.runner_user}\n"
-            f"WorkingDirectory={runner_dir}\n"
-            f"ExecStart={runsvc}\n"
-            "KillMode=process\n"
-            "KillSignal=SIGTERM\n"
-            "TimeoutStopSec=5min\n\n"
-            "[Install]\n"
-            "WantedBy=multi-user.target\n"
+        service = install_canonical_unit(
+            repository, runner_name, runner_dir, self.runner_user,
+            timeout=self._remaining_timeout(deadline) or 20,
         )
-        tmp = f"{unit_path}.tmp.{os.getpid()}"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        try:
-            os.write(fd, unit.encode("utf-8"))
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.chown(tmp, 0, 0)
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, unit_path)
-        self._run(["systemctl", "daemon-reload"], deadline=deadline, check=True)
-        self._run(["systemctl", "enable", service], deadline=deadline, check=True)
         self.validate_unit(repository, runner_dir, runner_name, service, deadline=deadline)
-        create_unit_attestation(repository, runner_name, runner_dir, service, unit_path)
+        create_unit_attestation(repository, runner_name, runner_dir, service,
+                                f"/etc/systemd/system/{service}")
         return {"ok": True, "service": service}
 
     def privileged(self, request: dict[str, Any], deadline: float | None = None) -> dict[str, Any]:

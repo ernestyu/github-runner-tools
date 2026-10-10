@@ -21,3 +21,17 @@ jobs:
           sudo apt-get install -y jq rsync
       - name: Full integration tests
         run: bash tests/run-all.sh
+      - name: V2 real CLI and privilege boundary integration
+        run: |
+          bash tests/test-web-v2-real-create-cli.sh
+          bash tests/test-web-v2-real-remove-cli.sh
+          python3 tests/test-web-v2-real-spawn.py
+          python3 tests/test-web-v2-real-private-channel.py
+          python3 tests/test-web-v2-real-pty-cli.py
+          python3 tests/test-web-v2-closeout.py
+          bash tests/test-web-v2-shared-create.sh
+          bash tests/test-web-v2-shared-remove.sh
+          python3 tests/test-web-v2-cli-remove-authority.py
+          python3 tests/test-web-v2-install-manifest.py
+          bash tests/test-web-v2-setup.sh
+          sudo -n /usr/bin/python3 tests/test-web-v2-real-uid-drop.py

@@ -7,6 +7,7 @@ WEB_USER="grt-web"
 WEB_PORT="8765"
 INSTALL_ROOT="/usr/local/lib/github-runner-tools/web"
 CONFIG_DIR="/etc/github-runner-tools"
+LIFECYCLE_STATE_DIR="/var/lib/github-runner-tools"
 CONFIG_FILE="$CONFIG_DIR/web.conf"
 AUTH_FILE="$CONFIG_DIR/web-auth.conf"
 DISPATCH_SOCKET="/run/github-runner-tools/web-dispatch.sock"
@@ -103,6 +104,21 @@ if sudo test -e "$INSTALL_ROOT"; then
   sudo grep -Fqx "$MANAGED_MARKER" "$INSTALL_MARKER" ||
     die "Web install directory marker is invalid."
 fi
+
+# Dispatcher persists instance-scoped Create/Remove state and root-only
+# attestations here. ProtectSystem=strict requires an explicit narrow write
+# exception; the directory must exist before systemd starts the dispatcher.
+if sudo test -L "$LIFECYCLE_STATE_DIR"; then
+  die "Lifecycle state directory must not be a symlink."
+fi
+if sudo test -e "$LIFECYCLE_STATE_DIR"; then
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$LIFECYCLE_STATE_DIR")" == "root:root:700:directory" ]] ||
+    die "Existing lifecycle state directory has unexpected ownership/mode/type."
+else
+  sudo install -d -o root -g root -m 0700 "$LIFECYCLE_STATE_DIR"
+fi
+[[ "$(sudo stat -c '%U:%G:%a:%F' "$LIFECYCLE_STATE_DIR")" == "root:root:700:directory" ]] ||
+  die "Lifecycle state directory provisioning verification failed."
 
 # The shared lock is core lifecycle infrastructure. Web setup reuses the same
 # root-controlled path and does not create a Web-specific lock authority.
@@ -271,7 +287,7 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-ReadWritePaths=$RUNNER_HOME /etc/systemd/system /run/github-runner-tools /run/lock/github-runner-tools
+ReadWritePaths=$RUNNER_HOME /etc/systemd/system /run/github-runner-tools /run/lock/github-runner-tools $LIFECYCLE_STATE_DIR
 
 [Install]
 WantedBy=multi-user.target

@@ -53,6 +53,20 @@ class WebV2StatusTests(unittest.TestCase):
                 self.assertEqual(resp["error"], "not_implemented")
                 fetch.assert_not_called()
 
+    def test_failure_message_never_reflects_untrusted_token_or_stage(self):
+        result = {
+            "ok": False, "error": "raw-secret",
+            "stage": "<script>stolen-token</script>",
+            "exit_code": 88, "correlation_id": "ab" * 6,
+            "token": "raw-secret",
+        }
+        safe = app.v2_failure_text(result, "Create")
+        self.assertIn("CLI exit: 88", safe)
+        self.assertIn("Request ID:", safe)
+        self.assertNotIn("raw-secret", safe)
+        self.assertNotIn("stolen-token", safe)
+        self.assertIn("before retrying", safe)
+
     def test_v2_status_error_is_fail_closed(self):
         with patch.object(client,"fetch_status",side_effect=client.ExecutorClientError("down")):
             resp = app.dispatch({"V2_EXECUTOR_MODE":"1"},{"op":"list"})

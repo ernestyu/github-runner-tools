@@ -7,6 +7,7 @@ TOKEN=""
 MUTATION_LOCK_DIR="/run/lock/github-runner-tools"
 MUTATION_LOCK_FILE="$MUTATION_LOCK_DIR/mutation.lock"
 WEB_MODE=0
+EXECUTOR_MODE=0
 TOKEN_FD=""
 PRIVILEGED_FD=""
 RESULT_FD=""
@@ -441,6 +442,7 @@ while [[ $# -gt 0 ]]; do
     --base-dir) [[ $# -ge 2 ]] || die "--base-dir requires a value"; CLI_BASE_DIR="$2"; shift 2 ;;
     --recover-local) RECOVER_LOCAL=1; shift ;;
     --web-worker) WEB_MODE=1; shift ;;
+    --executor-mode) WEB_MODE=1; EXECUTOR_MODE=1; shift ;;
     --token-fd) [[ $# -ge 2 ]] || die "--token-fd requires a value"; TOKEN_FD="$2"; shift 2 ;;
     --result-fd) [[ $# -ge 2 ]] || die "--result-fd requires a value"; RESULT_FD="$2"; shift 2 ;;
     --privileged-fd) [[ $# -ge 2 ]] || die "--privileged-fd requires a value"; PRIVILEGED_FD="$2"; shift 2 ;;
@@ -455,10 +457,18 @@ set -- "${POSITIONAL[@]}"
 [[ $# -eq 1 ]] || { usage; exit 1; }
 
 if [[ "$WEB_MODE" == "1" ]]; then
-  [[ "${GRT_WEB_CONTEXT:-0}" == "1" ]] || die "Internal Web mode requires dispatcher context."
+  if [[ "$EXECUTOR_MODE" == "1" ]]; then
+    [[ "${GRT_EXECUTOR_CONTEXT:-0}" == "1" ]] || die "Internal Executor mode requires trusted context."
+    [[ "${GRT_WEB_CONTEXT:-0}" != "1" ]] || die "Mixed Web/Executor modes forbidden."
+  else
+    [[ "${GRT_WEB_CONTEXT:-0}" == "1" ]] || die "Internal Web mode requires dispatcher context."
+  fi
   [[ "$PRIVILEGED_FD" =~ ^[0-9]+$ && "$LOCK_ALREADY_HELD" == "1" ]] || die "Incomplete internal Web lifecycle context."
   if [[ "$RECOVER_LOCAL" != "1" ]]; then
-    [[ "$TOKEN_FD" =~ ^[0-9]+$ && "$RESULT_FD" =~ ^[0-9]+$ ]] || die "Normal Web removal requires token and result FD."
+    [[ "$TOKEN_FD" =~ ^[0-9]+$ ]] || die "Normal noninteractive removal requires token FD."
+    if [[ "$EXECUTOR_MODE" != "1" ]]; then
+      [[ "$RESULT_FD" =~ ^[0-9]+$ ]] || die "Web worker removal requires result FD."
+    fi
   fi
   web_context_check
 elif [[ -n "$TOKEN_FD" || -n "$RESULT_FD" || -n "$PRIVILEGED_FD" || "$LOCK_ALREADY_HELD" == "1" ]]; then

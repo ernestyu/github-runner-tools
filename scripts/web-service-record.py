@@ -16,7 +16,6 @@ import stat
 import sys
 
 PREFIX = ".grt-service-reconcile-"
-SYS_RENAMEAT2 = 316  # Linux x86_64; use libc.renameat2 when exported.
 RENAME_NOREPLACE = 1
 
 
@@ -35,6 +34,10 @@ def same(a: os.stat_result, b: os.stat_result) -> bool:
     return all(getattr(a, x) == getattr(b, x) for x in
                ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid",
                 "st_nlink", "st_size", "st_mtime_ns"))
+
+
+def same_directory(a: os.stat_result, b: os.stat_result) -> bool:
+    return (a.st_dev, a.st_ino, a.st_uid, a.st_mode) == (b.st_dev, b.st_ino, b.st_uid, b.st_mode)
 
 
 def record(fd: int, basename: str, uid: int, expected: bytes) -> os.stat_result:
@@ -77,7 +80,7 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str) ->
             identity = os.fstat(fd)
             if identity.st_uid != os.getuid() or identity.st_mode & 0o022:
                 raise ValueError("unsafe runner directory")
-            if not same(identity, os.stat(name, dir_fd=base_fd, follow_symlinks=False)):
+            if not same_directory(identity, os.stat(name, dir_fd=base_fd, follow_symlinks=False)):
                 raise ValueError("runner directory replaced")
             entries = os.listdir(fd)
             if any(n.startswith(PREFIX) for n in entries):
@@ -101,7 +104,7 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str) ->
             if mode == "check":
                 return
             # A bounded atomic move; never unlink the moved object.
-            if not same(identity, os.stat(name, dir_fd=base_fd, follow_symlinks=False)):
+            if not same_directory(identity, os.stat(name, dir_fd=base_fd, follow_symlinks=False)):
                 raise ValueError("directory changed")
             if not same(st, os.stat(".service", dir_fd=fd, follow_symlinks=False)):
                 raise ValueError("record changed")
@@ -116,7 +119,7 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str) ->
                     raise ValueError("service record returned")
                 except FileNotFoundError:
                     pass
-                if not same(identity, os.stat(name, dir_fd=base_fd, follow_symlinks=False)):
+                if not same_directory(identity, os.stat(name, dir_fd=base_fd, follow_symlinks=False)):
                     raise ValueError("runner directory changed")
             except Exception:
                 try:

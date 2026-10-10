@@ -43,6 +43,7 @@ REMOVE_FAILURE_TEXT = {
     "service_state_failed": "Cannot verify runner service state; no removal started.",
     "service_stop_failed": "Runner service stop failed; check systemd state before retrying.",
     "service_uninstall_failed": "Runner service uninstall failed; check systemd state before retrying.",
+    "service_record_reconcile_failed": "Runner service record reconciliation failed; GitHub removal was not attempted. Inspect local service state.",
     "config_remove_failed": "Runner registration removal failed or is uncertain; check GitHub and systemd before retrying.",
     "local_cleanup_failed": "GitHub unregister completed; local cleanup is incomplete.",
     "unknown_failed": "Runner removal outcome is uncertain; inspect GitHub, systemd and local files before another operation.",

@@ -106,6 +106,22 @@ for state_subdir in active-instances runner-attestations unit-attestations \
     sudo cp -a "$STATE_DIR/$state_subdir" "$BACKUP/lifecycle-snapshot/"
   fi
 done
+# Parse every copied V1 lifecycle record while writers are quiesced.
+# This is a read-only schema check, using installed Python and root-only data.
+# Reject unexpected file types, unsafe modes and malformed state instead of
+# silently manufacturing a V2 interpretation or repairing any record.
+sudo find "$BACKUP/lifecycle-snapshot" -type f -print0 |
+  sudo xargs -0 -r -n1 /usr/bin/python3 -c '
+import json, os, stat, sys
+path = sys.argv[1]
+entry = os.lstat(path)
+if not stat.S_ISREG(entry.st_mode) or entry.st_uid != 0 or (entry.st_mode & 0o077):
+    raise SystemExit("unsafe root lifecycle record")
+with open(path, encoding="utf-8") as handle:
+    record = json.load(handle)
+if not isinstance(record, dict) or record.get("schema") != 2:
+    raise SystemExit("unreadable V1 lifecycle schema")
+' || { echo "Root lifecycle schema preflight failed; V2 switch refused" >&2; exit 1; }
 # Immutable review evidence for the exact copied V1 authority state: file
 # content digests and metadata are kept under the root-only 0700 backup,
 # not logged or placed in the public Web directory.

@@ -152,6 +152,22 @@ def form_fields_within_bounds(form: dict[str, str]) -> bool:
     return all(len(value) <= limits.get(key, 4096) for key, value in form.items())
 
 
+def v2_failure_text(result: dict[str, Any], operation: str) -> str:
+    """Only fixed, non-secret Executor diagnostics reach the browser."""
+    import re
+    safe = [f"{operation} was not confirmed. Review lifecycle state before retrying."]
+    stage = result.get("stage")
+    if isinstance(stage, str) and re.fullmatch(r"[A-Z_]{3,60}", stage):
+        safe.append("Stage: " + stage)
+    code = result.get("exit_code")
+    if type(code) is int and 0 < code <= 255:
+        safe.append("CLI exit: " + str(code))
+    correlation = result.get("correlation_id")
+    if isinstance(correlation, str) and re.fullmatch(r"[0-9a-f]{12}", correlation):
+        safe.append("Request ID: " + correlation)
+    return " ".join(safe)
+
+
 def dispatch(config: dict[str, str], request: dict[str, Any]) -> dict[str, Any]:
     if config.get("V2_EXECUTOR_MODE") == "1":
         # No V1 Dispatcher fallback in V2 mode. All operations use fixed
@@ -574,7 +590,10 @@ class Handler(BaseHTTPRequestHandler):
             elif result.get("error") == "operation_in_progress":
                 self._send(409, page("Busy", "<h1>Another lifecycle operation is already in progress.</h1>"))
             else:
-                self._send(500, page("Create failed", "<h1>Runner creation failed.</h1>"))
+                message = (v2_failure_text(result, "Create")
+                           if self.app.config.get("V2_EXECUTOR_MODE") == "1"
+                           else "Runner creation failed.")
+                self._send(500, page("Create failed", f"<h1>{html.escape(message)}</h1>"))
             return
 
         if path in ("/remove/prepare", "/recover/prepare"):
@@ -665,7 +684,11 @@ class Handler(BaseHTTPRequestHandler):
             elif result.get("error") == "operation_in_progress":
                 self._send(409, page("Busy", "<h1>Another lifecycle operation is already in progress.</h1>"))
             else:
-                message = remove_failure_message(result) if expected_op == "remove" else "Runner operation failed."
+                message = (v2_failure_text(result, "Remove")
+                           if expected_op == "remove"
+                           and self.app.config.get("V2_EXECUTOR_MODE") == "1"
+                           else remove_failure_message(result)
+                           if expected_op == "remove" else "Runner operation failed.")
                 self._send(500, page("Operation failed", f"<h1>{html.escape(message)}</h1>"))
             return
 

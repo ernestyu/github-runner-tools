@@ -58,7 +58,7 @@ main --base-dir "$GRT_BASE_DIR" --web-worker --token-fd "$2" --result-fd "$3" --
 
 class OfficialWebRemoveScriptTests(unittest.TestCase):
     def run_case(self, *, token=TOKEN, config_exit=0, fail_stage="", config_signal="",
-                 service_record="normal", initial_absent=False, metadata_identity="normal"):
+                 service_record="normal", initial_absent=False, metadata_identity="normal", metadata_mode=0o600):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             runner = base / "actions-runner-example--repo"
@@ -69,6 +69,8 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
                 (runner / ".runner").write_text(json.dumps({"agentName": "fixture", "gitHubUrl": "https://github.com/foreign/repo"}))
 
             (runner / ".credentials").write_text("SYNTHETIC_NONSECRET")
+            (runner / ".runner").chmod(metadata_mode)
+            (runner / ".credentials").chmod(metadata_mode)
             if service_record == "missing":
                 (runner / ".service").unlink()
             elif service_record == "mismatch":
@@ -154,6 +156,16 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
         self.assertIsNone(captured)
         self.assertEqual(ops, [])
         self.assertTrue(exists)
+
+    def test_historical_0664_without_prior_attestation_is_refused_before_mutation(self):
+        rc, marker, captured, ops, exists = self.run_case(metadata_mode=0o664)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=permission_reconcile_failed exit=unknown\n")
+        self.assertIsNone(captured)
+        self.assertEqual(ops, [])
+        self.assertTrue(exists)
+        self.assertTrue(self.last_state["service"])
+        self.assertEqual(self.last_state["credential"], "SYNTHETIC_NONSECRET")
 
     def test_invalid_record_identity_blocks_before_service_mutation(self):
         for kind in ("mismatch", "symlink"):

@@ -55,7 +55,14 @@ def drop_identity(uid: int, gid: int) -> None:
     def prctl(cmd: int, arg: int) -> None:
         if libc.prctl(cmd, arg, 0, 0, 0) != 0:
             raise LaunchError("privilege drop failed")
-    prctl(PR_SET_KEEPCAPS, 0)
+    # Drop inherited and ambient caps before the UID transition while
+    # retaining temporary effective SETUID/SETGID for setgroups/setresuid.
+    # Reuse the existing proven Linux capset helper (no second cap library).
+    from lifecycle_worker import clear_capabilities_for_identity_drop
+    try:
+        clear_capabilities_for_identity_drop()
+    except (OSError, PermissionError) as exc:
+        raise LaunchError("capability drop failed") from exc
     os.setgroups([])
     os.setresgid(gid, gid, gid)
     os.setresuid(uid, uid, uid)

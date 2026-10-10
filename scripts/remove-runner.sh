@@ -250,6 +250,15 @@ web_priv_request() {
   jq -e '.ok == true' <<<"$response" >/dev/null 2>&1
 }
 
+web_remove_state() {
+  local stage="$1" payload
+  [[ "$WEB_MODE" == "1" ]] || return 1
+  payload="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" \
+    --arg runner_name "$RUNNER_NAME" --arg stage "$stage" \
+    '{op:"remove_state",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,stage:$stage}')" || return 1
+  web_priv_request "$payload"
+}
+
 web_context_check() {
   [[ "$PRIVILEGED_FD" =~ ^[0-9]+$ ]] || die "Invalid Web privileged context."
   python3 - "$PRIVILEGED_FD" <<'PY' || die "Web lifecycle privileged channel is not owned by the root dispatcher."
@@ -644,6 +653,8 @@ if [[ "$WEB_MODE" == "1" ]]; then
     die "Runner service record unsafe; manual inspection required."
   python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" check "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
     die "Configured service identity is unavailable or incompatible."
+  REMOVE_STAGE="preflight_failed"
+  web_remove_state BEGIN || die "Cannot persist removal attempt identity; no service mutation started."
   REMOVE_STAGE="service_state_failed"
   SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
     die "Could not validate privileged systemd service state."
@@ -685,6 +696,13 @@ if [[ "$WEB_MODE" == "1" ]]; then
   REMOVE_STAGE="config_remove_failed"
   if ( exec {RESULT_FD}>&-; ./config.sh remove --token "$TOKEN" >/dev/null 2>&1 ); then
     unset TOKEN
+    REMOVE_STAGE="local_cleanup_failed"
+    web_remove_state CONFIRM_REMOTE_REMOVED ||
+      die "Official unregister succeeded but durable local cleanup authorization failed."
+    REMOVE_PROOF_DEVICE="$(jq -er '.device | numbers' <<<"$WEB_PRIV_RESPONSE")" ||
+      die "Cleanup authority returned invalid target device."
+    REMOVE_PROOF_INODE="$(jq -er '.inode | numbers' <<<"$WEB_PRIV_RESPONSE")" ||
+      die "Cleanup authority returned invalid target inode."
   else
     REMOVE_EXIT="$?"
     # Bash's 128+signal convention cannot distinguish a killed child from
@@ -707,7 +725,16 @@ cd "$RUNNER_BASE_DIR"
 case "$RUNNER_DIR" in "$RUNNER_BASE_DIR"/actions-runner-*) ;; *) die "Safety check failed; refusing to delete unexpected path: $RUNNER_DIR" ;; esac
 
 echo "==> Deleting local runner directory..."
-rm -rf -- "$RUNNER_DIR"
+if [[ "$WEB_MODE" == "1" ]]; then
+  python3 "${BASH_SOURCE[0]%/*}/web-runner-cleanup.py" \
+    "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$REMOVE_PROOF_DEVICE" "$REMOVE_PROOF_INODE" ||
+    die "Runner local directory cleanup failed; remote unregister was already completed."
+  web_remove_state COMPLETE || die "Runner directory was deleted but terminal completion verification failed."
+else
+  rm -rf -- "$RUNNER_DIR"
+  [[ ! -e "$RUNNER_DIR" && ! -L "$RUNNER_DIR" ]] ||
+    die "Runner directory still exists after local cleanup."
+fi
 
 echo
 cat <<DONE

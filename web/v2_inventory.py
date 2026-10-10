@@ -12,7 +12,9 @@ import os
 
 from dispatcher import Runtime
 from grt_web_common import make_local_id
-from runner_lifecycle_authority import _key, _safe_directory, ROOT, ACTIVE_INSTANCES
+from runner_lifecycle_authority import (_key, _safe_directory, ROOT, ACTIVE_INSTANCES,
+                                         CREATE_STATES, REMOVE_STATES, ATTESTATIONS,
+                                         UNIT_ATTESTATIONS)
 from v2_executor_contract import Request
 from v2_remove_guard import check_remove_target, RemoveGuardError
 
@@ -59,6 +61,13 @@ def annotate_inventory(result: dict) -> dict:
         runtime = Runtime(CONFIG)
     except (OSError, KeyError, RuntimeError, ValueError):
         runtime = None
+    # Existing authority helpers use mkdir(exist_ok) on each read. Refuse
+    # attestation enrichment if any required root store is absent, so a pure
+    # Status request can never initialize new persistent directories.
+    stores_ready = all(os.path.isdir(os.path.join(ROOT, subdir)) for subdir in (
+        ACTIVE_INSTANCES, CREATE_STATES, REMOVE_STATES, ATTESTATIONS,
+        UNIT_ATTESTATIONS,
+    ))
     enriched = []
     for raw in rows:
         if not isinstance(raw, dict):
@@ -68,7 +77,7 @@ def annotate_inventory(result: dict) -> dict:
         row["can_recover_local"] = False
         row.pop("runner_id", None)
         row.pop("instance", None)
-        if runtime is not None and row.get("configured") is True:
+        if runtime is not None and stores_ready and row.get("configured") is True:
             try:
                 repo, name = row["repository"], row["runner_name"]
                 owner, project = repo.split("/", 1)

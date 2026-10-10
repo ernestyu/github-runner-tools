@@ -36,6 +36,7 @@ jobs:
           python3 tests/test-web-v2-integration.py
           python3 tests/test-web-v2-privileged.py
           python3 tests/test-web-v2-cli-spawn.py
+          python3 tests/test-web-v2-mutation.py
       - name: Existing pure regression
         run: |
           bash tests/test-pure.sh

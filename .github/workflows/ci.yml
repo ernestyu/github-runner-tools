@@ -48,6 +48,7 @@ jobs:
           python3 tests/test-web-v2-real-spawn.py
           python3 tests/test-web-v2-real-pty-cli.py
           python3 tests/test-web-v2-closeout.py
+          sudo -n /usr/bin/python3 tests/test-web-v2-real-uid-drop.py
           bash tests/test-web-v2-shared-create.sh
           bash tests/test-web-v2-real-create-cli.sh
           bash tests/test-web-v2-real-remove-cli.sh

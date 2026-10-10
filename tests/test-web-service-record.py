@@ -140,6 +140,29 @@ class ServiceRecordSecurityTests(unittest.TestCase):
         self.assertTrue(self.metadata.is_file())
         self.assertTrue(self.credentials.is_file())
 
+    def test_renameat2_unavailable_fails_without_deleting_record(self):
+        with mock.patch.object(module, "rename_noreplace", side_effect=OSError(38, "unsupported")):
+            with self.assertRaises(OSError):
+                self.call("quarantine")
+        self.assertEqual(self.record.read_text(), UNIT + "\n")
+        self.assertEqual(self.quarantines(), [])
+        self.assertEqual(self.credentials.read_text(), "SYNTHETIC-CREDENTIAL-NOT-REAL")
+        self.assertEqual((self.sibling / ".service").read_text(), "SIBLING-DO-NOT-TOUCH")
+
+    def test_racing_source_disappearance_fails_without_cross_runner_effect(self):
+        original_rename = module.rename_noreplace
+        def remove_before_move(fd, source, dest):
+            if source == ".service":
+                os.rename(".service", "service-temporary", src_dir_fd=fd, dst_dir_fd=fd)
+            return original_rename(fd, source, dest)
+        with mock.patch.object(module, "rename_noreplace", side_effect=remove_before_move):
+            with self.assertRaises(FileNotFoundError):
+                self.call("quarantine")
+        self.assertEqual((self.runner / "service-temporary").read_text(), UNIT + "\n")
+        self.assertEqual((self.sibling / ".service").read_text(), "SIBLING-DO-NOT-TOUCH")
+        self.assertTrue(self.metadata.exists())
+        self.assertTrue(self.credentials.exists())
+
     def test_post_move_replacement_never_unlinks_foreign_record(self):
         original_record = module.record
         def replace_after_move(fd, basename, uid, expected):

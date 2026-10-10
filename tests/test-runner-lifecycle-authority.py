@@ -63,8 +63,9 @@ class AuthorityTests(unittest.TestCase):
                           "User=another", "ExecStart=/bin/sh"):
             with self.subTest(dangerous=dangerous):
                 with self.assertRaises(auth.AuthorityError):
-                    cli.validate_official_unit(lines + ["[Service]", dangerous],
-                                               "root", self.repo)
+                    bad = list(lines)
+                    bad.insert(bad.index("[Install]"), dangerous)
+                    cli.validate_official_unit(bad, "root", self.repo)
 
     def test_cli_create_orchestration_guards_official_unit_before_start(self):
         source = (ROOT / "scripts/register-runner.sh").read_text()

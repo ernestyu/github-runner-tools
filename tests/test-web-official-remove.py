@@ -57,6 +57,7 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
             runner.mkdir()
             (runner / ".runner").write_text(json.dumps({"agentName": "fixture", "gitHubUrl": "https://github.com/example/repo"}))
             (runner / ".service").write_text("actions.runner.example-repo.fixture.service\n")
+            (runner / ".credentials").write_text("SYNTHETIC_NONSECRET")
             (runner / "svc.sh").write_text("#!/bin/sh\nexit 0\n")
             (runner / "config.sh").write_text(STUB)
             (runner / "svc.sh").chmod(0o755)

@@ -148,7 +148,7 @@ TMP_MARKER="$(mktemp)"
 printf '%s\n' "$MANAGED_MARKER" > "$TMP_MARKER"
 sudo install -o root -g root -m 0644 "$TMP_MARKER" "$INSTALL_MARKER"
 rm -f -- "$TMP_MARKER"
-for file in grt_web_common.py app.py dispatcher.py lifecycle_worker.py pty_token_adapter.py; do
+for file in grt_web_common.py app.py dispatcher.py lifecycle_worker.py pty_token_adapter.py runner_lifecycle_authority.py; do
   [[ -f "$ROOT/web/$file" ]] || die "Missing source file: web/$file"
   sudo install -o root -g root -m 0755 "$ROOT/web/$file" "$INSTALL_ROOT/$file"
 done

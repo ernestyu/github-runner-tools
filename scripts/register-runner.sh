@@ -130,6 +130,18 @@ web_priv_request() {
   jq -e '.ok == true' <<<"$response" >/dev/null 2>&1
 }
 
+cli_create_authority() {
+  local verb="$1" action="$2" version="$3"
+  local authority="/usr/local/lib/github-runner-tools/web/cli_create_authority.py"
+  [[ "$WEB_MODE" != "1" ]] || die "CLI root lifecycle authority invoked in Web context."
+  [[ -f "$authority" && ! -L "$authority" ]] ||
+    die "Trusted installed CLI lifecycle authority missing; install the approved tooling before Create."
+  [[ "$(stat -c '%U:%G:%a' "$authority")" == "root:root:755" ]] ||
+    die "CLI lifecycle authority ownership/mode invalid."
+  sudo /usr/bin/python3 "$authority" "$verb" "$REPO" "$RUNNER_NAME" "$RUNNER_DIR" "$action" "$version" ||
+    die "CLI lifecycle integrity checkpoint failed; keep registered resources for admin review."
+}
+
 web_create_stage() {
   local stage="$1" request
   [[ "$WEB_MODE" == "1" ]] || die "Create-state authority requires Web context."
@@ -388,6 +400,8 @@ fi
 
 if [[ "$WEB_MODE" == "1" ]]; then
   web_create_stage PRE_REGISTRATION
+else
+  cli_create_authority stage PRE_REGISTRATION -
 fi
 
 CREATE_REQUEST_STARTED=1
@@ -409,7 +423,10 @@ else
     --name "$RUNNER_NAME" \
     --labels "$RUNNER_LABELS" \
     --work "_work" \
-    --unattended || die "Runner registration outcome is uncertain; preserve local directory and investigate before retry."
+    --unattended || {
+      cli_create_authority stage REGISTRATION_OUTCOME_UNKNOWN - || true
+      die "Runner registration outcome is uncertain; preserve local directory and investigate before retry."
+    }
   unset TOKEN
 fi
 REGISTRATION_COMPLETE=1
@@ -425,6 +442,14 @@ if [[ "$WEB_MODE" == "1" ]]; then
     '{op:"registration_attestation_create",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,version:$version}')"
   web_priv_request "$ATTEST_REQ" || die "Root-controlled registration attestation failed."
   web_create_stage REGISTERED_UNIT_INCOMPLETE
+else
+  cli_create_authority stage REGISTERED_PERMISSION_INCOMPLETE -
+  CANONICAL_SERVICE="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" registration_check \
+    "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$CANONICAL_SERVICE" ||
+    die "CLI registration metadata is not owner-only; remote registration retained."
+  cli_create_authority attest - "$VERSION"
+  cli_create_authority stage REGISTERED_UNIT_INCOMPLETE -
 fi
 
 echo "==> Configuring local artifact completed hook..."
@@ -451,13 +476,21 @@ if [[ "$WEB_MODE" == "1" ]]; then
   web_create_stage CREATE_COMPLETE
 else
   echo "==> Installing systemd service for user $RUNNER_USER ..."
-  sudo ./svc.sh install "$RUNNER_USER"
+  sudo ./svc.sh install "$RUNNER_USER" ||
+    die "CLI Unit installation incomplete; remote registration preserved."
+  # The official v2.328.0 installer may create a group-writable 0664 Unit.
+  # No unsafe post-hoc chmod, no service start and no false Create success.
+  cli_create_authority unit - -
+  cli_create_authority stage REGISTERED_START_INCOMPLETE -
   echo "==> Starting runner service..."
-  sudo ./svc.sh start
-
+  sudo ./svc.sh start ||
+    die "CLI service start incomplete; remote registration preserved."
+  cli_create_authority stage REGISTERED_HEALTH_UNKNOWN -
   echo
   echo "==> Runner status"
-  sudo ./svc.sh status
+  sudo ./svc.sh status ||
+    die "CLI service health unknown; remote registration preserved."
+  cli_create_authority stage CREATE_COMPLETE -
 fi
 
 echo

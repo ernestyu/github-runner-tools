@@ -33,6 +33,7 @@ web_context_check() { :; }
 web_service_state() {
     python3 -c 'import json,os; f=os.environ["GRT_PROBE_FILE"]; r=os.environ["GRT_CHECK_RESULT_FD"]; t=os.environ["GRT_PROBE_TOKEN_FD"]; record=json.dumps({"result_fd":os.path.exists("/proc/self/fd/"+r),"token_fd":os.path.exists("/proc/self/fd/"+t)}); open(f,"w").write(record)'
     if [[ "$GRT_FAIL_STAGE" == "service_state" ]]; then return 1; fi
+    if [[ "$GRT_FAIL_STAGE" == "post_uninstall_state" && -e "$GRT_UNINSTALLED_FLAG" ]]; then return 1; fi
     if [[ -e "$GRT_UNINSTALLED_FLAG" || "$GRT_INITIAL_ABSENT" == "1" ]]; then printf absent; else printf active; fi
 }
 web_service_operation() {
@@ -152,6 +153,16 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
                 self.assertIsNone(captured)
                 self.assertEqual(ops, [])
                 self.assertTrue(exists)
+
+    def test_unknown_service_state_after_uninstall_preserves_record_and_blocks_config(self):
+        rc, marker, captured, ops, exists = self.run_case(fail_stage="post_uninstall_state")
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=service_uninstall_failed exit=unknown\n")
+        self.assertIsNone(captured)
+        self.assertEqual(ops, ["service_stop", "service_uninstall"])
+        self.assertTrue(exists)
+        self.assertTrue(self.last_state["service"])
+        self.assertEqual(self.last_state["credential"], "SYNTHETIC_NONSECRET")
 
     def test_reconciliation_failure_has_distinct_marker_and_no_registration_remove(self):
         rc, marker, captured, ops, exists = self.run_case(fail_stage="record_reconcile")

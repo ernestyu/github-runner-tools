@@ -5,6 +5,7 @@ MAX_LOCAL_ID_LENGTH=64
 HASH_LENGTH=8
 CREATED_RUNNER_DIR=0
 REGISTRATION_COMPLETE=0
+CREATE_REQUEST_STARTED=0
 TOKEN=""
 RELEASE_JSON=""
 ARCHIVE_PATH=""
@@ -48,7 +49,7 @@ cleanup() {
   unset TOKEN || true
   [[ -n "${RELEASE_JSON:-}" ]] && rm -f -- "$RELEASE_JSON" || true
   [[ -n "${ARCHIVE_PATH:-}" ]] && rm -f -- "$ARCHIVE_PATH" || true
-  if [[ "$CREATED_RUNNER_DIR" -eq 1 && "$REGISTRATION_COMPLETE" -eq 0 && -n "${RUNNER_DIR:-}" ]]; then
+  if [[ "$CREATED_RUNNER_DIR" -eq 1 && "$REGISTRATION_COMPLETE" -eq 0 && "$CREATE_REQUEST_STARTED" -eq 0 && -n "${RUNNER_DIR:-}" ]]; then
     if [[ -d "$RUNNER_DIR" && ! -e "$RUNNER_DIR/.runner" ]]; then rm -rf -- "$RUNNER_DIR" || true; fi
   fi
 }
@@ -389,6 +390,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
   web_create_stage PRE_REGISTRATION
 fi
 
+CREATE_REQUEST_STARTED=1
 echo "==> Registering runner for https://github.com/$REPO ..."
 if [[ "$WEB_MODE" == "1" ]]; then
   PTY_ADAPTER="${GRT_PTY_ADAPTER:-/usr/local/lib/github-runner-tools/web/pty_token_adapter.py}"
@@ -399,7 +401,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
       --name "$RUNNER_NAME" \
       --labels "$RUNNER_LABELS" \
       --work "_work" ||
-    die "Runner registration failed or the runner version does not support secure interactive token input."
+    { web_create_stage REGISTRATION_OUTCOME_UNKNOWN || true; die "Runner registration outcome is uncertain; preserve local registration state and reconcile with GitHub before retry."; }
 else
   ./config.sh \
     --url "https://github.com/$REPO" \
@@ -407,7 +409,7 @@ else
     --name "$RUNNER_NAME" \
     --labels "$RUNNER_LABELS" \
     --work "_work" \
-    --unattended
+    --unattended || die "Runner registration outcome is uncertain; preserve local directory and investigate before retry."
   unset TOKEN
 fi
 REGISTRATION_COMPLETE=1

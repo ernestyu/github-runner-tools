@@ -58,6 +58,25 @@ def record(fd: int, basename: str, uid: int, expected: bytes) -> os.stat_result:
         os.close(h)
 
 
+def open_anchored_directory(path: str) -> int:
+    """Pin every absolute path component without following symlinks."""
+    if not path.startswith("/") or os.path.normpath(path) != path or os.path.realpath(path) != path:
+        raise ValueError("non-canonical directory")
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for component in path.split("/")[1:]:
+            if not component:
+                continue
+            next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY |
+                              os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
 def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, proof: str = "") -> None:
     if mode not in ("check", "quarantine", "verify"):
         raise ValueError("invalid mode")
@@ -68,7 +87,8 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, pr
     expected = f"actions.runner.{repo.replace('/', '-')}.{runner}.service"
     if unit != expected or len(unit) > 150:
         raise ValueError("service name mismatch")
-    base = os.path.realpath(base)
+    if os.path.realpath(base) != base:
+        raise ValueError("runner base path is not canonical")
     if os.path.realpath(target) != target or os.path.dirname(target) != base:
         raise ValueError("unexpected runner path")
     owner, repository = repo.split("/", 1)
@@ -92,7 +112,7 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, pr
         direct = so[:ol] + "--" + sr[:rl] + "--" + digest
     if os.path.basename(target) not in {"actions-runner-" + direct, "actions-runner-" + sr}:
         raise ValueError("repository path mismatch")
-    base_fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    base_fd = open_anchored_directory(base)
     try:
         name = os.path.basename(target)
         if not name.startswith("actions-runner-"):

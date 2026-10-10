@@ -28,6 +28,7 @@ jobs:
         run: |
           python3 tests/test-web-v2-executor-contract.py
           python3 tests/test-web-v2-status.py
+          python3 tests/test-web-v2-token-fd.py
       - name: Existing pure regression
         run: |
           bash tests/test-pure.sh

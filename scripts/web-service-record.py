@@ -126,7 +126,7 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, pr
                 raise ValueError("runner directory replaced")
             entries = os.listdir(fd)
             quarantines = [n for n in entries if n.startswith(PREFIX)]
-            if mode != "verify" and quarantines:
+            if mode in ("check", "quarantine") and quarantines:
                 raise ValueError("stale quarantine")
             registration_state = {}
             for filename in (".runner", ".credentials"):

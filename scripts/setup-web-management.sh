@@ -156,6 +156,7 @@ for file in register-runner.sh remove-runner.sh status-runners.sh; do
   sudo install -o root -g root -m 0755 "$ROOT/scripts/$file" "$INSTALL_ROOT/cli/$file"
 done
 sudo install -o root -g root -m 0755 "$ROOT/scripts/web-service-record.py" "$INSTALL_ROOT/cli/web-service-record.py"
+sudo install -o root -g root -m 0755 "$ROOT/scripts/web-runner-cleanup.py" "$INSTALL_ROOT/cli/web-runner-cleanup.py"
 
 if sudo test -L "$CONFIG_DIR"; then die "Configuration directory must not be a symlink."; fi
 if sudo test -e "$CONFIG_DIR"; then
@@ -280,7 +281,7 @@ sudo install -o root -g root -m 0644 "$TMP_WEB_UNIT" "$WEB_UNIT"
 sudo install -o root -g root -m 0644 "$TMP_DISPATCH_UNIT" "$DISPATCH_UNIT"
 rm -f -- "$TMP_WEB_UNIT" "$TMP_DISPATCH_UNIT"
 
-for installed in "$INSTALL_ROOT"/*.py "$INSTALL_ROOT"/cli/*.sh "$INSTALL_ROOT/cli/web-service-record.py"; do
+for installed in "$INSTALL_ROOT"/*.py "$INSTALL_ROOT"/cli/*.sh "$INSTALL_ROOT/cli/web-service-record.py" "$INSTALL_ROOT/cli/web-runner-cleanup.py"; do
   [[ "$(sudo stat -c '%U:%a' "$installed")" == root:* ]] || die "Installed code is not root-owned: $installed"
   mode="$(sudo stat -c '%a' "$installed")"
   [[ "$mode" =~ ^[0-7]{3,4}$ ]] || die "Installed code has invalid mode: $installed"

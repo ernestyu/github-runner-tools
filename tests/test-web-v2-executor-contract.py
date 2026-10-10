@@ -17,13 +17,13 @@ class ContractTests(unittest.TestCase):
     def test_create_argv_is_fixed(self):
         request = decode_request(encode({"op": "create", "repository": "ernestyu/github-runner-tools"}))
         self.assertEqual(request.argv, (
-            "/usr/local/lib/github-runner-tools/cli/register-runner.sh",
+            "/usr/local/lib/github-runner-tools/web/cli/register-runner.sh",
             "--executor-mode", "--token-fd", "3", "--privileged-fd", "4",
             "--lock-already-held", "ernestyu/github-runner-tools"))
 
     def test_status_is_read_only_and_tokenless(self):
         self.assertEqual(decode_request(b'{"op":"status"}').argv,
-                         ("/usr/local/lib/github-runner-tools/cli/status-runners.sh", "--json"))
+                         ("/usr/local/lib/github-runner-tools/web/cli/status-runners.sh", "--json"))
         with self.assertRaises(AdmissionError):
             decode_request(b'{"op":"status","token":"dummy"}')
 

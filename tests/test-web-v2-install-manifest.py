@@ -30,17 +30,17 @@ class InstallManifestTests(unittest.TestCase):
                 missing = {name + ".py" for name in (local & all_modules)} - installed
                 self.assertFalse(missing, f"{filename} imports uninstalled modules: {missing}")
 
-    def test_pinned_cli_and_launcher_paths_match_install_layout(self):
-        sys_path = WEB / "v2_executor_contract.py"
-        from_source = sys_path.read_text()
-        installer = (WEB / "v2_cli_spawn.py").read_text()
-        target = "/usr/local/lib/github-runner-tools/web"
-        self.assertIn(target + "/cli/register-runner.sh", from_source)
-        self.assertIn(target + "/cli/remove-runner.sh", from_source)
-        self.assertIn(target + "/cli/status-runners.sh", from_source)
-        self.assertIn(target + "/v2_cli_launcher.py", installer)
-        self.assertIn('INSTALL_ROOT="/usr/local/lib/github-runner-tools/web"', SETUP)
-        self.assertIn('"$INSTALL_ROOT/cli/$file"', SETUP)
+    def test_pinned_cli_and_launcher_paths_match_frozen_spec(self):
+        contract = (WEB / "v2_executor_contract.py").read_text()
+        spawn = (WEB / "v2_cli_spawn.py").read_text()
+        target = "/usr/local/lib/github-runner-tools/cli"
+        for name in ("register-runner.sh", "remove-runner.sh", "status-runners.sh"):
+            with self.subTest(name=name):
+                self.assertIn(target + "/" + name, contract)
+        self.assertIn("/usr/local/lib/github-runner-tools/web/v2_cli_launcher.py", spawn)
+        self.assertIn('CLI_ROOT="/usr/local/lib/github-runner-tools/cli"', SETUP)
+        self.assertIn('"$CLI_ROOT/$file"', SETUP)
+        self.assertNotIn('"$INSTALL_ROOT/cli/$file"', SETUP)
 
     def test_installer_never_runs_without_explicit_sha(self):
         self.assertIn("--expected-sha", SETUP)

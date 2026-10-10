@@ -49,6 +49,22 @@ class AuthorityTests(unittest.TestCase):
         for stage in auth.STAGES[2:]:
             auth.create_stage(REPO, RUNNER, self.repo, stage)
 
+    def test_cli_create_orchestration_guards_official_unit_before_start(self):
+        source = (ROOT / "scripts/register-runner.sh").read_text()
+        registration = source.index("REGISTRATION_COMPLETE=1\\n")
+        cli_permission = source.index("cli_create_authority stage REGISTERED_PERMISSION_INCOMPLETE -")
+        cli_normalize = source.index("cli_create_authority normalize - -")
+        cli_attest = source.index("cli_create_authority attest -")
+        cli_unit = source.index("cli_create_authority unit - -")
+        cli_start = source.index("  sudo ./svc.sh start ||")
+        cli_done = source.index("cli_create_authority stage CREATE_COMPLETE -")
+        self.assertLess(registration, cli_permission)
+        self.assertLess(cli_permission, cli_normalize)
+        self.assertLess(cli_normalize, cli_attest)
+        self.assertLess(cli_attest, cli_unit)
+        self.assertLess(cli_unit, cli_start)
+        self.assertLess(cli_start, cli_done)
+
     def test_full_stage_transitions_and_restart_block(self):
         auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
         with self.assertRaises(auth.AuthorityError):

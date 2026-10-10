@@ -24,6 +24,49 @@ ALLOWED = frozenset({"PRE_REGISTRATION", "REGISTRATION_OUTCOME_UNKNOWN",
                      "CREATE_COMPLETE"})
 
 
+def validate_official_unit(lines: list[str], user: str, directory: str) -> None:
+    """Only the pinned official systemd service template schema is accepted."""
+    expected = {
+        "[Unit]": {"After": "network.target"},
+        "[Service]": {
+            "ExecStart": directory + "/runsvc.sh",
+            "User": user, "WorkingDirectory": directory,
+            "KillMode": "process", "KillSignal": "SIGTERM",
+            "TimeoutStopSec": "5min"},
+        "[Install]": {"WantedBy": "multi-user.target"},
+    }
+    parsed: dict[str, dict[str, str]] = {}
+    section = None
+    for line in lines:
+        if not line:
+            continue
+        if line in expected:
+            if line in parsed:
+                raise AuthorityError("duplicate Unit section")
+            parsed[line] = {}
+            section = line
+            continue
+        if line.startswith("[") or section is None or "=" not in line:
+            raise AuthorityError("unexpected Unit section or directive")
+        key, value = line.split("=", 1)
+        if key in parsed[section] or (
+                key not in expected[section] and
+                not (section == "[Unit]" and key == "Description")):
+            raise AuthorityError("unsupported or duplicated Unit directive")
+        parsed[section][key] = value
+    if set(parsed) != set(expected):
+        raise AuthorityError("incomplete Unit definition")
+    for section, keys in expected.items():
+        for key, val in keys.items():
+            if parsed[section].get(key) != val:
+                raise AuthorityError("Unit identity/schema mismatch")
+        if set(parsed[section]) != (set(keys) | ({"Description"} if section == "[Unit]" else set())):
+            raise AuthorityError("Unit schema mismatch")
+    description = parsed["[Unit]"].get("Description", "")
+    if not description.startswith("GitHub Actions Runner") or len(description) > 200:
+        raise AuthorityError("unknown official Unit description")
+
+
 def main(argv: list[str]) -> None:
     if os.geteuid() != 0 or not os.environ.get("SUDO_USER"):
         raise AuthorityError("requires interactive sudo authority")
@@ -79,16 +122,7 @@ def main(argv: list[str]) -> None:
                 if len(content) > 16384:
                     raise AuthorityError("Unit too large")
                 lines = content.decode("utf-8").splitlines()
-                allowed_keys = {"User", "WorkingDirectory", "ExecStart"}
-                for field, expected in (
-                    ("User", user), ("WorkingDirectory", directory),
-                    ("ExecStart", directory + "/runsvc.sh")):
-                    if lines.count(field + "=" + expected) != 1:
-                        raise AuthorityError("CLI Unit identity mismatch")
-                if any(line.startswith((
-                        "ExecStartPre=", "ExecStartPost=", "ExecStop=",
-                        "ExecStopPost=", "ExecReload=")) for line in lines):
-                    raise AuthorityError("unsupported unit exec hook")
+                validate_official_unit(lines, user, directory)
                 path_st = os.stat(service, dir_fd=fd_dir, follow_symlinks=False)
                 after = os.fstat(fd)
                 if ((st.st_dev, st.st_ino, st.st_ctime_ns) !=

@@ -20,6 +20,7 @@ ATTESTATIONS = "runner-attestations"
 CREATE_STATES = "create-state"
 REMOVE_STATES = "remove-state"
 UNIT_ATTESTATIONS = "unit-attestations"
+ACTIVE_INSTANCES = "active-instances"
 
 STAGES = (
     "PRE_REGISTRATION",
@@ -99,6 +100,46 @@ def _key(repo: str, runner: str, runner_dir: str) -> str:
     return hashlib.sha256((repo + "\0" + runner + "\0" + runner_dir).encode()).hexdigest() + ".json"
 
 
+def _instance_name(repo: str, runner: str, runner_dir: str, instance: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{32}", instance):
+        raise AuthorityError("invalid instance identifier")
+    return _key(repo, runner, runner_dir)[:-5] + "." + instance + ".json"
+
+
+def _current(repo: str, runner: str, runner_dir: str) -> dict | None:
+    fd = _store(ACTIVE_INSTANCES)
+    try:
+        record = _read_record(fd, _key(repo, runner, runner_dir))
+    finally:
+        os.close(fd)
+    if record is None:
+        return None
+    if (record.get("repository"), record.get("runner"), record.get("runner_dir")) != (
+            repo, runner, runner_dir):
+        raise AuthorityError("active index identity mismatch")
+    if not re.fullmatch(r"[0-9a-f]{32}", str(record.get("instance", ""))):
+        raise AuthorityError("invalid active instance")
+    return record
+
+
+def _cycle_record(store: str, repo: str, runner: str, runner_dir: str,
+                  instance: str) -> dict | None:
+    fd = _store(store)
+    try:
+        return _read_record(fd, _instance_name(repo, runner, runner_dir, instance))
+    finally:
+        os.close(fd)
+
+
+def _active_update(repo: str, runner: str, runner_dir: str, item: dict) -> None:
+    fd = _store(ACTIVE_INSTANCES)
+    try:
+        name = _key(repo, runner, runner_dir)
+        _publish(fd, name, item, replace=_read_record(fd, name) is not None)
+    finally:
+        os.close(fd)
+
+
 def _read_record(fd: int, filename: str) -> dict | None:
     try:
         h = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW |
@@ -151,48 +192,65 @@ def _exists(fd: int, filename: str) -> bool:
 
 
 def create_stage(repo: str, runner: str, runner_dir: str, stage: str) -> None:
+    """Each successful reuse of a logical Runner slot gets a new immutable cycle ID."""
     _assert_root()
     if stage not in STAGES and stage != UNKNOWN:
         raise AuthorityError("invalid create stage")
     fd = _store(CREATE_STATES)
     try:
-        name = _key(repo, runner, runner_dir)
-        prior = _read_record(fd, name)
-        if prior is None:
-            if stage != STAGES[0]:
-                raise AuthorityError("missing transaction")
-            item = {"schema": 1, "repository": repo, "runner": runner,
-                    "runner_dir": runner_dir, "stage": stage,
-                    "attempt": secrets.token_hex(16), "started_at": int(time.time())}
+        active = _current(repo, runner, runner_dir)
+        if stage == "PRE_REGISTRATION":
+            if active is not None:
+                previous = _cycle_record(CREATE_STATES, repo, runner, runner_dir,
+                                         active["instance"])
+                removed = _cycle_record(REMOVE_STATES, repo, runner, runner_dir,
+                                        active["instance"])
+                if (previous is None or previous.get("stage") != "CREATE_COMPLETE"
+                        or removed is None or removed.get("stage") != "REMOVE_COMPLETE"):
+                    raise AuthorityError("prior cycle not closed")
+            st = os.stat(runner_dir, follow_symlinks=False)
+            if not stat.S_ISDIR(st.st_mode) or st.st_mode & 0o022:
+                raise AuthorityError("unsafe fresh runner directory")
+            if active is not None:
+                removed = _cycle_record(REMOVE_STATES, repo, runner, runner_dir,
+                                        active["instance"])
+                if (st.st_dev, st.st_ino) == (
+                        removed.get("directory_device"), removed.get("directory_inode")):
+                    raise AuthorityError("prior runner inode reused")
+            instance = secrets.token_hex(16)
+            item = {"schema": 2, "instance": instance, "repository": repo,
+                    "runner": runner, "runner_dir": runner_dir,
+                    "directory_device": st.st_dev, "directory_inode": st.st_ino,
+                    "stage": stage, "started_at": int(time.time())}
+            name = _instance_name(repo, runner, runner_dir, instance)
             _publish(fd, name, item, replace=False)
+            _active_update(repo, runner, runner_dir, {
+                "schema": 2, "repository": repo, "runner": runner,
+                "runner_dir": runner_dir, "instance": instance})
             return
-        if (prior.get("schema"), prior.get("repository"), prior.get("runner"),
-                prior.get("runner_dir")) != (1, repo, runner, runner_dir):
-            raise AuthorityError("ledger identity mismatch")
+        if active is None:
+            raise AuthorityError("missing create cycle")
+        instance = active["instance"]
+        name = _instance_name(repo, runner, runner_dir, instance)
+        prior = _read_record(fd, name)
+        if prior is None or prior.get("instance") != instance:
+            raise AuthorityError("missing matched cycle")
         previous = prior.get("stage")
-        if previous == stage:
-            # PRE_REGISTRATION cannot be restarted: first config.sh may have
-            # completed remotely before any local result was recorded.
-            if stage == STAGES[0]:
-                raise AuthorityError("create already in progress")
+        if previous == stage and stage != "PRE_REGISTRATION":
             return
-        if previous not in STAGES or previous == STAGES[-1]:
+        if previous not in STAGES or previous == "CREATE_COMPLETE":
             raise AuthorityError("create cannot be restarted")
         if stage == UNKNOWN:
             pass
         elif STAGES.index(stage) != STAGES.index(previous) + 1:
             raise AuthorityError("create stage skipped")
         if stage == "REGISTERED_UNIT_INCOMPLETE":
-            attfd = _store(ATTESTATIONS)
-            try:
-                proof = _read_record(attfd, name)
-                if (proof is None or proof.get("repository") != repo or
-                    proof.get("runner") != runner or
-                    proof.get("runner_dir") != runner_dir or
-                    proof.get("capture_stage") != "registered-secure-before-service"):
-                    raise AuthorityError("missing trusted registration attestation")
-            finally:
-                os.close(attfd)
+            proof = _cycle_record(ATTESTATIONS, repo, runner, runner_dir, instance)
+            if (proof is None or proof.get("instance") != instance
+                    or proof.get("directory_device") != prior["directory_device"]
+                    or proof.get("directory_inode") != prior["directory_inode"]
+                    or proof.get("capture_stage") != "registered-secure-before-service"):
+                raise AuthorityError("missing instance-bound registration attestation")
         item = {**prior, "stage": stage, "updated_at": int(time.time())}
         _publish(fd, name, item, replace=True)
     finally:

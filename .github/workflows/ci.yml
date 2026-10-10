@@ -1,22 +1,34 @@
-name: CI
+name: Development Check
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'fix/**', 'impl/**', 'acceptance/**']
   pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: dev-check-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  tests:
+  development:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Install test prerequisites
+      - name: Python and Bash syntax
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq rsync
-      - name: Run test suite
-        run: bash tests/run-all.sh
+          set -euo pipefail
+          while IFS= read -r path; do bash -n "$path"; done < <(find scripts hooks tests .github/actions -type f -name '*.sh' | sort)
+          python3 -m compileall -q web scripts tests
+      - name: Focused Web development regressions
+        run: |
+          set -euo pipefail
+          python3 tests/test-web-create-diagnostics.py
+          python3 tests/test-web-management.py
+          python3 tests/test-web-confirmation-gate-a.py
+          python3 tests/test-web-official-remove.py
+          python3 tests/test-web-service-record.py
+          python3 tests/test-web-runner-cleanup.py

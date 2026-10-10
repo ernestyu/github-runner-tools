@@ -49,6 +49,23 @@ class AuthorityTests(unittest.TestCase):
         for stage in auth.STAGES[2:]:
             auth.create_stage(REPO, RUNNER, self.repo, stage)
 
+    def test_cli_unit_schema_rejects_extra_execution_directives(self):
+        lines = [
+            "[Unit]", "Description=GitHub Actions Runner (example/repo)",
+            "After=network.target", "[Service]",
+            "ExecStart=" + self.repo + "/runsvc.sh", "User=root",
+            "WorkingDirectory=" + self.repo, "KillMode=process",
+            "KillSignal=SIGTERM", "TimeoutStopSec=5min",
+            "[Install]", "WantedBy=multi-user.target",
+        ]
+        cli.validate_official_unit(lines, "root", self.repo)
+        for dangerous in ("ExecCondition=/tmp/malicious", "Environment=LD_PRELOAD=/tmp/z",
+                          "User=another", "ExecStart=/bin/sh"):
+            with self.subTest(dangerous=dangerous):
+                with self.assertRaises(auth.AuthorityError):
+                    cli.validate_official_unit(lines + ["[Service]", dangerous],
+                                               "root", self.repo)
+
     def test_cli_create_orchestration_guards_official_unit_before_start(self):
         source = (ROOT / "scripts/register-runner.sh").read_text()
         registration = source.index("REGISTRATION_COMPLETE=1")

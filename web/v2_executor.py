@@ -32,7 +32,8 @@ def execute(request, secret):
         return execute_mutation(request, secret)
     if secret is not None:
         return {"ok": False, "error": "invalid_request"}
-    return status_as_runner()
+    from v2_inventory import annotate_inventory
+    return annotate_inventory(status_as_runner())
 
 
 def service_one(connection, web_user="grt-web", execute_fn=execute):

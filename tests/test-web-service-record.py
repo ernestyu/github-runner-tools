@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Isolated service-record security tests; no systemd or GitHub mutation."""
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -47,7 +49,8 @@ class ServiceRecordSecurityTests(unittest.TestCase):
         self.call("check")
         # Capture exact inode before isolation.
         inode = self.record.stat().st_ino
-        self.call("quarantine")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.call("quarantine")
         q = self.quarantines()
         self.assertEqual(len(q), 1)
         self.assertFalse(self.record.exists())
@@ -65,7 +68,7 @@ class ServiceRecordSecurityTests(unittest.TestCase):
             str(self.base), str(self.runner), REPO, RUNNER, UNIT],
             capture_output=True, text=True, check=True)
         proof = proc.stdout.strip()
-        self.assertRegex(proof, r"^\.grt-service-reconcile-[0-9a-f]{32}:\d+:\d+$")
+        self.assertRegex(proof, r"^\.grt-service-reconcile-[0-9a-f]{32}:\d+:\d+:\d+$")
         self.call("verify", proof)
         quarantined = self.quarantines()[0]
         quarantined.unlink()  # Adversarial same-UID replacement, not implementation mutation.

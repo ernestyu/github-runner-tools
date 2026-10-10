@@ -157,15 +157,17 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
         self.assertEqual(ops, [])
         self.assertTrue(exists)
 
-    def test_historical_0664_without_prior_attestation_is_refused_before_mutation(self):
-        rc, marker, captured, ops, exists = self.run_case(metadata_mode=0o664)
-        self.assertNotEqual(rc, 0)
-        self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=permission_reconcile_failed exit=unknown\n")
-        self.assertIsNone(captured)
-        self.assertEqual(ops, [])
-        self.assertTrue(exists)
-        self.assertTrue(self.last_state["service"])
-        self.assertEqual(self.last_state["credential"], "SYNTHETIC_NONSECRET")
+    def test_unattested_historical_metadata_permissions_are_refused_before_mutation(self):
+        for mode in (0o644, 0o664):
+            with self.subTest(mode=oct(mode)):
+                rc, marker, captured, ops, exists = self.run_case(metadata_mode=mode)
+                self.assertNotEqual(rc, 0)
+                self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=permission_reconcile_failed exit=unknown\n")
+                self.assertIsNone(captured)
+                self.assertEqual(ops, [])
+                self.assertTrue(exists)
+                self.assertTrue(self.last_state["service"])
+                self.assertEqual(self.last_state["credential"], "SYNTHETIC_NONSECRET")
 
     def test_invalid_record_identity_blocks_before_service_mutation(self):
         for kind in ("mismatch", "symlink"):

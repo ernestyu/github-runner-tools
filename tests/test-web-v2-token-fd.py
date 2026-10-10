@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """V2 token transport: real inherited FD, no token in argv/env/files."""
 import os
+import hashlib
 import pathlib
 import subprocess
 import sys
@@ -26,11 +27,11 @@ class TransportTests(unittest.TestCase):
         secret = b"isolated-temporary-token"
         fd = make_token_pipe(secret)
         program = (
-            "import os,sys;"
+            "import os,sys,hashlib;"
             "fd=int(sys.argv[1]);"
             "content=os.read(fd,2048);"
             "os.close(fd);"
-            "sys.stdout.write('OK' if content==b'isolated-temporary-token\\n' else 'BAD')"
+            "sys.stdout.write(hashlib.sha256(content).hexdigest())"
         )
         try:
             result = subprocess.run(
@@ -39,7 +40,7 @@ class TransportTests(unittest.TestCase):
                 env={"PATH": "/usr/bin:/bin"},
                 check=True,
             )
-            self.assertEqual(result.stdout, b"OK")
+            self.assertEqual(result.stdout.decode(), hashlib.sha256(secret + b"\\n").hexdigest())
             self.assertNotIn(secret, " ".join(result.args).encode())
         finally:
             close_quietly(fd)

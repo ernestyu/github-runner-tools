@@ -38,3 +38,8 @@ web_stop_line=$(grep -nF 'sudo systemctl stop github-runner-tools-web.service' "
 grep -Fq 'lifecycle-sha256.txt' "$source_file"
 grep -Fq 'lifecycle-metadata.txt' "$source_file"
 echo "PASS: cutover lock and quiescent V1 snapshot precede V2 code switch"
+
+preflight_line=$(grep -nF 'unreadable V1 lifecycle schema' "$source_file" | head -1 | cut -d: -f1)
+install_code_line=$(grep -nF 'for file in v2_executor_contract.py' "$source_file" | head -1 | cut -d: -f1)
+[[ -n "$preflight_line" && -n "$install_code_line" && "$preflight_line" -lt "$install_code_line" ]]
+echo "PASS: V1 state schema validation precedes V2 executable replacement"

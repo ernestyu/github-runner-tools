@@ -440,13 +440,18 @@ echo "==> Registering runner for https://github.com/$REPO ..."
 if [[ "$WEB_MODE" == "1" ]]; then
   PTY_ADAPTER="${GRT_PTY_ADAPTER:-/usr/local/lib/github-runner-tools/web/pty_token_adapter.py}"
   [[ -x "$PTY_ADAPTER" ]] || die "Web PTY token adapter is unavailable."
-  python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode create -- \
+  if python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode create -- \
     ./config.sh \
       --url "https://github.com/$REPO" \
       --name "$RUNNER_NAME" \
       --labels "$RUNNER_LABELS" \
-      --work "_work" ||
-    { create_lifecycle_stage REGISTRATION_OUTCOME_UNKNOWN || true; die "Runner registration outcome is uncertain; preserve local registration state and reconcile with GitHub before retry."; }
+      --work "_work"; then
+    exec {TOKEN_FD}<&-
+  else
+    exec {TOKEN_FD}<&-
+    create_lifecycle_stage REGISTRATION_OUTCOME_UNKNOWN || true
+    die "Runner registration outcome is uncertain; preserve local registration state and reconcile with GitHub before retry."
+  fi
 else
   ./config.sh \
     --url "https://github.com/$REPO" \

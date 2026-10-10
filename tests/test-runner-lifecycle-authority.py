@@ -45,6 +45,8 @@ class AuthorityTests(unittest.TestCase):
         with self.assertRaises(auth.AuthorityError):
             auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_UNIT_INCOMPLETE")
         for stage in auth.STAGES[1:]:
+            if stage == "REGISTERED_UNIT_INCOMPLETE":
+                auth.create_attestation(REPO, RUNNER, self.repo, "root", "2.328.0")
             auth.create_stage(REPO, RUNNER, self.repo, stage)
         with self.assertRaises(auth.AuthorityError):
             auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
@@ -61,6 +63,8 @@ class AuthorityTests(unittest.TestCase):
             auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_PERMISSION_INCOMPLETE")
 
     def test_root_only_attestation_contains_digests_not_credentials(self):
+        auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_PERMISSION_INCOMPLETE")
         auth.create_attestation(REPO, RUNNER, self.repo, pwd.getpwuid(os.getuid()).pw_name, "2.328.0")
         ledger = list((self.base / "state" / "runner-attestations").glob("*.json"))
         self.assertEqual(len(ledger), 1)
@@ -76,6 +80,8 @@ class AuthorityTests(unittest.TestCase):
             auth.create_attestation(REPO, RUNNER, self.repo, "root", "2.328.0")
 
     def test_attestation_rejects_insecure_or_symlinked_files(self):
+        auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_PERMISSION_INCOMPLETE")
         credentials = self.runner / ".credentials"
         credentials.chmod(0o664)
         with self.assertRaises(auth.AuthorityError):
@@ -89,6 +95,8 @@ class AuthorityTests(unittest.TestCase):
                          and list((self.base / "state" / "runner-attestations").glob("*.json")))
 
     def test_attestation_wrong_repository_rejected(self):
+        auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_PERMISSION_INCOMPLETE")
         with self.assertRaises(auth.AuthorityError):
             auth.create_attestation("foreign/repo", RUNNER, self.repo, "root", "2.328.0")
 

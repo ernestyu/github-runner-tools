@@ -15,3 +15,9 @@ fi
 # Installation command is syntactically protected by explicit --apply.
 grep -Fq -- '--apply)' "$source_file"
 echo "PASS: V2 service switch is explicit, previewable and nonmutating by default"
+
+rollback="$ROOT/scripts/rollback-web-management-v2.sh"
+bash -n "$rollback"
+rollback_plan="$(bash "$rollback" --dry-run --backup-dir /var/lib/github-runner-tools/web-v2-rollback.ABCDEFGH)"
+[[ "$rollback_plan" == *"No runner services or state records would be modified."* ]]
+echo "PASS: V2 rollback preview preserves existing lifecycle records"

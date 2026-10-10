@@ -72,6 +72,28 @@ class WebV2StatusTests(unittest.TestCase):
             resp = app.dispatch({"V2_EXECUTOR_MODE":"1"},{"op":"list"})
         self.assertFalse(resp["ok"])
 
+    def test_mutation_client_waits_for_bounded_executor_deadline(self):
+        from unittest.mock import MagicMock
+        request = client.decode_request(b'{"op":"create","repository":"owner/repo"}')
+        response = b'{"ok":false,"error":"operation_in_progress"}'
+        fake = MagicMock()
+        fake.recv.side_effect = [len(response).to_bytes(4, "big"), response]
+        with patch.object(client.socket, "socket", return_value=fake):
+            result = client.send_request(request, b"temporary")
+        self.assertEqual(result["error"], "operation_in_progress")
+        fake.settimeout.assert_called_once_with(930)
+
+    def test_status_client_timeout_remains_short(self):
+        from unittest.mock import MagicMock
+        request = client.decode_request(b'{"op":"status"}')
+        response = b'{"ok":true,"data":[]}'
+        fake = MagicMock()
+        fake.recv.side_effect = [len(response).to_bytes(4, "big"), response]
+        with patch.object(client.socket, "socket", return_value=fake):
+            result = client.send_request(request, None)
+        self.assertTrue(result["ok"])
+        fake.settimeout.assert_called_once_with(20)
+
     def test_client_rejects_noncanonical_endpoint(self):
         with self.assertRaises(client.ExecutorClientError):
             client.fetch_status("/tmp/socket")

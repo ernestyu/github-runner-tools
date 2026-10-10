@@ -278,7 +278,9 @@ finally:
 if uid != 0:
     raise SystemExit(1)
 PY
-  web_priv_request '{"op":"context_check"}' || die "Web lifecycle context is not authorized by dispatcher."
+  if [[ "$EXECUTOR_MODE" != "1" ]]; then
+    web_priv_request '{"op":"context_check"}' || die "Web lifecycle context is not authorized by dispatcher."
+  fi
 }
 
 ensure_mutation_lock() {

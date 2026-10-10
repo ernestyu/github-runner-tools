@@ -51,7 +51,7 @@ class AuthorityTests(unittest.TestCase):
 
     def test_cli_create_orchestration_guards_official_unit_before_start(self):
         source = (ROOT / "scripts/register-runner.sh").read_text()
-        registration = source.index("REGISTRATION_COMPLETE=1\\n")
+        registration = source.index("REGISTRATION_COMPLETE=1")
         cli_permission = source.index("cli_create_authority stage REGISTERED_PERMISSION_INCOMPLETE -")
         cli_normalize = source.index("cli_create_authority normalize - -")
         cli_attest = source.index("cli_create_authority attest -")

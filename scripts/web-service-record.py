@@ -7,6 +7,7 @@ unexpected metadata, stale quarantine or an adversarial rename race.
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -57,8 +58,8 @@ def record(fd: int, basename: str, uid: int, expected: bytes) -> os.stat_result:
         os.close(h)
 
 
-def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str) -> None:
-    if mode not in ("check", "quarantine"):
+def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str, proof: str = "") -> None:
+    if mode not in ("check", "quarantine", "verify"):
         raise ValueError("invalid mode")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("invalid repo")
@@ -70,6 +71,27 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str) ->
     base = os.path.realpath(base)
     if os.path.realpath(target) != target or os.path.dirname(target) != base:
         raise ValueError("unexpected runner path")
+    owner, repository = repo.split("/", 1)
+    def safe(value: str) -> str:
+        return re.sub(r"[^a-z0-9._-]+", "-", value.lower()).strip("-")
+    so, sr = safe(owner), safe(repository)
+    direct = so + "--" + sr
+    if len(direct) > 64:
+        digest = hashlib.sha256(repo.lower().encode()).hexdigest()[:8]
+        available = 64 - 2 - 2 - 8
+        ol, rl = len(so), len(sr)
+        if ol < available // 2:
+            rl = min(available - ol, rl)
+            ol = available - rl
+        elif rl < available // 2:
+            ol = min(available - rl, ol)
+            rl = available - ol
+        else:
+            ol = available // 2
+            rl = available - ol
+        direct = so[:ol] + "--" + sr[:rl] + "--" + digest
+    if os.path.basename(target) not in {"actions-runner-" + direct, "actions-runner-" + sr}:
+        raise ValueError("repository path mismatch")
     base_fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         name = os.path.basename(target)
@@ -83,7 +105,8 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str) ->
             if not same_directory(identity, os.stat(name, dir_fd=base_fd, follow_symlinks=False)):
                 raise ValueError("runner directory replaced")
             entries = os.listdir(fd)
-            if any(n.startswith(PREFIX) for n in entries):
+            quarantines = [n for n in entries if n.startswith(PREFIX)]
+            if mode != "verify" and quarantines:
                 raise ValueError("stale quarantine")
             metadata_fd = os.open(".runner", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
             try:
@@ -100,6 +123,21 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str) ->
                 raise ValueError("metadata repo mismatch")
             if metadata.get("agentName") != runner:
                 raise ValueError("metadata name mismatch")
+            if mode == "verify":
+                match = re.fullmatch(r"(\.grt-service-reconcile-[0-9a-f]{32}):(\d+):(\d+)", proof)
+                if not match or quarantines != [match.group(1)]:
+                    raise ValueError("quarantine proof mismatch")
+                try:
+                    os.stat(".service", dir_fd=fd, follow_symlinks=False)
+                    raise ValueError("service reappeared")
+                except FileNotFoundError:
+                    pass
+                st = record(fd, match.group(1), os.getuid(), unit.encode("ascii"))
+                if (st.st_dev, st.st_ino) != (int(match.group(2)), int(match.group(3))):
+                    raise ValueError("quarantine replaced")
+                if not same_directory(identity, os.stat(name, dir_fd=base_fd, follow_symlinks=False)):
+                    raise ValueError("directory changed")
+                return
             st = record(fd, ".service", os.getuid(), unit.encode("ascii"))
             if mode == "check":
                 return
@@ -121,6 +159,7 @@ def run(mode: str, base: str, target: str, repo: str, runner: str, unit: str) ->
                     pass
                 if not same_directory(identity, os.stat(name, dir_fd=base_fd, follow_symlinks=False)):
                     raise ValueError("runner directory changed")
+                print(f"{quarantine}:{moved.st_dev}:{moved.st_ino}", flush=True)
             except Exception:
                 try:
                     rename_noreplace(fd, quarantine, ".service")

@@ -21,7 +21,7 @@ while IFS= read -r script; do
 done < <(find "$ROOT/scripts" "$ROOT/hooks" "$ROOT/tests" "$ROOT/.github/actions" -type f -name '*.sh' -print | sort)
 
 echo "Checking Python syntax..."
-python3 -m py_compile "$ROOT"/web/*.py "$ROOT"/tests/test-web-management.py "$ROOT"/tests/test-web-confirmation-gate-a.py "$ROOT"/tests/test-web-official-remove.py "$ROOT"/tests/test-web-service-record.py "$ROOT"/tests/test-runner-version-compatibility.py "$ROOT"/tests/test-runner-lifecycle-authority.py "$ROOT"/web/runner_lifecycle_authority.py "$ROOT"/scripts/web-service-record.py
+python3 -m py_compile "$ROOT"/web/*.py "$ROOT"/tests/test-web-management.py "$ROOT"/tests/test-web-confirmation-gate-a.py "$ROOT"/tests/test-web-official-remove.py "$ROOT"/tests/test-web-service-record.py "$ROOT"/tests/test-runner-version-compatibility.py $ROOT"/tests/test-runner-lifecycle-authority.py "$ROOT"/web/runner_lifecycle_authority.py "$ROOT"/scripts/web-service-record.py
 
 tests=(
   tests/test-pure.sh
@@ -59,6 +59,8 @@ echo
 echo "============================================================"
 echo "RUN: tests/test-web-service-record.py"
 python3 "$ROOT/tests/test-web-service-record.py"
+echo "RUN: tests/test-web-runner-cleanup.py"
+python3 "$ROOT/tests/test-web-runner-cleanup.py"
 
 echo "RUN: tests/test-runner-version-compatibility.py"
 python3 "$ROOT/tests/test-runner-version-compatibility.py"

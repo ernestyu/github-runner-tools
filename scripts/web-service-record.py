@@ -34,7 +34,7 @@ def rename_noreplace(fd: int, source: str, dest: str) -> None:
 def same(a: os.stat_result, b: os.stat_result) -> bool:
     return all(getattr(a, x) == getattr(b, x) for x in
                ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid",
-                "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns"))
+                "st_nlink", "st_size", "st_mtime_ns"))
 
 
 def record(fd: int, basename: str, uid: int, expected: bytes) -> os.stat_result:

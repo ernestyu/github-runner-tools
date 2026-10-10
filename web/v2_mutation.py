@@ -57,8 +57,9 @@ def lock_transaction(runtime: Runtime):
         raise
 
 
-def serve_private_ops(runtime: Runtime, connection: socket.socket,
-                      deadline: float, stop: threading.Event) -> None:
+def serve_private_ops(runtime: Runtime, transaction: Request,
+                      connection: socket.socket, deadline: float,
+                      stop: threading.Event) -> None:
     """Read only from the private root/CLI channel, never the public socket."""
     connection.settimeout(0.5)
     buffer = bytearray()
@@ -79,7 +80,9 @@ def serve_private_ops(runtime: Runtime, connection: socket.socket,
             buffer = bytearray(remaining)
             try:
                 req = json.loads(raw.decode("utf-8", "strict"))
-                response = execute_privileged(runtime, req, deadline=deadline)
+                from v2_binding import authorize_private_request, TransactionBindingError
+                admitted = authorize_private_request(runtime, transaction, req)
+                response = execute_privileged(runtime, admitted, deadline=deadline)
             except (ValueError, UnicodeError, PrivilegedProtocolError, OSError):
                 response = {"ok": False, "error": "privileged_request_rejected"}
             try:
@@ -161,7 +164,7 @@ def execute_mutation(request: Request, secret: bytes | None,
             stop = threading.Event()
             thread = threading.Thread(
                 target=serve_private_ops,
-                args=(runtime, root_socket, deadline, stop),
+                args=(runtime, request, root_socket, deadline, stop),
                 daemon=True,
             )
             thread.start()

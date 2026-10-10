@@ -18,7 +18,7 @@ remove_result() {
   [[ "$WEB_MODE" == "1" && -n "$RESULT_FD" && "$REMOVE_MARKED" == "0" && "$rc" -ne 0 ]] || return 0
   REMOVE_MARKED=1
   case "$REMOVE_STAGE" in
-    preflight_failed|service_state_failed|service_stop_failed|service_uninstall_failed|config_remove_failed|local_cleanup_failed|unknown_failed) ;;
+    preflight_failed|service_state_failed|service_stop_failed|service_uninstall_failed|service_record_reconcile_failed|permission_reconcile_failed|config_remove_failed|local_cleanup_failed|unknown_failed) ;;
     *) REMOVE_STAGE="unknown_failed" ;;
   esac
   value="$REMOVE_EXIT"
@@ -248,6 +248,15 @@ web_priv_request() {
   IFS= read -r response <&"$PRIVILEGED_FD" || die "Privileged dispatcher channel closed."
   WEB_PRIV_RESPONSE="$response"
   jq -e '.ok == true' <<<"$response" >/dev/null 2>&1
+}
+
+web_remove_state() {
+  local stage="$1" payload
+  [[ "$WEB_MODE" == "1" ]] || return 1
+  payload="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" \
+    --arg runner_name "$RUNNER_NAME" --arg stage "$stage" \
+    '{op:"remove_state",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,stage:$stage}')" || return 1
+  web_priv_request "$payload"
 }
 
 web_context_check() {
@@ -623,7 +632,29 @@ cd "$RUNNER_DIR"
 if [[ "$WEB_MODE" == "1" ]]; then
   web_token_from_fd || die "Invalid Web removal token input."
   RUNNER_NAME="$(jq -er '.agentName' "$RUNNER_DIR/.runner")" || die "Configured runner name is unavailable."
-  SERVICE_NAME="$(read_service_name_strict "$RUNNER_DIR/.service")" || die "Configured service identity is unavailable."
+  SERVICE_NAME="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
+  [[ "${#SERVICE_NAME}" -le 150 ]] || die "Unsupported service identity."
+  REMOVE_STAGE="preflight_failed"
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" identity "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
+    die "Configured runner identity cannot be verified."
+  if [[ ! -e "$RUNNER_DIR/.service" && ! -L "$RUNNER_DIR/.service" ]]; then
+    REMOVE_STAGE="unknown_failed"
+    die "Runner service record missing; previous remote outcome requires manual review."
+  fi
+  if compgen -G "$RUNNER_DIR/.grt-service-reconcile-*" >/dev/null; then
+    REMOVE_STAGE="unknown_failed"
+    die "Previous service record quarantine requires manual review."
+  fi
+  REMOVE_STAGE="permission_reconcile_failed"
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" registration_check "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
+    die "Runner registration file permissions require trusted administrator review."
+  REMOVE_STAGE="service_record_reconcile_failed"
+  [[ -f "$RUNNER_DIR/.service" && ! -L "$RUNNER_DIR/.service" ]] ||
+    die "Runner service record unsafe; manual inspection required."
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" check "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
+    die "Configured service identity is unavailable or incompatible."
+  REMOVE_STAGE="preflight_failed"
+  web_remove_state BEGIN || die "Cannot persist removal attempt identity; no service mutation started."
   REMOVE_STAGE="service_state_failed"
   SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
     die "Could not validate privileged systemd service state."
@@ -635,6 +666,22 @@ if [[ "$WEB_MODE" == "1" ]]; then
     web_service_operation service_uninstall "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME" ||
       die "Privileged service uninstall failed."
   fi
+  REMOVE_STAGE="service_uninstall_failed"
+  FINAL_SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
+    die "Cannot verify final service state before record reconciliation."
+  [[ "$FINAL_SERVICE_STATE" == "absent" ]] ||
+    die "Systemd unit still exists; preserving service record."
+  REMOVE_STAGE="service_record_reconcile_failed"
+  RECORD_PROOF="$(python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" quarantine "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME")" ||
+    die "Local service record reconciliation failed."
+  REMOVE_STAGE="service_uninstall_failed"
+  FINAL_SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
+    die "Cannot verify final service state after record reconciliation."
+  [[ "$FINAL_SERVICE_STATE" == "absent" ]] ||
+    die "Systemd service state changed after reconciliation."
+  REMOVE_STAGE="service_record_reconcile_failed"
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" verify "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" "$RECORD_PROOF" ||
+    die "Local service record identity changed after reconciliation."
 else
   echo "==> Stopping service..."
   if ! sudo ./svc.sh stop; then
@@ -649,6 +696,13 @@ if [[ "$WEB_MODE" == "1" ]]; then
   REMOVE_STAGE="config_remove_failed"
   if ( exec {RESULT_FD}>&-; ./config.sh remove --token "$TOKEN" >/dev/null 2>&1 ); then
     unset TOKEN
+    REMOVE_STAGE="local_cleanup_failed"
+    web_remove_state CONFIRM_REMOTE_REMOVED ||
+      die "Official unregister succeeded but durable local cleanup authorization failed."
+    REMOVE_PROOF_DEVICE="$(jq -er '.device | numbers' <<<"$WEB_PRIV_RESPONSE")" ||
+      die "Cleanup authority returned invalid target device."
+    REMOVE_PROOF_INODE="$(jq -er '.inode | numbers' <<<"$WEB_PRIV_RESPONSE")" ||
+      die "Cleanup authority returned invalid target inode."
   else
     REMOVE_EXIT="$?"
     # Bash's 128+signal convention cannot distinguish a killed child from
@@ -671,7 +725,16 @@ cd "$RUNNER_BASE_DIR"
 case "$RUNNER_DIR" in "$RUNNER_BASE_DIR"/actions-runner-*) ;; *) die "Safety check failed; refusing to delete unexpected path: $RUNNER_DIR" ;; esac
 
 echo "==> Deleting local runner directory..."
-rm -rf -- "$RUNNER_DIR"
+if [[ "$WEB_MODE" == "1" ]]; then
+  python3 "${BASH_SOURCE[0]%/*}/web-runner-cleanup.py" \
+    "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$REMOVE_PROOF_DEVICE" "$REMOVE_PROOF_INODE" ||
+    die "Runner local directory cleanup failed; remote unregister was already completed."
+  web_remove_state COMPLETE || die "Runner directory was deleted but terminal completion verification failed."
+else
+  rm -rf -- "$RUNNER_DIR"
+  [[ ! -e "$RUNNER_DIR" && ! -L "$RUNNER_DIR" ]] ||
+    die "Runner directory still exists after local cleanup."
+fi
 
 echo
 cat <<DONE

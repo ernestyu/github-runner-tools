@@ -21,11 +21,10 @@ class ExecutorClientError(RuntimeError):
     pass
 
 
-def fetch_status(socket_path: str = EXECUTOR_SOCKET) -> dict:
+def send_request(request, token: bytes | None, socket_path: str = EXECUTOR_SOCKET) -> dict:
     if socket_path != EXECUTOR_SOCKET:
         raise ExecutorClientError("unapproved Executor endpoint")
-    request = decode_request(b'{"op":"status"}')
-    frame = encode_request_frame(request, None)
+    frame = encode_request_frame(request, token)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(20)
     try:
@@ -50,6 +49,21 @@ def fetch_status(socket_path: str = EXECUTOR_SOCKET) -> dict:
         raise ExecutorClientError("Executor unavailable or invalid response") from exc
     finally:
         sock.close()
+
+
+def fetch_status(socket_path: str = EXECUTOR_SOCKET) -> dict:
+    return send_request(decode_request(b'{"op":"status"}'), None, socket_path)
+
+
+def create_runner(repository: str, token: str) -> dict:
+    from v2_executor_contract import AdmissionError
+    try:
+        request = decode_request(json.dumps({
+            "op": "create", "repository": repository,
+        }).encode("utf-8"))
+        return send_request(request, token.encode("utf-8", "strict"))
+    except (AdmissionError, ExecutorClientError, UnicodeError, ValueError):
+        return {"ok": False, "error": "create_request_rejected"}
 
 
 def web_list():

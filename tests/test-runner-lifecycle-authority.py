@@ -329,7 +329,13 @@ class AuthorityTests(unittest.TestCase):
         with (mock.patch.dict(os.environ, {"SUDO_USER": "fixture"}),
               mock.patch("pwd.getpwnam", return_value=fake_account),
               mock.patch.object(cli, "_safe_directory", side_effect=safe),
-              mock.patch.object(auth, "_safe_directory", side_effect=safe)):
+              mock.patch.object(auth, "_safe_directory", side_effect=safe),
+              mock.patch.object(cli.subprocess, "run", return_value=SimpleNamespace(
+                  returncode=0,
+                  stdout="LoadState=loaded\nFragmentPath=/etc/systemd/system/" + service +
+                         "\nDropInPaths=\nUser=fixture\nWorkingDirectory=" + self.repo +
+                         "\nExecStart={ path=" + self.repo + "/runsvc.sh ; argv[]=" +
+                         self.repo + "/runsvc.sh ; }\n"))):
             invoke("stage", "PRE_REGISTRATION")
             invoke("stage", "REGISTERED_PERMISSION_INCOMPLETE")
             invoke("attest", "-", "2.328.0")

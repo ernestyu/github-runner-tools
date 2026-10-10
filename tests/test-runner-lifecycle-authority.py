@@ -359,7 +359,7 @@ class AuthorityTests(unittest.TestCase):
         auth.remove_stage(REPO, RUNNER, self.repo, "root", "COMPLETE")
         self.runner.mkdir()
         (self.runner / ".runner").write_text(json.dumps({
-            "agentName": RUNNER, "gitHubUrl": "https://github.com/example/repo"}))
+            "agentName": RUNNER, "agentId": 202, "gitHubUrl": "https://github.com/example/repo"}))
         (self.runner / ".credentials").write_text("SECOND_CYCLE_SYNTHETIC")
         for name in (".runner", ".credentials"):
             (self.runner / name).chmod(0o600)

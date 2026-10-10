@@ -82,9 +82,25 @@ def web_list():
             return {"ok": False, "error": "invalid_status"}
         row = {key: item.get(key) for key in (
             "repository", "runner_name", "service_state", "management_state",
-            "configured", "runner_dir",
+            "configured", "runner_dir", "runner_id", "instance",
         )}
-        row["can_remove"] = False
+        row["can_remove"] = (item.get("can_remove") is True
+                             and type(item.get("runner_id")) is int
+                             and isinstance(item.get("instance"), str))
         row["can_recover_local"] = False
         rows.append(row)
     return {"ok": True, "runners": rows}
+
+
+def remove_runner(repository: str, runner_name: str, runner_id: int,
+                  instance: str, token: str) -> dict:
+    from v2_executor_contract import AdmissionError
+    try:
+        request = decode_request(json.dumps({
+            "op": "remove", "repository": repository,
+            "runner_name": runner_name, "runner_id": runner_id,
+            "instance": instance,
+        }).encode("utf-8"))
+        return send_request(request, token.encode("utf-8", "strict"))
+    except (AdmissionError, ExecutorClientError, UnicodeError, ValueError):
+        return {"ok": False, "error": "remove_request_rejected"}

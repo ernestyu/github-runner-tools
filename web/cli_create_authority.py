@@ -36,6 +36,12 @@ def validate_official_unit(lines: list[str], user: str, directory: str) -> None:
             "TimeoutStopSec": "5min"},
         "[Install]": {"WantedBy": "multi-user.target"},
     }
+    # Retain validation of existing official Units, but also recognize the
+    # new shared root-created canonical 0644 template for CLI/V2 parity.
+    if "Type=simple" in lines:
+        expected["[Unit]"] = {"After": "network-online.target",
+                              "Wants": "network-online.target"}
+        expected["[Service]"]["Type"] = "simple"
     parsed: dict[str, dict[str, str]] = {}
     section = None
     for line in lines:
@@ -75,7 +81,7 @@ def main(argv: list[str]) -> None:
     if user == "root":
         raise AuthorityError("non-root Runner owner required")
     account = pwd.getpwnam(user)
-    if len(argv) != 6 or argv[0] not in ("stage", "attest", "unit", "normalize"):
+    if len(argv) != 6 or argv[0] not in ("stage", "attest", "unit", "normalize", "install"):
         raise AuthorityError("invalid operation")
     op, repo, runner_name, directory, action, version = argv
     repo = validate_repository(repo)
@@ -105,6 +111,11 @@ def main(argv: list[str]) -> None:
         if action != "-" or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
             raise AuthorityError("invalid attestation request")
         create_attestation(repo, runner_name, directory, user, version)
+    elif op == "install":
+        if action != "-" or version != "-":
+            raise AuthorityError("invalid Unit installation request")
+        from v2_unit_installer import install_canonical_unit
+        install_canonical_unit(repo, runner_name, directory, user)
     else:
         if action != "-" or version != "-":
             raise AuthorityError("invalid Unit verification")

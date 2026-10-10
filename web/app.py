@@ -154,15 +154,19 @@ def form_fields_within_bounds(form: dict[str, str]) -> bool:
 
 def dispatch(config: dict[str, str], request: dict[str, Any]) -> dict[str, Any]:
     if config.get("V2_EXECUTOR_MODE") == "1":
-        # During restricted implementation, V2 Web is deliberately read-only.
-        # Never silently fall back to the V1 Dispatcher for mutations.
-        if request.get("op") != "list":
-            return {"ok": False, "error": "not_implemented"}
+        # No V1 Dispatcher fallback in V2 mode. All operations use fixed
+        # Executor request formats; secrets are in separate socket frames.
+        operation = request.get("op")
         try:
-            from v2_executor_client import web_list
-            return web_list()
+            from v2_executor_client import web_list, create_runner
+            if operation == "list":
+                return web_list()
+            if operation == "create":
+                return create_runner(request.get("repository", ""),
+                                     request.get("token", ""))
+            return {"ok": False, "error": "not_implemented"}
         except Exception:
-            return {"ok": False, "error": "status_unavailable"}
+            return {"ok": False, "error": "executor_unavailable"}
     path = config.get("DISPATCH_SOCKET", "/run/github-runner-tools/web-dispatch.sock")
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     timeout = 20

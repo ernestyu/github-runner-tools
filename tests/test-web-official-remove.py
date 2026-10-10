@@ -40,6 +40,12 @@ web_service_operation() {
     if [[ "$GRT_FAIL_STAGE" == "$1" ]]; then return 1; fi
     if [[ "$1" == "service_uninstall" ]]; then : > "$GRT_UNINSTALLED_FLAG"; fi
 }
+if [[ "$GRT_FAIL_STAGE" == "record_reconcile" ]]; then
+    python3() {
+        if [[ "$*" == *web-service-record.py*quarantine* ]]; then return 1; fi
+        web_remove_external python3 "$@"
+    }
+fi
 if [[ "$GRT_FAIL_STAGE" == "local_cleanup" ]]; then
     rm() {
         if [[ "$*" == *actions-runner-example--repo* ]]; then return 42; fi
@@ -146,6 +152,16 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
                 self.assertIsNone(captured)
                 self.assertEqual(ops, [])
                 self.assertTrue(exists)
+
+    def test_reconciliation_failure_has_distinct_marker_and_no_registration_remove(self):
+        rc, marker, captured, ops, exists = self.run_case(fail_stage="record_reconcile")
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=service_record_reconcile_failed exit=unknown\n")
+        self.assertIsNone(captured)
+        self.assertEqual(ops, ["service_stop", "service_uninstall"])
+        self.assertTrue(exists)
+        self.assertTrue(self.last_state["service"])
+        self.assertEqual(self.last_state["credential"], "SYNTHETIC_NONSECRET")
 
     def test_config_failure_keeps_quarantined_record_and_registration_files(self):
         rc, marker, captured, ops, exists = self.run_case(config_exit=1)

@@ -27,13 +27,13 @@ FIELDS = {
     "status": frozenset(("op",)),
 }
 CLI_ARGV = {
-    "create": ("/usr/local/lib/github-runner-tools/web/cli/register-runner.sh",
+    "create": ("/usr/local/lib/github-runner-tools/cli/register-runner.sh",
                "--executor-mode", "--token-fd", "3", "--privileged-fd", "4",
                "--lock-already-held"),
-    "remove": ("/usr/local/lib/github-runner-tools/web/cli/remove-runner.sh",
+    "remove": ("/usr/local/lib/github-runner-tools/cli/remove-runner.sh",
                "--executor-mode", "--token-fd", "3", "--privileged-fd", "4",
                "--lock-already-held"),
-    "status": ("/usr/local/lib/github-runner-tools/web/cli/status-runners.sh", "--json"),
+    "status": ("/usr/local/lib/github-runner-tools/cli/status-runners.sh", "--json"),
 }
 
 

@@ -18,6 +18,7 @@ import time
 ROOT = "/var/lib/github-runner-tools"
 ATTESTATIONS = "runner-attestations"
 CREATE_STATES = "create-state"
+REMOVE_STATES = "remove-state"
 
 STAGES = (
     "PRE_REGISTRATION",
@@ -276,5 +277,87 @@ def create_attestation(repo: str, runner: str, runner_dir: str, user: str, versi
         if _read_record(fd, name) is not None:
             raise AuthorityError("attestation already exists")
         _publish(fd, name, item, replace=False)
+    finally:
+        os.close(fd)
+
+
+def remove_stage(repo: str, runner: str, runner_dir: str, user: str, stage: str) -> dict:
+    """Persistent terminal cleanup evidence, managed only by root Dispatcher.
+
+    BEGIN is before official remote unregister, CONFIRM is only after the
+    Worker's official config.sh remove returns a definitive success.
+    COMPLETE is after scoped directory deletion and absence verification.
+    """
+    _assert_root()
+    if stage not in ("BEGIN", "CONFIRM_REMOTE_REMOVED", "COMPLETE"):
+        raise AuthorityError("unknown remove checkpoint")
+    fd = _store(REMOVE_STATES)
+    try:
+        name = _key(repo, runner, runner_dir)
+        previous = _read_record(fd, name)
+        if stage == "BEGIN":
+            if previous is not None:
+                raise AuthorityError("prior remove attempt requires review")
+            account = pwd.getpwnam(user)
+            runnerfd = _safe_directory(runner_dir)
+            try:
+                st = os.fstat(runnerfd)
+                if st.st_uid != account.pw_uid or st.st_mode & 0o022:
+                    raise AuthorityError("invalid remove directory")
+                path = os.stat(runner_dir, follow_symlinks=False)
+                if (st.st_dev, st.st_ino) != (path.st_dev, path.st_ino):
+                    raise AuthorityError("runner path changed")
+                # The ordinary Remove identity gate is still independently
+                # enforced by Worker and Dispatcher; record its pinned inode.
+                metadata = os.open(".runner", os.O_RDONLY | os.O_NOFOLLOW |
+                                   os.O_CLOEXEC, dir_fd=runnerfd)
+                try:
+                    reg = json.loads(os.read(metadata, 16385))
+                    if (reg.get("agentName") != runner or
+                            reg.get("gitHubUrl", "").rstrip("/").lower() !=
+                            ("https://github.com/" + repo).lower()):
+                        raise AuthorityError("runner identity mismatch")
+                    remote_id = reg.get("agentId")
+                    if remote_id is not None and not isinstance(remote_id, int):
+                        raise AuthorityError("invalid runner ID")
+                finally:
+                    os.close(metadata)
+            finally:
+                os.close(runnerfd)
+            item = {"schema": 1, "repository": repo, "runner": runner,
+                    "runner_dir": runner_dir, "directory_device": st.st_dev,
+                    "directory_inode": st.st_ino, "github_runner_id": remote_id,
+                    "stage": "REMOTE_REMOVE_OUTCOME_UNKNOWN",
+                    "created_at": int(time.time())}
+            _publish(fd, name, item, replace=False)
+            return {"device": st.st_dev, "inode": st.st_ino}
+        if previous is None or (previous.get("repository"), previous.get("runner"),
+                                 previous.get("runner_dir"), previous.get("schema")) != (
+                                     repo, runner, runner_dir, 1):
+            raise AuthorityError("missing verified remove ledger")
+        old = previous.get("stage")
+        if stage == "CONFIRM_REMOTE_REMOVED":
+            if old != "REMOTE_REMOVE_OUTCOME_UNKNOWN":
+                raise AuthorityError("invalid remote removal sequence")
+            runnerfd = _safe_directory(runner_dir)
+            try:
+                st = os.fstat(runnerfd)
+                if (st.st_dev, st.st_ino) != (
+                        previous["directory_device"], previous["directory_inode"]):
+                    raise AuthorityError("removal target changed")
+            finally:
+                os.close(runnerfd)
+            item = {**previous, "stage": "REGISTERED_REMOVED_LOCAL_CLEANUP_PENDING",
+                    "remote_confirmed_at": int(time.time())}
+            _publish(fd, name, item, replace=True)
+            return {"device": st.st_dev, "inode": st.st_ino}
+        if old != "REGISTERED_REMOVED_LOCAL_CLEANUP_PENDING":
+            raise AuthorityError("local cleanup not pending")
+        if os.path.lexists(runner_dir):
+            raise AuthorityError("target directory still present")
+        item = {**previous, "stage": "REMOVE_COMPLETE",
+                "completed_at": int(time.time())}
+        _publish(fd, name, item, replace=True)
+        return {"complete": True}
     finally:
         os.close(fd)

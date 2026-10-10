@@ -1329,7 +1329,14 @@ class OfficialRemoveDiagnosticsTests(unittest.TestCase):
         source = (ROOT / "scripts" / "remove-runner.sh").read_text()
         self.assertIn('./config.sh remove --token "$TOKEN"', source)
         self.assertIn('exec {RESULT_FD}>&-', source)
-        self.assertNotIn('--mode remove -- ./config.sh remove', source)
+        # V1 remains on its original official --token path, while V2
+        # exclusively uses the private FD/PTY adapter. The two contracts
+        # are selected by the internal executor mode.
+        self.assertIn('--mode remove -- ./config.sh remove', source)
+        start = source.index('if [[ "$EXECUTOR_MODE" == "1" ]]; then\\n    # V2 consumes')
+        end = source.index('elif ( exec {RESULT_FD}>&-;', start)
+        self.assertNotIn('--token "$TOKEN"', source[start:end])
+        self.assertIn('./config.sh remove --token "$TOKEN"', source[end:])
 
 
 if __name__ == "__main__":

@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from runner_lifecycle_authority import AuthorityError, create_attestation, create_stage
+
 from grt_web_common import (
     DEFAULT_CONFIG,
     DEFAULT_DISPATCH_SOCKET,
@@ -49,6 +51,8 @@ ALLOWED_PUBLIC = {
 }
 PRIV_FIELDS = {
     "context_check": {"op"},
+    "create_state": {"op", "repository", "runner_dir", "runner_name", "stage"},
+    "registration_attestation_create": {"op", "repository", "runner_dir", "runner_name", "version"},
     "service_install": {"op", "repository", "runner_dir", "runner_name"},
     "service_start": {"op", "repository", "runner_dir", "runner_name", "service"},
     "service_stop": {"op", "repository", "runner_dir", "runner_name", "service"},
@@ -427,6 +431,15 @@ class Runtime:
             repository = validate_repository(str(request["repository"]))
             runner_dir = self.validate_runner_dir(repository, str(request["runner_dir"]))
             runner_name = str(request["runner_name"])
+            if op == "create_state":
+                strict_dir = self.validate_runner_dir(repository, runner_dir, allow_legacy=False)
+                create_stage(repository, runner_name, strict_dir, str(request["stage"]))
+                return {"ok": True}
+            if op == "registration_attestation_create":
+                strict_dir = self.validate_runner_dir(repository, runner_dir, allow_legacy=False)
+                create_attestation(repository, runner_name, strict_dir,
+                                   self.runner_user, str(request["version"]))
+                return {"ok": True}
             if op == "service_install":
                 return self.install_service(request, deadline=deadline)
 
@@ -481,6 +494,7 @@ class Runtime:
             subprocess.CalledProcessError,
             subprocess.TimeoutExpired,
             DispatchError,
+            AuthorityError,
         ):
             return stable_error("privileged_validation_failed")
 

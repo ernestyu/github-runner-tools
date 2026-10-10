@@ -54,7 +54,7 @@ cleanup() {
       preflight|release_metadata|runner_download|registration|post_registration|service_install|service_start) ;;
       *) CREATE_DIAG_STAGE=preflight ;;
     esac
-    printf 'GRT_CREATE_DIAG_V1 stage=%s exit=%s\\n' "$CREATE_DIAG_STAGE" "$exit_code" >&2
+    printf 'GRT_CREATE_DIAG_V1 stage=%s exit=%s\n' "$CREATE_DIAG_STAGE" "$exit_code" >&2
   fi
   unset TOKEN || true
   [[ -n "${RELEASE_JSON:-}" ]] && rm -f -- "$RELEASE_JSON" || true

@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import secrets
 import stat
 import time
@@ -179,6 +180,17 @@ def create_stage(repo: str, runner: str, runner_dir: str, stage: str) -> None:
             pass
         elif STAGES.index(stage) != STAGES.index(previous) + 1:
             raise AuthorityError("create stage skipped")
+        if stage == "REGISTERED_UNIT_INCOMPLETE":
+            attfd = _store(ATTESTATIONS)
+            try:
+                proof = _read_record(attfd, name)
+                if (proof is None or proof.get("repository") != repo or
+                    proof.get("runner") != runner or
+                    proof.get("runner_dir") != runner_dir or
+                    proof.get("capture_stage") != "registered-secure-before-service"):
+                    raise AuthorityError("missing trusted registration attestation")
+            finally:
+                os.close(attfd)
         item = {**prior, "stage": stage, "updated_at": int(time.time())}
         _publish(fd, name, item, replace=True)
     finally:
@@ -216,6 +228,16 @@ def _file_digest(dirfd: int, name: str, uid: int, gid: int) -> dict:
 
 def create_attestation(repo: str, runner: str, runner_dir: str, user: str, version: str) -> None:
     _assert_root()
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise AuthorityError("invalid official runner version")
+    # Provenance must arise from the active, known successful registration stage.
+    statefd = _store(CREATE_STATES)
+    try:
+        state = _read_record(statefd, _key(repo, runner, runner_dir))
+        if state is None or state.get("stage") != "REGISTERED_PERMISSION_INCOMPLETE":
+            raise AuthorityError("attestation not in registration transaction")
+    finally:
+        os.close(statefd)
     account = pwd.getpwnam(user)
     dirfd = _safe_directory(runner_dir)
     try:
@@ -235,6 +257,9 @@ def create_attestation(repo: str, runner: str, runner_dir: str, user: str, versi
             os.close(meta)
         if (os.fstat(dirfd).st_dev, os.fstat(dirfd).st_ino) != (parent.st_dev, parent.st_ino):
             raise AuthorityError("runner directory replaced")
+        path_state = os.stat(runner_dir, follow_symlinks=False)
+        if (path_state.st_dev, path_state.st_ino) != (parent.st_dev, parent.st_ino):
+            raise AuthorityError("runner directory path replaced")
         item = {
             "schema": 1, "issuer": "root-dispatcher-create", "issued_at": int(time.time()),
             "repository": repo, "runner": runner, "runner_dir": runner_dir,

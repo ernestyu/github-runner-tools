@@ -176,6 +176,43 @@ class AuthorityTests(unittest.TestCase):
         self.assertFalse((self.base / "state" / "remove-state").exists()
                          and list((self.base / "state" / "remove-state").glob("*.json")))
 
+    def test_create_crash_after_remote_side_effect_before_ack_blocks_retry(self):
+        auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        # Simulate a lost process after remote success, before the next record.
+        active = auth._current(REPO, RUNNER, self.repo)
+        proof = auth._cycle_record(auth.CREATE_STATES, REPO, RUNNER, self.repo, active["instance"])
+        self.assertEqual(proof["stage"], "PRE_REGISTRATION")
+        with self.assertRaises(auth.AuthorityError):
+            auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        auth.create_stage(REPO, RUNNER, self.repo, "REGISTRATION_OUTCOME_UNKNOWN")
+        with self.assertRaises(auth.AuthorityError):
+            auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        with self.assertRaises(auth.AuthorityError):
+            auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_PERMISSION_INCOMPLETE")
+
+    def test_remove_crash_pending_before_confirm_never_repeats_remote(self):
+        self.complete_create()
+        first = auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        # Same durable state for both remote-failed and crashed-after-success.
+        with self.assertRaises(auth.AuthorityError):
+            auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        with self.assertRaises(auth.AuthorityError):
+            auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        self.assertTrue(self.runner.exists())
+        self.assertEqual(first["inode"], self.runner.stat().st_ino)
+
+    def test_cleanup_pending_crash_preserves_instance_and_blocks_recreation(self):
+        self.complete_create()
+        auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        auth.remove_stage(REPO, RUNNER, self.repo, "root", "CONFIRM_REMOTE_REMOVED")
+        with self.assertRaises(auth.AuthorityError):
+            auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        with self.assertRaises(auth.AuthorityError):
+            auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        state = auth._cycle_record(auth.REMOVE_STATES, REPO, RUNNER, self.repo,
+                                   auth._current(REPO, RUNNER, self.repo)["instance"])
+        self.assertEqual(state["stage"], "REGISTERED_REMOVED_LOCAL_CLEANUP_PENDING")
+
     def test_fresh_create_only_normalizes_0664_registration(self):
         (self.runner / ".runner").chmod(0o664)
         (self.runner / ".credentials").chmod(0o664)

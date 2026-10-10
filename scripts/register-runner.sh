@@ -5,6 +5,7 @@ MAX_LOCAL_ID_LENGTH=64
 HASH_LENGTH=8
 CREATED_RUNNER_DIR=0
 REGISTRATION_COMPLETE=0
+CREATE_REQUEST_STARTED=0
 TOKEN=""
 RELEASE_JSON=""
 ARCHIVE_PATH=""
@@ -48,7 +49,7 @@ cleanup() {
   unset TOKEN || true
   [[ -n "${RELEASE_JSON:-}" ]] && rm -f -- "$RELEASE_JSON" || true
   [[ -n "${ARCHIVE_PATH:-}" ]] && rm -f -- "$ARCHIVE_PATH" || true
-  if [[ "$CREATED_RUNNER_DIR" -eq 1 && "$REGISTRATION_COMPLETE" -eq 0 && -n "${RUNNER_DIR:-}" ]]; then
+  if [[ "$CREATED_RUNNER_DIR" -eq 1 && "$REGISTRATION_COMPLETE" -eq 0 && "$CREATE_REQUEST_STARTED" -eq 0 && -n "${RUNNER_DIR:-}" ]]; then
     if [[ -d "$RUNNER_DIR" && ! -e "$RUNNER_DIR/.runner" ]]; then rm -rf -- "$RUNNER_DIR" || true; fi
   fi
 }
@@ -127,6 +128,27 @@ web_priv_request() {
   IFS= read -r response <&"$PRIVILEGED_FD" || die "Privileged dispatcher channel closed."
   WEB_PRIV_RESPONSE="$response"
   jq -e '.ok == true' <<<"$response" >/dev/null 2>&1
+}
+
+cli_create_authority() {
+  local verb="$1" action="$2" version="$3"
+  local authority="/usr/local/lib/github-runner-tools/web/cli_create_authority.py"
+  [[ "$WEB_MODE" != "1" ]] || die "CLI root lifecycle authority invoked in Web context."
+  [[ -f "$authority" && ! -L "$authority" ]] ||
+    die "Trusted installed CLI lifecycle authority missing; install the approved tooling before Create."
+  [[ "$(stat -c '%U:%G:%a' "$authority")" == "root:root:755" ]] ||
+    die "CLI lifecycle authority ownership/mode invalid."
+  sudo /usr/bin/python3 "$authority" "$verb" "$REPO" "$RUNNER_NAME" "$RUNNER_DIR" "$action" "$version" ||
+    die "CLI lifecycle integrity checkpoint failed; keep registered resources for admin review."
+}
+
+web_create_stage() {
+  local stage="$1" request
+  [[ "$WEB_MODE" == "1" ]] || die "Create-state authority requires Web context."
+  request="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" \
+    --arg runner_name "$RUNNER_NAME" --arg stage "$stage" \
+    '{op:"create_state",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,stage:$stage}')"
+  web_priv_request "$request" || die "Durable Create state transition failed."
 }
 
 web_context_check() {
@@ -226,6 +248,9 @@ configure_runner_archive_hook() {
 
 main() {
 if [[ ${EUID} -eq 0 ]]; then die "Do not run this script as root. Run it as the user that should own the runner."; fi
+# Secure all official registration files from first creation, regardless of the
+# shell inherited by the Web worker or interactive CLI.
+umask 077
 
 CLEAN_INCOMPLETE=0
 CLI_BASE_DIR=""; CLI_RUNNER_NAME=""; CLI_LABELS=""; CLI_RUNNER_VERSION=""
@@ -373,6 +398,13 @@ else
   sudo ./bin/installdependencies.sh
 fi
 
+if [[ "$WEB_MODE" == "1" ]]; then
+  web_create_stage PRE_REGISTRATION
+else
+  cli_create_authority stage PRE_REGISTRATION -
+fi
+
+CREATE_REQUEST_STARTED=1
 echo "==> Registering runner for https://github.com/$REPO ..."
 if [[ "$WEB_MODE" == "1" ]]; then
   PTY_ADAPTER="${GRT_PTY_ADAPTER:-/usr/local/lib/github-runner-tools/web/pty_token_adapter.py}"
@@ -383,7 +415,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
       --name "$RUNNER_NAME" \
       --labels "$RUNNER_LABELS" \
       --work "_work" ||
-    die "Runner registration failed or the runner version does not support secure interactive token input."
+    { web_create_stage REGISTRATION_OUTCOME_UNKNOWN || true; die "Runner registration outcome is uncertain; preserve local registration state and reconcile with GitHub before retry."; }
 else
   ./config.sh \
     --url "https://github.com/$REPO" \
@@ -391,10 +423,39 @@ else
     --name "$RUNNER_NAME" \
     --labels "$RUNNER_LABELS" \
     --work "_work" \
-    --unattended
+    --unattended || {
+      cli_create_authority stage REGISTRATION_OUTCOME_UNKNOWN - || true
+      die "Runner registration outcome is uncertain; preserve local directory and investigate before retry."
+    }
   unset TOKEN
 fi
 REGISTRATION_COMPLETE=1
+
+if [[ "$WEB_MODE" == "1" ]]; then
+  web_create_stage REGISTERED_PERMISSION_INCOMPLETE
+  NORMALIZE_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" \
+    --arg runner_name "$RUNNER_NAME" \
+    '{op:"registration_permission_normalize",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name}')"
+  web_priv_request "$NORMALIZE_REQ" || die "New registration permissions could not be normalized safely."
+  CANONICAL_SERVICE="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" registration_check \
+    "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$CANONICAL_SERVICE" ||
+    die "New Runner registration metadata is not safely restricted to owner-only permissions."
+  ATTEST_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" \
+    --arg runner_name "$RUNNER_NAME" --arg version "$VERSION" \
+    '{op:"registration_attestation_create",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,version:$version}')"
+  web_priv_request "$ATTEST_REQ" || die "Root-controlled registration attestation failed."
+  web_create_stage REGISTERED_UNIT_INCOMPLETE
+else
+  cli_create_authority stage REGISTERED_PERMISSION_INCOMPLETE -
+  cli_create_authority normalize - -
+  CANONICAL_SERVICE="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" registration_check \
+    "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$CANONICAL_SERVICE" ||
+    die "CLI registration metadata is not owner-only; remote registration retained."
+  cli_create_authority attest - "$VERSION"
+  cli_create_authority stage REGISTERED_UNIT_INCOMPLETE -
+fi
 
 echo "==> Configuring local artifact completed hook..."
 configure_runner_archive_hook "$RUNNER_DIR/.env"
@@ -406,18 +467,35 @@ if [[ "$WEB_MODE" == "1" ]]; then
   SERVICE_NAME="$(jq -er '.service' <<<"$WEB_PRIV_RESPONSE")" || die "Privileged service installer returned invalid identity."
   printf '%s\n' "$SERVICE_NAME" > "$RUNNER_DIR/.service"
 
+  web_create_stage REGISTERED_START_INCOMPLETE
+
   START_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" --arg runner_name "$RUNNER_NAME" --arg service "$SERVICE_NAME" \
     '{op:"service_start",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,service:$service}')"
   web_priv_request "$START_REQ" || die "Privileged runner service start failed."
+  web_create_stage REGISTERED_HEALTH_UNKNOWN
+  CHECK_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" --arg runner_name "$RUNNER_NAME" --arg service "$SERVICE_NAME" \
+    '{op:"service_state",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,service:$service}')"
+  web_priv_request "$CHECK_REQ" || die "Post-start service health verification failed."
+  [[ "$(jq -r '.state // empty' <<<"$WEB_PRIV_RESPONSE")" == "active" ]] ||
+    die "Registered Runner service has not reached a confirmed active state."
+  web_create_stage CREATE_COMPLETE
 else
   echo "==> Installing systemd service for user $RUNNER_USER ..."
-  sudo ./svc.sh install "$RUNNER_USER"
+  sudo ./svc.sh install "$RUNNER_USER" ||
+    die "CLI Unit installation incomplete; remote registration preserved."
+  # The official v2.328.0 installer may create a group-writable 0664 Unit.
+  # No unsafe post-hoc chmod, no service start and no false Create success.
+  cli_create_authority unit - -
+  cli_create_authority stage REGISTERED_START_INCOMPLETE -
   echo "==> Starting runner service..."
-  sudo ./svc.sh start
-
+  sudo ./svc.sh start ||
+    die "CLI service start incomplete; remote registration preserved."
+  cli_create_authority stage REGISTERED_HEALTH_UNKNOWN -
   echo
   echo "==> Runner status"
-  sudo ./svc.sh status
+  sudo ./svc.sh status ||
+    die "CLI service health unknown; remote registration preserved."
+  cli_create_authority stage CREATE_COMPLETE -
 fi
 
 echo

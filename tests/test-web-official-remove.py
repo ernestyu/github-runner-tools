@@ -33,29 +33,71 @@ web_context_check() { :; }
 web_service_state() {
     python3 -c 'import json,os; f=os.environ["GRT_PROBE_FILE"]; r=os.environ["GRT_CHECK_RESULT_FD"]; t=os.environ["GRT_PROBE_TOKEN_FD"]; record=json.dumps({"result_fd":os.path.exists("/proc/self/fd/"+r),"token_fd":os.path.exists("/proc/self/fd/"+t)}); open(f,"w").write(record)'
     if [[ "$GRT_FAIL_STAGE" == "service_state" ]]; then return 1; fi
-    printf active
+    if [[ "$GRT_FAIL_STAGE" == "post_uninstall_state" && -e "$GRT_UNINSTALLED_FLAG" ]]; then return 1; fi
+    if [[ -e "$GRT_UNINSTALLED_FLAG" || "$GRT_INITIAL_ABSENT" == "1" ]]; then printf absent; else printf active; fi
 }
 web_service_operation() {
     printf '%s\n' "$1" >> "$GRT_EVENT_FILE"
     if [[ "$GRT_FAIL_STAGE" == "$1" ]]; then return 1; fi
+    if [[ "$1" == "service_uninstall" ]]; then : > "$GRT_UNINSTALLED_FLAG"; fi
 }
+web_remove_state() {
+    case "$1" in
+      BEGIN) WEB_PRIV_RESPONSE='{"ok":true}' ;;
+      CONFIRM_REMOTE_REMOVED)
+        local device inode
+        device="$(stat -c '%d' "$RUNNER_DIR")"
+        inode="$(stat -c '%i' "$RUNNER_DIR")"
+        WEB_PRIV_RESPONSE="{\"ok\":true,\"device\":$device,\"inode\":$inode}"
+        ;;
+      COMPLETE)
+        [[ ! -e "$RUNNER_DIR" && ! -L "$RUNNER_DIR" ]] || return 1
+        WEB_PRIV_RESPONSE='{"ok":true,"complete":true}'
+        ;;
+      *) return 1 ;;
+    esac
+}
+if [[ "$GRT_FAIL_STAGE" == "record_reconcile" ]]; then
+    python3() {
+        if [[ "$*" == *web-service-record.py*quarantine* ]]; then return 1; fi
+        web_remove_external python3 "$@"
+    }
+fi
 if [[ "$GRT_FAIL_STAGE" == "local_cleanup" ]]; then
-    rm() {
-        if [[ "$*" == *actions-runner-example--repo* ]]; then return 42; fi
-        command rm "$@"
+    python3() {
+        if [[ "$*" == *web-runner-cleanup.py* ]]; then return 42; fi
+        web_remove_external python3 "$@"
     }
 fi
 main --base-dir "$GRT_BASE_DIR" --web-worker --token-fd "$2" --result-fd "$3" --privileged-fd 99 --lock-already-held example/repo
 """
 
 class OfficialWebRemoveScriptTests(unittest.TestCase):
-    def run_case(self, *, token=TOKEN, config_exit=0, fail_stage="", config_signal=""):
+    def run_case(self, *, token=TOKEN, config_exit=0, fail_stage="", config_signal="",
+                 service_record="normal", initial_absent=False, metadata_identity="normal", metadata_mode=0o600):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             runner = base / "actions-runner-example--repo"
             runner.mkdir()
-            (runner / ".runner").write_text(json.dumps({"agentName": "fixture"}))
+            (runner / ".runner").write_text(json.dumps({"agentName": "fixture", "gitHubUrl": "https://github.com/example/repo"}))
             (runner / ".service").write_text("actions.runner.example-repo.fixture.service\n")
+            if metadata_identity == "mismatch":
+                (runner / ".runner").write_text(json.dumps({"agentName": "fixture", "gitHubUrl": "https://github.com/foreign/repo"}))
+
+            (runner / ".credentials").write_text("SYNTHETIC_NONSECRET")
+            (runner / ".runner").chmod(metadata_mode)
+            (runner / ".credentials").chmod(metadata_mode)
+            if service_record == "missing":
+                (runner / ".service").unlink()
+            elif service_record == "mismatch":
+                (runner / ".service").write_text("actions.runner.other-repo.fixture.service\n")
+            elif service_record == "symlink":
+                (runner / ".service").unlink()
+                (runner / ".service").symlink_to(runner / ".runner")
+            elif service_record == "stale":
+                (runner / ".grt-service-reconcile-00112233445566778899aabbccddeeff").write_text("PREVIOUS-UNKNOWN")
+            elif service_record != "normal":
+                raise ValueError("unknown fixture record mode")
             (runner / "svc.sh").write_text("#!/bin/sh\nexit 0\n")
             (runner / "config.sh").write_text(STUB)
             (runner / "svc.sh").chmod(0o755)
@@ -79,7 +121,9 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
                     "GRT_PROBE_TOKEN_FD": str(token_r),
                     "GRT_CONFIG_EXIT": str(config_exit),
                     "GRT_CONFIG_SIGNAL": config_signal,
-                    "GRT_FAIL_STAGE": fail_stage}
+                    "GRT_FAIL_STAGE": fail_stage,
+                    "GRT_UNINSTALLED_FLAG": str(base / "uninstalled.flag"),
+                    "GRT_INITIAL_ABSENT": "1" if initial_absent else "0"}
                 proc = subprocess.run(
                     ["bash", "-c", DRIVER, "_", str(ROOT / "scripts/remove-runner.sh"), str(token_r), str(result_w)],
                     env=env, pass_fds=(token_r, result_w),
@@ -97,7 +141,91 @@ class OfficialWebRemoveScriptTests(unittest.TestCase):
             if probe_file.exists():
                 self.assertEqual(json.loads(probe_file.read_text()),
                                  {"result_fd": False, "token_fd": False})
+            self.last_state = {
+                "service": (runner / ".service").exists() or (runner / ".service").is_symlink(),
+                "credential": (runner / ".credentials").read_text() if (runner / ".credentials").exists() else None,
+                "metadata": (runner / ".runner").exists(),
+                "quarantines": [(p.name, p.read_text()) for p in runner.glob(".grt-service-reconcile-*") if p.is_file()],
+            } if runner.exists() else None
             return proc.returncode, marker, captured, operations, runner.exists()
+
+    def test_uninstalled_unit_record_reconciles_without_redundant_service_calls(self):
+        rc, marker, captured, ops, exists = self.run_case(initial_absent=True)
+        self.assertEqual((rc, marker, ops, exists), (0, "", [], False))
+        self.assertEqual(captured["argv"], ["remove", "--token", TOKEN])
+
+    def test_missing_record_or_stale_quarantine_blocks_remote_retry(self):
+        for kind in ("missing", "stale"):
+            with self.subTest(kind=kind):
+                rc, marker, captured, ops, exists = self.run_case(service_record=kind)
+                self.assertNotEqual(rc, 0)
+                self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=unknown_failed exit=unknown\n")
+                self.assertIsNone(captured)
+                self.assertEqual(ops, [])
+                self.assertTrue(exists)
+                self.assertEqual(self.last_state["credential"], "SYNTHETIC_NONSECRET")
+
+    def test_runner_metadata_identity_failure_remains_preflight(self):
+        rc, marker, captured, ops, exists = self.run_case(metadata_identity="mismatch")
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=preflight_failed exit=unknown\n")
+        self.assertIsNone(captured)
+        self.assertEqual(ops, [])
+        self.assertTrue(exists)
+
+    def test_unattested_historical_metadata_permissions_are_refused_before_mutation(self):
+        for mode in (0o644, 0o664):
+            with self.subTest(mode=oct(mode)):
+                rc, marker, captured, ops, exists = self.run_case(metadata_mode=mode)
+                self.assertNotEqual(rc, 0)
+                self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=permission_reconcile_failed exit=unknown\n")
+                self.assertIsNone(captured)
+                self.assertEqual(ops, [])
+                self.assertTrue(exists)
+                self.assertTrue(self.last_state["service"])
+                self.assertEqual(self.last_state["credential"], "SYNTHETIC_NONSECRET")
+
+    def test_invalid_record_identity_blocks_before_service_mutation(self):
+        for kind in ("mismatch", "symlink"):
+            with self.subTest(kind=kind):
+                rc, marker, captured, ops, exists = self.run_case(service_record=kind)
+                self.assertNotEqual(rc, 0)
+                self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=service_record_reconcile_failed exit=unknown\n")
+                self.assertIsNone(captured)
+                self.assertEqual(ops, [])
+                self.assertTrue(exists)
+
+    def test_unknown_service_state_after_uninstall_preserves_record_and_blocks_config(self):
+        rc, marker, captured, ops, exists = self.run_case(fail_stage="post_uninstall_state")
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=service_uninstall_failed exit=unknown\n")
+        self.assertIsNone(captured)
+        self.assertEqual(ops, ["service_stop", "service_uninstall"])
+        self.assertTrue(exists)
+        self.assertTrue(self.last_state["service"])
+        self.assertEqual(self.last_state["credential"], "SYNTHETIC_NONSECRET")
+
+    def test_reconciliation_failure_has_distinct_marker_and_no_registration_remove(self):
+        rc, marker, captured, ops, exists = self.run_case(fail_stage="record_reconcile")
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=service_record_reconcile_failed exit=unknown\n")
+        self.assertIsNone(captured)
+        self.assertEqual(ops, ["service_stop", "service_uninstall"])
+        self.assertTrue(exists)
+        self.assertTrue(self.last_state["service"])
+        self.assertEqual(self.last_state["credential"], "SYNTHETIC_NONSECRET")
+
+    def test_config_failure_keeps_quarantined_record_and_registration_files(self):
+        rc, marker, captured, ops, exists = self.run_case(config_exit=1)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(marker, "GRT_REMOVE_RESULT_V1 stage=config_remove_failed exit=1\n")
+        self.assertTrue(exists)
+        self.assertFalse(self.last_state["service"])
+        self.assertTrue(self.last_state["metadata"])
+        self.assertEqual(self.last_state["credential"], "SYNTHETIC_NONSECRET")
+        self.assertEqual(len(self.last_state["quarantines"]), 1)
+        self.assertEqual(self.last_state["quarantines"][0][1],
+                         "actions.runner.example-repo.fixture.service\n")
 
     def test_official_argv_and_result_fd_not_in_config(self):
         rc, marker, captured, ops, exists = self.run_case()

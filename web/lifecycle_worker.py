@@ -34,12 +34,12 @@ _IDENTITY_STAGES = {
 
 REMOVE_STAGES = frozenset({
     "preflight_failed", "service_state_failed", "service_stop_failed",
-    "service_uninstall_failed", "config_remove_failed",
+    "service_uninstall_failed", "service_record_reconcile_failed", "permission_reconcile_failed", "config_remove_failed",
     "local_cleanup_failed", "unknown_failed",
 })
 REMOVE_MARKER = re.compile(
     rb"GRT_REMOVE_RESULT_V1 stage=(preflight_failed|service_state_failed|"
-    rb"service_stop_failed|service_uninstall_failed|config_remove_failed|"
+    rb"service_stop_failed|service_uninstall_failed|service_record_reconcile_failed|permission_reconcile_failed|config_remove_failed|"
     rb"local_cleanup_failed|unknown_failed) exit=(unknown|0|[1-9][0-9]{0,2})\n"
 )
 

@@ -40,7 +40,7 @@ class TransportTests(unittest.TestCase):
                 env={"PATH": "/usr/bin:/bin"},
                 check=True,
             )
-            self.assertEqual(result.stdout.decode(), hashlib.sha256(secret + b"\\n").hexdigest())
+            self.assertEqual(result.stdout.decode(), hashlib.sha256(secret + b"\n").hexdigest())
             self.assertNotIn(secret, " ".join(result.args).encode())
         finally:
             close_quietly(fd)

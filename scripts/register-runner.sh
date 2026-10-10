@@ -252,7 +252,6 @@ if [[ ${EUID} -eq 0 ]]; then die "Do not run this script as root. Run it as the 
 # shell inherited by the Web worker or interactive CLI.
 umask 077
 
-CLEAN_INCOMPLETE=0
 CLI_BASE_DIR=""; CLI_RUNNER_NAME=""; CLI_LABELS=""; CLI_RUNNER_VERSION=""
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -261,7 +260,7 @@ while [[ $# -gt 0 ]]; do
     --runner-name) [[ $# -ge 2 ]] || die "--runner-name requires a value"; CLI_RUNNER_NAME="$2"; shift 2 ;;
     --labels) [[ $# -ge 2 ]] || die "--labels requires a value"; CLI_LABELS="$2"; shift 2 ;;
     --runner-version) [[ $# -ge 2 ]] || die "--runner-version requires a value"; CLI_RUNNER_VERSION="$2"; shift 2 ;;
-    --clean-incomplete) CLEAN_INCOMPLETE=1; shift ;;
+    --clean-incomplete) die "--clean-incomplete is disabled: unverified historical Runner directories must be preserved for independent administrator review." ;;
     --web-worker) WEB_MODE=1; shift ;;
     --token-fd) [[ $# -ge 2 ]] || die "--token-fd requires a value"; TOKEN_FD="$2"; shift 2 ;;
     --privileged-fd) [[ $# -ge 2 ]] || die "--privileged-fd requires a value"; PRIVILEGED_FD="$2"; shift 2 ;;
@@ -348,9 +347,14 @@ Architecture : $RUNNER_ARCH_LABEL ($RUNNER_ARCH asset)
 Runner ver.  : $RUNNER_VERSION_DISPLAY
 CONFIG
 
-if [[ -e "$RUNNER_DIR/.runner" ]]; then die "A configured runner already exists at $RUNNER_DIR."; fi
-if [[ -d "$RUNNER_DIR" && -n "$(find "$RUNNER_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
-  if [[ "$CLEAN_INCOMPLETE" -eq 1 ]]; then rm -rf -- "$RUNNER_DIR"; else die "An unconfigured non-empty runner directory already exists: $RUNNER_DIR (inspect it or retry with --clean-incomplete)"; fi
+# A non-empty existing directory may be a prior Create/Remove UNKNOWN state,
+# even when .runner/.credentials/.service are missing. Never delete or reuse
+# it from normal Create; only a separately authorized cleanup may do that.
+if [[ -e "$RUNNER_DIR" || -L "$RUNNER_DIR" ]]; then
+  [[ -d "$RUNNER_DIR" && ! -L "$RUNNER_DIR" ]] ||
+    die "Runner path already exists but is not a safe directory; preserve it for administrator review."
+  [[ -z "$(find "$RUNNER_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]] ||
+    die "Existing non-empty Runner directory requires independent lifecycle review; Create will not delete it."
 fi
 if [[ ! -d "$RUNNER_DIR" ]]; then mkdir -- "$RUNNER_DIR"; CREATED_RUNNER_DIR=1; fi
 cd "$RUNNER_DIR"

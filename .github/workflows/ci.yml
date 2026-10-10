@@ -39,6 +39,7 @@ jobs:
           python3 tests/test-web-v2-mutation.py
           python3 tests/test-web-v2-remove-guard.py
           python3 tests/test-web-v2-binding.py
+          python3 tests/test-web-v2-event-loop.py
       - name: Existing pure regression
         run: |
           bash tests/test-pure.sh

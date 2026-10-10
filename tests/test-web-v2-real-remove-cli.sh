@@ -6,8 +6,18 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
 mkdir -p "$TMP/runner-home"
-cp "$ROOT/web/pty_token_adapter.py" "$TMP/pty_token_adapter.py"
+cat > "$TMP/pty_token_adapter.py" <<'PY'
+import os, runpy
+try:
+    os.fstat(4)
+except OSError:
+    pass
+else:
+    raise SystemExit("SECURITY FAILURE: external adapter inherited privileged FD4")
+runpy.run_path(os.environ["GRT_PTY_ORIGINAL"], run_name="__main__")
+PY
 chmod 0755 "$TMP/pty_token_adapter.py"
+export GRT_PTY_ORIGINAL="$ROOT/web/pty_token_adapter.py"
 export RUNNER_BASE_DIR="$TMP/runner-home" RUNNER_TOOLS_LIB_ONLY=1
 export GRT_EXECUTOR_CONTEXT=1 GRT_PTY_ADAPTER="$TMP/pty_token_adapter.py"
 export GRT_FAKE_REMOVE_ATTEMPTS="$TMP/attempts"

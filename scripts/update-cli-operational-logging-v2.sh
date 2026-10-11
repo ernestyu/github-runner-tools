@@ -96,7 +96,7 @@ FILES=(register-runner.sh remove-runner.sh status-runners.sh cli-operational-log
 WEB_FILES=(cli_create_authority.py cli_remove_authority.py runner_lifecycle_authority.py v2_unit_installer.py dispatcher.py v2_privileged.py v2_event_loop.py)
 for name in "${FILES[@]}"; do
   [[ -f "$ROOT/scripts/$name" && ! -L "$ROOT/scripts/$name" ]] || exit 1
-  /usr/bin/python3 -m py_compile "$ROOT/scripts/cli-operational-logger.py"
+  [[ "$name" == *.py ]] && /usr/bin/python3 -m py_compile "$ROOT/scripts/$name"
   [[ "$name" == *.sh ]] && bash -n "$ROOT/scripts/$name"
 done
 [[ "$(sudo stat -c '%U:%G:%a:%F' "$WEB_ROOT")" == "root:root:755:directory" ]] || exit 1

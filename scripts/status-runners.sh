@@ -13,14 +13,13 @@ GRT_LOG_RUNNER="none"
 GRT_LOG_STAGE="none"
 grt_log() {
   local event="$1" result="$2" reason="${3:-none}" rc="${4:--1}"
-  # Existing source-tree regression fixtures do not install host logger files.
-  # This exception requires an explicit test flag AND execution from a
-  # non-installed checkout; the fixed installed production CLI never bypasses.
+  local -a grt_log_args=()
   if [[ "${GITHUB_ACTIONS:-}" == "true" && "${BASH_SOURCE[0]}" != /usr/local/lib/github-runner-tools/cli/* ]]; then
-    return 0
+    GRT_LOGGER="${BASH_SOURCE[0]%/*}/cli-operational-logger.py"
+    grt_log_args=(--test-root "${RUNNER_TEMP:-/tmp}/grt-native-logging-$(id -u)")
   fi
   GRT_LOG_SEQ=$((GRT_LOG_SEQ + 1))
-  if /usr/bin/python3 "$GRT_LOGGER" --run-id "$GRT_LOG_RUN_ID" --seq "$GRT_LOG_SEQ" --op status \
+  if /usr/bin/python3 "$GRT_LOGGER" "${grt_log_args[@]}" --run-id "$GRT_LOG_RUN_ID" --seq "$GRT_LOG_SEQ" --op status \
        --event "$event" --stage "$GRT_LOG_STAGE" --result "$result" --reason "$reason" \
        --exit-code "$rc" --repository "$GRT_LOG_REPO" --runner "$GRT_LOG_RUNNER"; then
     return 0

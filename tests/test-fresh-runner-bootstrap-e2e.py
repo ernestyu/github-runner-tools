@@ -140,6 +140,12 @@ class FreshRunnerBootstrapE2E(unittest.TestCase):
         wrapper = bindir / "runsvc.sh"
         wrapper.write_bytes(wrapper_fixture.read_bytes())
         wrapper.chmod(0o755)
+        service_template_fixture = (
+            FIXTURES /
+            f"actions-runner-v{version}-actions.runner.service.template")
+        service_template = bindir / "actions.runner.service.template"
+        service_template.write_bytes(service_template_fixture.read_bytes())
+        service_template.chmod(0o644)
 
         # The upstream Linux service wrapper template is the same audited blob
         # in both pinned versions. Materialize the post-config svc.sh identity.
@@ -166,8 +172,9 @@ class FreshRunnerBootstrapE2E(unittest.TestCase):
         for name in (".runner", ".credentials"):
             (runner_dir / name).chmod(0o600)
 
-        for path in (runner_dir, bindir, wrapper, runner_dir / "svc.sh",
-                     runner_dir / ".runner", runner_dir / ".credentials"):
+        for path in (runner_dir, bindir, wrapper, service_template,
+                     runner_dir / "svc.sh", runner_dir / ".runner",
+                     runner_dir / ".credentials"):
             os.chown(path, self.account.pw_uid, self.account.pw_gid)
 
         # This is the live regression precondition.

@@ -24,9 +24,11 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+from v2_unit_installer import UnitInstallError
 from typing import Any
 
-from runner_lifecycle_authority import AuthorityError, create_attestation, create_stage, remove_stage, create_unit_attestation, normalize_new_registration
+from runner_lifecycle_authority import AuthorityError, create_attestation, create_stage, remove_stage, create_unit_attestation, normalize_new_registration, verify_service_install_provenance
 
 from grt_web_common import (
     DEFAULT_CONFIG,
@@ -55,7 +57,7 @@ PRIV_FIELDS = {
     "registration_attestation_create": {"op", "repository", "runner_dir", "runner_name", "version"},
     "registration_permission_normalize": {"op", "repository", "runner_dir", "runner_name"},
     "remove_state": {"op", "repository", "runner_dir", "runner_name", "stage"},
-    "service_install": {"op", "repository", "runner_dir", "runner_name"},
+    "service_install": {"op", "repository", "runner_dir", "runner_name", "version"},
     "service_start": {"op", "repository", "runner_dir", "runner_name", "service"},
     "service_stop": {"op", "repository", "runner_dir", "runner_name", "service"},
     "service_restart": {"op", "repository", "runner_dir", "runner_name", "service"},
@@ -379,6 +381,9 @@ class Runtime:
             repository, str(request["runner_dir"]), allow_legacy=False
         )
         runner_name = str(request["runner_name"])
+        version = str(request["version"])
+        verify_service_install_provenance(
+            repository, runner_name, runner_dir, self.runner_user, version)
         service = install_canonical_unit(
             repository, runner_name, runner_dir, self.runner_user,
             timeout=self._remaining_timeout(deadline) or 20,
@@ -482,6 +487,7 @@ class Runtime:
             subprocess.TimeoutExpired,
             DispatchError,
             AuthorityError,
+            UnitInstallError,
         ):
             return stable_error("privileged_validation_failed")
 

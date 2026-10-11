@@ -23,7 +23,34 @@ At the same time, live acceptance exposed a separate Create defect: the canonica
 
 These are separate defects and both must be fixed before Debian acceptance restarts.
 
-## 2. Goals
+## 2. Regression origin and change-management constraint
+
+Live comparison established that the previously working CLI path at `4189331db8dd9ec210dae5e077cb1e278bd323fd` still used:
+
+```text
+config.sh registration
+→ sudo ./svc.sh install <runner-user>
+→ authority verification
+→ svc.sh start
+```
+
+Commit `d99ca3a61fdfe6d5a7c5cfa32f27d1a10c20a43f` changed interactive CLI Create to the shared canonical 0644 Unit installer. The later logging updater deployed the whole newer `register-runner.sh`, not only logging instrumentation. Thus a logging-focused incremental upgrade also activated a lifecycle behavior change that had not been proven by a real fresh-runner Create on Debian.
+
+This remediation freezes the following rule:
+
+> A logging-only or observability-focused incremental updater must not silently activate unrelated lifecycle behavior changes.
+
+If an updater replaces lifecycle CLIs, it must prove either:
+
+1. the replaced lifecycle behavior is byte/semantic-equivalent except for logging hooks; or
+2. each lifecycle behavior change is explicitly listed in the updater scope and has its own fresh-environment executable acceptance coverage.
+
+A successful unit/integration test against prepared fixtures is insufficient when the production path depends on artifacts created only during a real fresh registration/service bootstrap.
+
+The remediation must therefore add a deployment-closure test that compares the installed CLI/service-bootstrap dependency set against the audited source set and exercises the real fresh-runner service bootstrap contract from post-extract/post-config state.
+
+## 3. Goals
+
 
 1. A trusted internal lifecycle failure must emit a safe fixed diagnostic code detailed enough to identify the failed internal invariant or operation without recording raw exception text, stdout/stderr, tokens, argv, environment, URLs, or subprocess output.
 2. The final `operation_exit` record must preserve the last observed safe failure reason instead of replacing it with generic `unexpected_cli_failure`.
@@ -31,7 +58,7 @@ These are separate defects and both must be fixed before Debian acceptance resta
 4. The currently failed disposable acceptance Runner must be recoverable through an explicit, bounded reconciliation path after the new implementation is deployed; no blind retry and no manual lifecycle-record deletion.
 5. Six production Runners remain untouched.
 
-## 3. Diagnostic contract extension
+## 4. Diagnostic contract extension
 
 Keep JSON schema version 1 and existing keys. Extend the fixed `reason` vocabulary with trusted internal codes only:
 
@@ -58,7 +85,7 @@ The event remains `service_install`; stage remains the actual lifecycle stage. E
 
 The final `operation_exit` for this invocation must carry `runner_service_entrypoint_missing`, not `unexpected_cli_failure`.
 
-## 4. Fresh runner service bootstrap
+## 5. Fresh runner service bootstrap
 
 The custom canonical Unit path must not assume `runsvc.sh` exists after `config.sh`.
 
@@ -74,7 +101,7 @@ Implementation must:
 
 If the required official wrapper source is absent or unsafe, fail before Unit publication with a specific fixed reason.
 
-## 5. Incomplete acceptance Runner reconciliation
+## 6. Incomplete acceptance Runner reconciliation
 
 The live failed Runner is a disposable acceptance object:
 - repository: `ernestyu/github-runner-tools`
@@ -97,7 +124,7 @@ Add or reuse a bounded recovery path that can reconcile exactly this class:
 
 Do not permit generic forced cleanup, wildcard identity, inferred GitHub absence, or direct deletion of root lifecycle state.
 
-## 6. Required tests
+## 7. Required tests
 
 Add deterministic tests for:
 
@@ -114,8 +141,10 @@ Add deterministic tests for:
 - reconciliation of `REGISTERED_UNIT_INCOMPLETE` with remote registration present and no Unit;
 - reconciliation refuses wrong stage, wrong instance, missing attestation, existing unexpected Unit, or identity mismatch;
 - six production Runner fixture remains invariant.
+- regression test proving a logging-focused updater cannot introduce unlisted lifecycle semantic changes.
+- fresh-runner E2E beginning from a clean extracted official Runner plus completed `config.sh` registration state, with no pre-created `runsvc.sh` fixture.
 
-## 7. Debian acceptance restart
+## 8. Debian acceptance restart
 
 After implementation audit PASS:
 
@@ -127,7 +156,7 @@ After implementation audit PASS:
 6. if CLI Create succeeds, run the isolated harmless job and normal CLI Remove;
 7. only then proceed to Web Create/Job/Remove acceptance.
 
-## 8. Non-authorizations
+## 9. Non-authorizations
 
 This SPEC does not authorize:
 - implementation before independent SPEC audit;

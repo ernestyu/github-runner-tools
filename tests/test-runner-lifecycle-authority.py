@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import pwd
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -426,7 +427,13 @@ class AuthorityTests(unittest.TestCase):
         proof = auth.reconcile_incomplete_create_stage(
             REPO, RUNNER, self.repo, "root", "CONFIRM_REMOTE_REMOVED")
         self.assertEqual(proof["inode"], self.runner.stat().st_ino)
-        shutil.rmtree(self.runner)
+        cleaner = ROOT / "scripts" / "web-runner-cleanup.py"
+        cleaned = subprocess.run(
+            [sys.executable, str(cleaner), str(self.base), self.repo, REPO,
+             str(proof["device"]), str(proof["inode"])],
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(cleaned.returncode, 0, cleaned.stderr)
+        self.assertFalse(self.runner.exists())
         auth.reconcile_incomplete_create_stage(
             REPO, RUNNER, self.repo, "root", "COMPLETE")
 
@@ -443,6 +450,29 @@ class AuthorityTests(unittest.TestCase):
         self.repo = str(self.runner)
         auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
         self.assertNotEqual(auth._current(REPO, RUNNER, self.repo)["instance"], instance)
+
+    def test_reconciliation_cleanup_proof_rejects_replaced_top_level_directory(self):
+        self.make_incomplete_create()
+        proof_begin = auth.reconcile_incomplete_create_stage(
+            REPO, RUNNER, self.repo, "root", "BEGIN")
+        self.assertEqual(proof_begin["inode"], self.runner.stat().st_ino)
+        proof = auth.reconcile_incomplete_create_stage(
+            REPO, RUNNER, self.repo, "root", "CONFIRM_REMOTE_REMOVED")
+        original = self.base / "attested-runner-moved"
+        self.runner.rename(original)
+        self.runner.mkdir()
+        (self.runner / "replacement").write_text("DO-NOT-DELETE")
+        cleaner = ROOT / "scripts" / "web-runner-cleanup.py"
+        cleaned = subprocess.run(
+            [sys.executable, str(cleaner), str(self.base), self.repo, REPO,
+             str(proof["device"]), str(proof["inode"])],
+            capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(cleaned.returncode, 0)
+        self.assertEqual((self.runner / "replacement").read_text(), "DO-NOT-DELETE")
+        self.assertTrue((original / ".runner").exists())
+        with self.assertRaises(auth.AuthorityError):
+            auth.reconcile_incomplete_create_stage(
+                REPO, RUNNER, self.repo, "root", "COMPLETE")
 
     def test_incomplete_reconciliation_revalidates_no_service_before_confirmation(self):
         self.make_incomplete_create()

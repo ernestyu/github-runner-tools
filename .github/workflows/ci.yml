@@ -27,6 +27,7 @@ jobs:
           python3 tests/test-cli-operational-logging.py
           python3 tests/test-cli-operational-faults.py
           python3 tests/test-cli-operational-end-to-end.py
+          python3 tests/test-cli-authority-reason-transport.py
           python3 tests/test-cli-operational-v2-updater.py
           python3 tests/test-cli-operational-updater-faults.py
       - name: V2 executor contract

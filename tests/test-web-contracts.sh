@@ -384,10 +384,11 @@ reg = (root / "scripts/register-runner.sh").read_text()
 rem = (root / "scripts/remove-runner.sh").read_text()
 
 reg_start = reg.index('echo "==> Registering runner')
-reg_tail = reg[reg_start:]
-if '--mode create' not in reg_tail or './config.sh' not in reg_tail:
+reg_end = reg.index('\nelse\n  ./config.sh', reg_start)
+reg_web = reg[reg_start:reg_end]
+if '--mode create' not in reg_web or './config.sh' not in reg_web:
     raise SystemExit(1)
-if '--token "$TOKEN"' in reg_tail:
+if '--token "$TOKEN"' in reg_web:
     raise SystemExit(1)
 rem_start = rem.index('echo "==> Removing runner registration')
 rem_tail = rem[rem_start:]

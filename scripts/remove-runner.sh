@@ -308,9 +308,9 @@ remove_lifecycle_stage() {
   GRT_LOG_STAGE="$stage"
   grt_log lifecycle_checkpoint begin
   if [[ "$WEB_MODE" == "1" ]]; then
-    web_remove_state "$stage"
+    web_remove_state "$stage" || return $?
   else
-    cli_remove_authority "$stage"
+    cli_remove_authority "$stage" || return $?
   fi
   grt_log lifecycle_checkpoint ok
 }

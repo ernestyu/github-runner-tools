@@ -61,6 +61,9 @@ if [[ "$cmd" == systemctl ]]; then
       fi
       exit 0;;
     restart)
+      if [[ "$FORCE_RESTART_FAILURE" == 1 && ! -e "$FAULT_FIRED" ]]; then
+        touch "$FAULT_FIRED"; echo inactive > "$SERVICE_STATE"; exit 1
+      fi
       if [[ "$FAULT" == restart && ! -e "$FAULT_FIRED" ]]; then
         touch "$FAULT_FIRED"; echo inactive > "$SERVICE_STATE"; exit 1
       fi
@@ -151,7 +154,8 @@ class TransactionFaultTests(unittest.TestCase):
         self.cli = self.root / "installed-cli"
         self.cli.mkdir()
         self.unit = self.root / "executor.service"
-        self.unit.write_text(UNIT_BASE)
+        self.baseline_unit = UNIT_BASE.replace("/usr/local/lib/github-runner-tools/web", str(self.root / "web"))
+        self.unit.write_text(self.baseline_unit)
         self.log = self.root / "log"
         self.lock = self.root / "mutation.lock"
         self.lock.touch()
@@ -205,7 +209,8 @@ class TransactionFaultTests(unittest.TestCase):
                         TEST_LOCK=str(self.lock), TEST_LOG=str(self.log),
                         TEST_BACKUPS=str(self.backups),
                         SERVICE_STATE=str(self.state), RUNNER_UNITS=str(self.runner_units),
-                        FAULT_FIRED=str(self.root / "fault-fired"), FAULT="none")
+                        FAULT_FIRED=str(self.root / "fault-fired"), FAULT="none",
+                        FORCE_RESTART_FAILURE="0")
 
     def invoke(self, fault="none", prepare=None):
         self.env["FAULT"] = fault
@@ -219,7 +224,7 @@ class TransactionFaultTests(unittest.TestCase):
         return sorted(self.backups.glob("cli-logging-upgrade.*"))
 
     def assert_original(self):
-        self.assertEqual(self.unit.read_text(), UNIT_BASE)
+        self.assertEqual(self.unit.read_text(), self.baseline_unit)
         self.assertEqual({p.name: p.read_bytes() for p in self.cli.iterdir()
                           if not p.name.startswith(".grt-cli-update")}, self.original)
         self.assertEqual(self.state.read_text().strip(), "active")
@@ -234,7 +239,7 @@ class TransactionFaultTests(unittest.TestCase):
         self.assertEqual(self.runner_units.read_bytes(), self.original_units)
 
     def test_preflight_cannot_mutate_installation(self):
-        self.unit.write_text(UNIT_BASE.replace("ProtectSystem=strict", "ProtectSystem=full"))
+        self.unit.write_text(self.baseline_unit.replace("ProtectSystem=strict", "ProtectSystem=full"))
         before = self.unit.read_bytes()
         p = self.invoke()
         self.assertNotEqual(p.returncode, 0)
@@ -274,8 +279,19 @@ class TransactionFaultTests(unittest.TestCase):
         # Restart failure creates the first fault, then restoration copy fails.
         p = self.invoke("rollback_cp", prepare=lambda: self.env.update(
             FAULT="rollback_cp", FORCE_RESTART_FAILURE="1"))
-        # This fault path needs a failed update to reach rollback.
         self.assertNotEqual(p.returncode, 0)
+        self.assertIn("ROLLBACK_INCOMPLETE", p.stderr)
+        self.assertNotIn("ROLLBACK_VERIFIED", p.stderr)
+        self.assertEqual(len(self.backups_found()), 1)
+        self.assertEqual(self.runner_units.read_bytes(), self.original_units)
+
+    def test_failed_rollback_restart_is_incomplete(self):
+        p = self.invoke("rollback_restart")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("ROLLBACK_INCOMPLETE", p.stderr)
+        self.assertNotIn("ROLLBACK_VERIFIED", p.stderr)
+        self.assertEqual(self.state.read_text().strip(), "inactive")
+        self.assertEqual(len(self.backups_found()), 1)
 
     def test_preexisting_log_evidence_is_not_removed(self):
         self.log.mkdir()

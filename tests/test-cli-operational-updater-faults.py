@@ -19,9 +19,10 @@ import unittest
 SOURCE = Path(__file__).resolve().parents[1] / "scripts/update-cli-operational-logging-v2.sh"
 SHA = "a" * 40
 FILES = ("register-runner.sh", "remove-runner.sh", "status-runners.sh",
-         "cli-operational-logger.py")
+         "cli-operational-logger.py", "web-runner-cleanup.py")
 WEB_FILES = ("cli_create_authority.py", "cli_remove_authority.py",
-             "runner_lifecycle_authority.py", "v2_unit_installer.py")
+             "runner_lifecycle_authority.py", "v2_unit_installer.py",
+             "dispatcher.py", "v2_privileged.py", "v2_event_loop.py")
 UNIT_BASE = re.search(r"cat > \"\$BASELINE\" <<'UNIT_EOF'\n(.*?)\nUNIT_EOF",
                       SOURCE.read_text(), re.S).group(1) + "\n"
 
@@ -181,7 +182,7 @@ class TransactionFaultTests(unittest.TestCase):
         for name in FILES:
             if name.endswith(".py"):
                 new = "#!/usr/bin/env python3\nprint('new')\n"
-                old = None
+                old = None if name == "cli-operational-logger.py" else "#!/usr/bin/env python3\nprint('old')\n"
             else:
                 new = "#!/usr/bin/env bash\necho new\n"
                 old = "#!/usr/bin/env bash\necho old\n"

@@ -76,8 +76,13 @@ MUTATION_LOCK="/run/lock/github-runner-tools/mutation.lock"
 exec {CUTOVER_LOCK}<>"$MUTATION_LOCK"
 flock -n "$CUTOVER_LOCK" ||
   { echo "Lifecycle mutation is active; abort before service switch" >&2; exit 1; }
-sudo systemctl stop github-runner-tools-web.service
-sudo systemctl disable --now github-runner-tools-dispatch.service
+# Capture the exact V1 service state before changing any service.
+V1_WEB_ACTIVE=0; V1_WEB_ENABLED=0
+V1_DISPATCH_ACTIVE=0; V1_DISPATCH_ENABLED=0
+sudo systemctl is-active --quiet github-runner-tools-web.service && V1_WEB_ACTIVE=1 || :
+sudo systemctl is-enabled --quiet github-runner-tools-web.service && V1_WEB_ENABLED=1 || :
+sudo systemctl is-active --quiet github-runner-tools-dispatch.service && V1_DISPATCH_ACTIVE=1 || :
+sudo systemctl is-enabled --quiet github-runner-tools-dispatch.service && V1_DISPATCH_ENABLED=1 || :
 
 # Preserve V1 Web settings, credentials and Unit for reviewed rollback.
 BACKUP="$(sudo mktemp -d "$STATE_DIR/web-v2-rollback.XXXXXXXX")"
@@ -131,6 +136,47 @@ sudo find "$BACKUP/lifecycle-snapshot" -type f -printf '%m %u %g %p\n' |
   sudo tee "$BACKUP/lifecycle-metadata.txt" >/dev/null
 sudo chmod 0600 "$BACKUP/lifecycle-sha256.txt" "$BACKUP/lifecycle-metadata.txt"
 echo "Root-only config, code and lifecycle snapshots recorded (path redacted)"
+
+# Validate all source and target files while V1 Web is still running.
+[[ -f "$ROOT/scripts/web-v2-cutover-rollback.sh" &&
+   ! -L "$ROOT/scripts/web-v2-cutover-rollback.sh" ]] ||
+  { echo "Missing rollback implementation; V1 unchanged" >&2; exit 1; }
+for file in v2_executor_contract.py v2_executor_transport.py v2_token_fd.py \
+            v2_status.py v2_executor.py v2_executor_client.py v2_cli_launcher.py \
+            v2_cli_spawn.py v2_mutation.py v2_privileged.py v2_binding.py \
+            v2_event_loop.py v2_remove_guard.py v2_inventory.py v2_unit_installer.py \
+            v2_failure.py v2_closeout.py v2_code_provenance.py app.py dispatcher.py lifecycle_worker.py \
+            grt_web_common.py runner_lifecycle_authority.py \
+            cli_create_authority.py cli_remove_authority.py pty_token_adapter.py; do
+  [[ -f "$ROOT/web/$file" && ! -L "$ROOT/web/$file" ]] ||
+    { echo "Missing V2 source: $file; V1 unchanged" >&2; exit 1; }
+done
+for file in register-runner.sh remove-runner.sh status-runners.sh \
+            web-service-record.py web-runner-cleanup.py; do
+  [[ -f "$ROOT/scripts/$file" && ! -L "$ROOT/scripts/$file" ]] ||
+    { echo "Missing V2 CLI source: $file; V1 unchanged" >&2; exit 1; }
+done
+if sudo test -e "$CLI_ROOT" || sudo test -L "$CLI_ROOT"; then
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$CLI_ROOT")" == "root:root:755:directory" ]] ||
+    { echo "Unsafe CLI installation; V1 unchanged" >&2; exit 1; }
+fi
+sudo grep -Fqx "$MARKER_V1" "$BACKUP/web.conf" ||
+  { echo "Invalid V1 backup; V1 unchanged" >&2; exit 1; }
+sudo grep -Fqx "$MARKER_V1" "$BACKUP/github-runner-tools-web.service" ||
+  { echo "Invalid V1 Unit backup; V1 unchanged" >&2; exit 1; }
+
+# Mutation lock is held; no lifecycle writers may race snapshot or cutover.
+# Only arm EXIT rollback after backup, schema, code, and privilege preflights.
+source "$ROOT/scripts/web-v2-cutover-rollback.sh"
+CUTOVER_STARTED=0
+CUTOVER_COMMITTED=0
+trap grt_v2_rollback_on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+CUTOVER_STARTED=1
+sudo systemctl stop github-runner-tools-web.service
+sudo systemctl disable --now github-runner-tools-dispatch.service
 
 # Install V2 source + existing authority and scripts into root-owned paths.
 for file in v2_executor_contract.py v2_executor_transport.py v2_token_fd.py \
@@ -246,5 +292,6 @@ sudo systemctl is-active --quiet github-runner-tools-executor.service ||
   { echo "Executor failed to remain active; stop and restore reviewed backup" >&2; exit 1; }
 sudo systemctl is-active --quiet github-runner-tools-web.service ||
   { echo "Web failed to remain active; stop and restore reviewed backup" >&2; exit 1; }
+CUTOVER_COMMITTED=1
 echo "V2 Web switch attempted; verify authenticated Create/Status/Remove before acceptance."
 echo "If verification fails, stop operations and restore the reviewed V1 backup; never rewrite lifecycle records."

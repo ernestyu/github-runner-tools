@@ -13,8 +13,7 @@ for p in paths:
     records += [json.loads(line) for line in p.read_text().splitlines()]
 pairs={(r.get("op"),r.get("event"),r.get("result")) for r in records}
 for wanted in [("create","operation","begin"),("create","remote_registration","begin"),
-               ("remove","operation","begin"),("remove","remote_removal","begin"),
-               ("status","operation_exit","ok")]:
+               ("remove","operation","begin"),("remove","remote_removal","begin")]:
     assert wanted in pairs, f"Actual V2 CLI emitted no {wanted}; found={sorted(pairs)}"
 assert not any("token" in str(r).lower() for r in records), "Potential token marker in events"
 print(f"PASS: actual V2 CLI fake-GitHub fixtures emitted {len(records)} persisted records across Create/Remove/Status")

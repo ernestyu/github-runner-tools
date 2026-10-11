@@ -44,6 +44,11 @@ def status_as_runner(
     if type(timeout) is not int or not 1 <= timeout <= 60:
         raise StatusError("invalid status timeout")
     uid, gid, home = runner_identity(runner_user)
+    from v2_code_provenance import verify_launch, CodeProvenanceError
+    try:
+        verify_launch("status")
+    except CodeProvenanceError as exc:
+        raise StatusError("pinned Status CLI provenance rejected") from exc
 
     # subprocess user/group/extra_groups are applied before exec; no shell.
     try:

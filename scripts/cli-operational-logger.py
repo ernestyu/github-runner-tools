@@ -99,8 +99,21 @@ class Logger:
                     raise LoggingUnavailable("unsafe_log_file")
                 # Detect partial and non-JSON trailing records before writing.
                 if st.st_size:
-                    os.lseek(fd, -1, os.SEEK_END)
-                    if os.read(fd, 1) != b"\n":
+                    # Last record must be complete JSONL; never silently truncate
+                    # corrupted evidence or append behind an incomplete tail.
+                    tail_len = min(st.st_size, MAX_RECORD + 1)
+                    os.lseek(fd, -tail_len, os.SEEK_END)
+                    tail = os.read(fd, tail_len)
+                    if not tail.endswith(b"\n"):
+                        raise LoggingUnavailable("corrupt_log_tail")
+                    last = tail[:-1].split(b"\n")[-1]
+                    if not last or len(last) + 1 > MAX_RECORD:
+                        raise LoggingUnavailable("corrupt_log_tail")
+                    try:
+                        parsed = json.loads(last)
+                    except (ValueError, UnicodeError) as exc:
+                        raise LoggingUnavailable("corrupt_log_tail") from exc
+                    if not isinstance(parsed, dict) or parsed.get("v") != 1:
                         raise LoggingUnavailable("corrupt_log_tail")
                 total += st.st_size
                 if name == ACTIVE:

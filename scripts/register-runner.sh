@@ -500,10 +500,13 @@ echo "==> Downloading $ARCHIVE..."
 curl -fL --retry 3 --retry-delay 2 -o "$ARCHIVE_PATH" "$DOWNLOAD_URL" || die "Runner download failed."
 grt_log runner_download ok
 if [[ "$DIGEST" == sha256:* ]]; then
+  grt_log digest_check begin
   EXPECTED_SHA256="${DIGEST#sha256:}"; ACTUAL_SHA256="$(sha256sum "$ARCHIVE_PATH" | awk '{print $1}')"
   [[ "$EXPECTED_SHA256" == "$ACTUAL_SHA256" ]] || die "SHA-256 verification failed for $ARCHIVE"
+  grt_log digest_check ok
   echo "==> SHA-256 verification: OK"
 else
+  grt_log digest_check skipped
   echo "WARNING: GitHub release metadata did not provide a SHA-256 digest for this asset." >&2
 fi
 
@@ -511,6 +514,7 @@ grt_log runner_extract begin
 echo "==> Extracting runner..."
 tar xzf "$ARCHIVE_PATH"; rm -f -- "$ARCHIVE_PATH"; ARCHIVE_PATH=""
 grt_log runner_extract ok
+grt_log dependency_check begin
 echo "==> Checking/installing official runner dependencies..."
 if [[ "$WEB_MODE" == "1" ]]; then
   if command -v ldd >/dev/null 2>&1 && ldd ./bin/Runner.Listener 2>/dev/null | grep -q 'not found'; then
@@ -520,6 +524,7 @@ else
   sudo ./bin/installdependencies.sh
 fi
 
+grt_log dependency_check ok
 if [[ "$WEB_MODE" == "1" ]]; then
   create_lifecycle_stage PRE_REGISTRATION
 else
@@ -570,6 +575,7 @@ grt_log remote_registration ok
 
 if [[ "$WEB_MODE" == "1" ]]; then
   create_lifecycle_stage REGISTERED_PERMISSION_INCOMPLETE
+  grt_log registration_permissions begin
   NORMALIZE_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" \
     --arg runner_name "$RUNNER_NAME" \
     '{op:"registration_permission_normalize",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name}')"
@@ -578,19 +584,26 @@ if [[ "$WEB_MODE" == "1" ]]; then
   python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" registration_check \
     "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$CANONICAL_SERVICE" ||
     die "New Runner registration metadata is not safely restricted to owner-only permissions."
+  grt_log registration_permissions ok
+  grt_log registration_attestation begin
   ATTEST_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" \
     --arg runner_name "$RUNNER_NAME" --arg version "$VERSION" \
     '{op:"registration_attestation_create",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,version:$version}')"
   web_priv_request "$ATTEST_REQ" || die "Root-controlled registration attestation failed."
+  grt_log registration_attestation ok
   create_lifecycle_stage REGISTERED_UNIT_INCOMPLETE
 else
   create_lifecycle_stage REGISTERED_PERMISSION_INCOMPLETE
+  grt_log registration_permissions begin
   cli_create_authority normalize - -
   CANONICAL_SERVICE="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
   python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" registration_check \
     "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$CANONICAL_SERVICE" ||
     die "CLI registration metadata is not owner-only; remote registration retained."
+  grt_log registration_permissions ok
+  grt_log registration_attestation begin
   cli_create_authority attest - "$VERSION"
+  grt_log registration_attestation ok
   create_lifecycle_stage REGISTERED_UNIT_INCOMPLETE
 fi
 
@@ -600,7 +613,9 @@ configure_runner_archive_hook "$RUNNER_DIR/.env"
 if [[ "$WEB_MODE" == "1" ]]; then
   INSTALL_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" --arg runner_name "$RUNNER_NAME" \
     '{op:"service_install",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name}')"
+  grt_log service_install begin
   web_priv_request "$INSTALL_REQ" || die "Privileged canonical service installation failed."
+  grt_log service_install ok
   SERVICE_NAME="$(jq -er '.service' <<<"$WEB_PRIV_RESPONSE")" || die "Privileged service installer returned invalid identity."
   printf '%s\n' "$SERVICE_NAME" > "$RUNNER_DIR/.service"
 
@@ -608,31 +623,41 @@ if [[ "$WEB_MODE" == "1" ]]; then
 
   START_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" --arg runner_name "$RUNNER_NAME" --arg service "$SERVICE_NAME" \
     '{op:"service_start",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,service:$service}')"
+  grt_log service_start begin
   web_priv_request "$START_REQ" || die "Privileged runner service start failed."
+  grt_log service_start ok
   create_lifecycle_stage REGISTERED_HEALTH_UNKNOWN
   CHECK_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" --arg runner_name "$RUNNER_NAME" --arg service "$SERVICE_NAME" \
     '{op:"service_state",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,service:$service}')"
+  grt_log service_health begin
   web_priv_request "$CHECK_REQ" || die "Post-start service health verification failed."
   [[ "$(jq -r '.state // empty' <<<"$WEB_PRIV_RESPONSE")" == "active" ]] ||
     die "Registered Runner service has not reached a confirmed active state."
+  grt_log service_health ok
   create_lifecycle_stage CREATE_COMPLETE
 else
   echo "==> Installing canonical root-owned 0644 systemd Unit for $RUNNER_USER ..."
   # Use the exact same trusted installer as executor-mode Create. Do not
   # delegate unit creation to official svc.sh install (can produce 0664).
+  grt_log service_install begin
   cli_create_authority install - -
+  grt_log service_install ok
   SERVICE_NAME="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
   printf '%s\n' "$SERVICE_NAME" > "$RUNNER_DIR/.service"
   cli_create_authority unit - -
   create_lifecycle_stage REGISTERED_START_INCOMPLETE
+  grt_log service_start begin
   echo "==> Starting runner service..."
   sudo ./svc.sh start ||
     die "CLI service start incomplete; remote registration preserved."
+  grt_log service_start ok
   create_lifecycle_stage REGISTERED_HEALTH_UNKNOWN
+  grt_log service_health begin
   echo
   echo "==> Runner status"
   sudo ./svc.sh status ||
     die "CLI service health unknown; remote registration preserved."
+  grt_log service_health ok
   create_lifecycle_stage CREATE_COMPLETE
 fi
 

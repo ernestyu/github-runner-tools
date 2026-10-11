@@ -20,7 +20,7 @@ _ALLOWED = {
     "registration_attestation_create": frozenset({"op", "repository", "runner_dir", "runner_name", "version"}),
     "registration_permission_normalize": frozenset({"op", "repository", "runner_dir", "runner_name"}),
     "remove_state": frozenset({"op", "repository", "runner_dir", "runner_name", "stage"}),
-    "service_install": frozenset({"op", "repository", "runner_dir", "runner_name"}),
+    "service_install": frozenset({"op", "repository", "runner_dir", "runner_name", "version"}),
     "service_start": frozenset({"op", "repository", "runner_dir", "runner_name", "service"}),
     "service_stop": frozenset({"op", "repository", "runner_dir", "runner_name", "service"}),
     "service_state": frozenset({"op", "repository", "runner_dir", "runner_name", "service"}),
@@ -74,7 +74,7 @@ def admitted_operation(request: Any) -> dict[str, Any]:
         raise PrivilegedProtocolError("create stage not allowed")
     if op == "remove_state" and request["stage"] not in _REMOVE_STAGES:
         raise PrivilegedProtocolError("remove stage not allowed")
-    if op == "registration_attestation_create":
+    if op in ("registration_attestation_create", "service_install"):
         version = request["version"]
         if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
             raise PrivilegedProtocolError("invalid runner version")

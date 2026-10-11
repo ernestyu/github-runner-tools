@@ -108,10 +108,16 @@ rollback() {
   return "$rc"
 }
 trap rollback EXIT
+# Install completed root-owned temp files, then rename on the same
+# filesystem. Never truncate a live executable while Status can be spawned.
 for name in "${FILES[@]}"; do
-  sudo install -o root -g root -m 0755 "$ROOT/scripts/$name" "$CLI_ROOT/$name"
+  TEMP_TARGET="$(sudo mktemp "$CLI_ROOT/.grt-cli-update.XXXXXXXX")"
+  sudo install -o root -g root -m 0755 "$ROOT/scripts/$name" "$TEMP_TARGET"
+  sudo mv -f -- "$TEMP_TARGET" "$CLI_ROOT/$name"
 done
-sudo install -o root -g root -m 0644 "$STAGE" "$UNIT"
+TEMP_UNIT="$(sudo mktemp /etc/systemd/system/.grt-executor-update.XXXXXXXX)"
+sudo install -o root -g root -m 0644 "$STAGE" "$TEMP_UNIT"
+sudo mv -f -- "$TEMP_UNIT" "$UNIT"
 rm -f "$STAGE"
 sudo systemctl daemon-reload
 sudo systemctl restart github-runner-tools-executor.service

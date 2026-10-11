@@ -39,7 +39,7 @@ class UnitTests(unittest.TestCase):
     def test_nonroot_install_is_rejected(self):
         with patch.object(m.os, "geteuid", return_value=1000):
             with self.assertRaises(m.UnitInstallError) as ctx:
-                m.install_canonical_unit("owner/repo", "runner", "/safe/runner", "actions")
+                m.install_canonical_unit("owner/repo", "runner", "/safe/runner", "actions", {})
         self.assertEqual(ctx.exception.reason, "authority_install_failed")
 
     def test_invalid_runner_user_and_directory_rejected(self):
@@ -68,7 +68,7 @@ class UnitTests(unittest.TestCase):
                  patch.object(m.pwd, "getpwnam", return_value=self.account()):
                 with self.assertRaises(m.UnitInstallError) as ctx:
                     m.install_canonical_unit(
-                        "owner/repo", "runner", str(runner), "actions")
+                        "owner/repo", "runner", str(runner), "actions", {})
             self.assertEqual(ctx.exception.reason, "runner_service_entrypoint_missing")
             self.assertFalse((runner / "runsvc.sh").exists())
 
@@ -111,6 +111,26 @@ class UnitTests(unittest.TestCase):
                 with patch.object(m.pwd, "getpwnam", return_value=self.account()):
                     m.bootstrap_service_entrypoint(str(runner), "actions")
                 self.assertEqual((runner / "runsvc.sh").read_bytes(), official.read_bytes())
+
+    def test_attested_digest_or_inode_mismatch_rejected_before_publish(self):
+        with tempfile.TemporaryDirectory() as td:
+            runner = self.make_runner(pathlib.Path(td))
+            src = runner / "bin/runsvc.sh"
+            st = src.stat()
+            expected = {
+                "device": st.st_dev,
+                "inode": st.st_ino,
+                "sha256": hashlib.sha256(src.read_bytes()).hexdigest(),
+                "size": st.st_size,
+                "mode": f"{st.st_mode & 0o777:04o}",
+            }
+            bad = dict(expected)
+            bad["sha256"] = "0" * 64
+            with patch.object(m.pwd, "getpwnam", return_value=self.account()):
+                with self.assertRaises(m.UnitInstallError) as ctx:
+                    m.bootstrap_service_entrypoint(str(runner), "actions", bad)
+            self.assertEqual(ctx.exception.reason, "runner_service_entrypoint_invalid")
+            self.assertFalse((runner / "runsvc.sh").exists())
 
     def test_bootstrap_refuses_symlink_source_and_existing_destination(self):
         with tempfile.TemporaryDirectory() as td:

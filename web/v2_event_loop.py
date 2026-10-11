@@ -16,6 +16,7 @@ import time
 from v2_binding import authorize_private_request, TransactionBindingError
 from v2_cli_spawn import terminate_group
 from v2_privileged import execute_privileged, PrivilegedProtocolError
+from v2_unit_installer import UnitInstallError
 
 MAX_PRIVATE_FRAME = 16384
 MAX_CAPTURE = 131072
@@ -31,7 +32,7 @@ def handle_root_request(runtime, transaction, raw: bytes, deadline: float) -> by
         authorized = authorize_private_request(runtime, transaction, incoming)
         answer = execute_privileged(runtime, authorized, deadline=deadline)
     except (ValueError, UnicodeError, OSError, TransactionBindingError,
-            PrivilegedProtocolError):
+            PrivilegedProtocolError, UnitInstallError):
         answer = {"ok": False, "error": "privileged_request_rejected"}
     return json.dumps(answer, separators=(",", ":")).encode("utf-8") + b"\n"
 

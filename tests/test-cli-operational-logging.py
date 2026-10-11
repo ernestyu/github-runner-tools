@@ -76,5 +76,78 @@ class LoggerTests(unittest.TestCase):
                     pass
             self.assertEqual(outside.read_text(), "leave me alone")
 
+    def test_corrupt_tail_not_truncated(self):
+        with tempfile.TemporaryDirectory() as root:
+            p = Path(root)
+            (p / "operational.lock").touch(mode=0o600)
+            (p / "operational.jsonl").write_bytes(b'{"v":1')
+            for name in ("operational.lock", "operational.jsonl"):
+                os.chmod(p / name, 0o600)
+            with self.assertRaises(mod.LoggingUnavailable):
+                with mod.Logger(root):
+                    pass
+            self.assertEqual((p / "operational.jsonl").read_bytes(), b'{"v":1')
+
+    def test_hardlink_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            p = Path(root)
+            (p / "operational.lock").touch(mode=0o600)
+            os.chmod(p / "operational.lock", 0o600)
+            (p / "operational.jsonl").write_text('{"v":1}\\n')
+            os.chmod(p / "operational.jsonl", 0o600)
+            os.link(p / "operational.jsonl", p / "alias")
+            with self.assertRaises(mod.LoggingUnavailable):
+                with mod.Logger(root):
+                    pass
+
+    def test_capacity_evicts_oldest_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            p = Path(root)
+            (p / "operational.lock").touch(mode=0o600)
+            os.chmod(p / "operational.lock", 0o600)
+            old_max = mod.MAX_TOTAL
+            mod.MAX_TOTAL = 180
+            try:
+                before = dt.datetime.now(dt.timezone.utc)
+                for i, minutes in enumerate((3, 2, 1)):
+                    stamp=(before-dt.timedelta(minutes=minutes)).strftime("%Y%m%dT%H%M%S%fZ")
+                    name=p / f"operational.{stamp}.{i:032x}.jsonl"
+                    name.write_text('{"v":1}\\n' * 6)
+                    os.chmod(name, 0o600)
+                with mod.Logger(root):
+                    pass
+                self.assertLessEqual(sum(v.stat().st_size for v in p.iterdir()), mod.MAX_TOTAL)
+                self.assertFalse(any(n.name.endswith(f"{0:032x}.jsonl") for n in p.iterdir()))
+            finally:
+                mod.MAX_TOTAL = old_max
+
+    def test_expired_active_is_pruned_on_next_invocation(self):
+        with tempfile.TemporaryDirectory() as root:
+            p = Path(root)
+            (p / "operational.lock").touch(mode=0o600)
+            os.chmod(p / "operational.lock", 0o600)
+            active=p / "operational.jsonl"
+            active.write_text('{"v":1}\\n')
+            os.chmod(active, 0o600)
+            old=(dt.datetime.now(dt.timezone.utc)-dt.timedelta(days=20)).timestamp()
+            os.utime(active, (old, old))
+            with mod.Logger(root):
+                pass
+            self.assertFalse(any(n.name.endswith(".jsonl") for n in p.iterdir()))
+
+    def test_untrusted_free_text_not_persisted(self):
+        with tempfile.TemporaryDirectory() as root:
+            p=Path(root)
+            (p / "operational.lock").touch(mode=0o600)
+            os.chmod(p / "operational.lock", 0o600)
+            attacker="ghs_FAKE_TOKEN_secret" * 20
+            with self.assertRaises(mod.LoggingUnavailable):
+                mod.event(self.args(reason=attacker))
+            with mod.Logger(root) as log:
+                log.append(mod.event(self.args()))
+            contents=(p / "operational.jsonl").read_text()
+            self.assertNotIn("FAKE_TOKEN", contents)
+            self.assertEqual(len(contents.splitlines()),1)
+
 if __name__ == "__main__":
     unittest.main()

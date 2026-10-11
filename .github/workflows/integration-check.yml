@@ -3,8 +3,6 @@ name: Integration Check
 on:
   workflow_dispatch:
   push:
-    branches:
-      - 'ci/web-v2-b01-integration-*'
     tags:
       - 'v*'
 

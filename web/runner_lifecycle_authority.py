@@ -599,6 +599,27 @@ def reconcile_incomplete_create_stage(repo: str, runner: str, runner_dir: str,
     instance = active["instance"]
 
     if stage != "BEGIN":
+        if stage == "CONFIRM_REMOTE_REMOVED":
+            from grt_web_common import canonical_service_name
+            service = canonical_service_name(repo, runner)
+            if os.path.lexists("/etc/systemd/system/" + service):
+                raise AuthorityError("systemd Unit appeared during incomplete reconciliation")
+            runnerfd = _safe_directory(runner_dir)
+            try:
+                st = os.fstat(runnerfd)
+                try:
+                    os.stat(".service", dir_fd=runnerfd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise AuthorityError("service record appeared during incomplete reconciliation")
+                removed = _cycle_record(REMOVE_STATES, repo, runner, runner_dir, instance)
+                if (removed is None or
+                        (st.st_dev, st.st_ino) !=
+                        (removed.get("directory_device"), removed.get("directory_inode"))):
+                    raise AuthorityError("reconciliation cleanup identity changed")
+            finally:
+                os.close(runnerfd)
         result = remove_stage(repo, runner, runner_dir, user, stage)
         if stage == "COMPLETE":
             fd = _store(CREATE_STATES)
@@ -618,10 +639,16 @@ def reconcile_incomplete_create_stage(repo: str, runner: str, runner_dir: str,
         return result
 
     created = _cycle_record(CREATE_STATES, repo, runner, runner_dir, instance)
-    if created is None or created.get("stage") != "REGISTERED_UNIT_INCOMPLETE":
+    if (created is None or created.get("stage") != "REGISTERED_UNIT_INCOMPLETE"
+            or (created.get("repository"), created.get("runner"),
+                created.get("runner_dir"), created.get("instance"))
+            != (repo, runner, runner_dir, instance)):
         raise AuthorityError("incomplete Create stage not eligible")
     att = _cycle_record(ATTESTATIONS, repo, runner, runner_dir, instance)
-    if att is None or att.get("instance") != instance:
+    if (att is None or
+            (att.get("repository"), att.get("runner"), att.get("runner_dir"),
+             att.get("instance"))
+            != (repo, runner, runner_dir, instance)):
         raise AuthorityError("missing instance-bound registration attestation")
     if _cycle_record(REMOVE_STATES, repo, runner, runner_dir, instance) is not None:
         raise AuthorityError("prior remove attempt requires review")
@@ -638,7 +665,9 @@ def reconcile_incomplete_create_stage(repo: str, runner: str, runner_dir: str,
         if ((st.st_dev, st.st_ino) !=
                 (created.get("directory_device"), created.get("directory_inode"))
                 or (st.st_dev, st.st_ino) !=
-                (att.get("directory_device"), att.get("directory_inode"))):
+                (att.get("directory_device"), att.get("directory_inode"))
+                or att.get("runner_uid") != account.pw_uid
+                or att.get("runner_gid") != account.pw_gid):
             raise AuthorityError("reconciliation directory identity mismatch")
         path = os.stat(runner_dir, follow_symlinks=False)
         if (path.st_dev, path.st_ino) != (st.st_dev, st.st_ino):

@@ -137,7 +137,7 @@ for file in v2_executor_contract.py v2_executor_transport.py v2_token_fd.py \
             v2_status.py v2_executor.py v2_executor_client.py v2_cli_launcher.py \
             v2_cli_spawn.py v2_mutation.py v2_privileged.py v2_binding.py \
             v2_event_loop.py v2_remove_guard.py v2_inventory.py v2_unit_installer.py \
-            v2_failure.py v2_closeout.py app.py dispatcher.py lifecycle_worker.py \
+            v2_failure.py v2_closeout.py v2_code_provenance.py app.py dispatcher.py lifecycle_worker.py \
             grt_web_common.py runner_lifecycle_authority.py \
             cli_create_authority.py cli_remove_authority.py pty_token_adapter.py; do
   [[ -f "$ROOT/web/$file" && ! -L "$ROOT/web/$file" ]] ||

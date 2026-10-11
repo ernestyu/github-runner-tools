@@ -39,6 +39,9 @@ class AuthorityTests(unittest.TestCase):
         (self.runner / ".runner").write_text(json.dumps({
             "agentName": RUNNER, "agentId": 101, "gitHubUrl": "https://github.com/example/repo"}))
         (self.runner / ".credentials").write_text("SYNTHETIC_NOT_SECRET")
+        (self.runner / "bin").mkdir()
+        (self.runner / "bin" / "runsvc.sh").write_text("#!/bin/bash\necho fixture-wrapper\n")
+        (self.runner / "bin" / "runsvc.sh").chmod(0o755)
         for name in (".runner", ".credentials"):
             (self.runner / name).chmod(0o600)
 

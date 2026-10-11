@@ -182,11 +182,16 @@ grt_reason_for_event() {
 }
 die() {
   if [[ "$GRT_LOG_READY" == 1 ]]; then
+    # A remote outcome may be unknown despite CLI exit 1. Never imply retry.
+    if [[ "$GRT_LOG_EVENT" == "remote_registration" || "$GRT_LOG_EVENT" == "remote_removal" ]]; then
+      grt_log "$GRT_LOG_EVENT" unknown remote_result_uncertain || :
+    else
     case "$GRT_LOG_STAGE" in
       REGISTRATION_OUTCOME_UNKNOWN|REMOTE_REMOVE_OUTCOME_UNKNOWN)
         grt_log "$GRT_LOG_EVENT" unknown remote_result_uncertain || : ;;
       *) grt_log "$GRT_LOG_EVENT" failed "$(grt_reason_for_event)" || : ;;
     esac
+    fi
   fi
   echo "ERROR: $*" >&2
   exit 1

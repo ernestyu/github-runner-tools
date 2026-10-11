@@ -60,6 +60,11 @@ def spawn_cli(request: Request, token: bytes, privilege_fd: int) -> tuple[int, i
         raise SpawnError("invalid lifecycle operation")
     if os.geteuid() != 0:
         raise SpawnError("root Executor required")
+    from v2_code_provenance import verify_launch, CodeProvenanceError
+    try:
+        verify_launch(request.op)
+    except CodeProvenanceError as exc:
+        raise SpawnError("pinned CLI code provenance rejected") from exc
     if type(privilege_fd) is not int or privilege_fd < 5:
         raise SpawnError("invalid privileged socket descriptor")
     # Verify socket type and privileged root peer before allowing any launch.

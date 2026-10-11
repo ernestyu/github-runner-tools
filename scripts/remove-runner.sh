@@ -642,7 +642,11 @@ INFO
     [[ "$CONFIRM" == "RECOVER-REMOVE" ]] || die "Cancelled."
   fi
 
+  # Local-only recovery changes systemd/files without remote registration.
+  # A logger failure must not abort after this existing mutation boundary.
+  GRT_LOG_SIDE_EFFECT=1
   if [[ "$SERVICE_STATE" != "absent" ]]; then
+    grt_log service_stop begin
     echo "==> Stopping service..."
     if [[ "$WEB_MODE" == "1" ]]; then
       web_service_operation service_stop "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME" ||

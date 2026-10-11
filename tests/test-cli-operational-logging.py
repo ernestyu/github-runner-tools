@@ -106,7 +106,7 @@ class LoggerTests(unittest.TestCase):
             (p / "operational.lock").touch(mode=0o600)
             os.chmod(p / "operational.lock", 0o600)
             old_max = mod.MAX_TOTAL
-            mod.MAX_TOTAL = 180
+            mod.MAX_TOTAL = 80
             try:
                 before = dt.datetime.now(dt.timezone.utc)
                 for i, minutes in enumerate((3, 2, 1)):

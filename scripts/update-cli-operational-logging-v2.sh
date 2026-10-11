@@ -140,6 +140,19 @@ rollback() {
   sudo systemctl is-active --quiet github-runner-tools-executor.service || failed=1
   sudo systemctl is-active --quiet github-runner-tools-web.service || failed=1
   sudo test -S /run/github-runner-tools/executor.sock || failed=1
+  sudo systemctl show github-runner-tools-executor.service -p ProtectSystem --value | grep -Fx strict >/dev/null || failed=1
+  if sudo systemctl show github-runner-tools-executor.service -p ReadWritePaths --value | grep -Fq "$LOG_ROOT"; then
+    failed=1
+  fi
+  # Verify the restored socket speaks the existing read-only Status protocol.
+  sudo -u grt-web /usr/bin/python3 - <<'ROLLBACK_STATUS' || failed=1
+import sys
+sys.path.insert(0, "/usr/local/lib/github-runner-tools/web")
+from v2_executor_client import fetch_status
+response = fetch_status()
+if response.get("ok") is not True:
+    raise SystemExit(1)
+ROLLBACK_STATUS
   [[ "$(systemctl list-unit-files 'actions.runner.*.service' --no-legend --no-pager | sort | sha256sum)" == "$RUNNER_UNITS_BEFORE" ]] || failed=1
   # Do not discard new operational evidence from a failed smoke.
   if [[ "${LOG_LOCK_CREATED:-0}" == 1 ]] && [[ "$(sudo find "$LOG_ROOT" -mindepth 1 -maxdepth 1 | wc -l)" == 1 ]]; then

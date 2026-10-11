@@ -200,9 +200,9 @@ create_lifecycle_stage() {
   GRT_LOG_STAGE="$stage"
   grt_log lifecycle_checkpoint begin
   if [[ "$WEB_MODE" == "1" ]]; then
-    web_create_stage "$stage"
+    web_create_stage "$stage" || return $?
   else
-    cli_create_authority stage "$stage" -
+    cli_create_authority stage "$stage" - || return $?
   fi
   grt_log lifecycle_checkpoint ok
 }

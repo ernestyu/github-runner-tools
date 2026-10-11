@@ -26,6 +26,7 @@ class StatusBoundaryTests(unittest.TestCase):
         result = subprocess.CompletedProcess([], 0, stdout=b'{"runners":[]}', stderr=b"")
         with patch.object(v2_status.os, "geteuid", return_value=0), \
              patch.object(v2_status, "runner_identity", return_value=(1000, 1000, "/home/actions")), \
+             patch("v2_code_provenance.verify_launch") as verify, \
              patch.object(v2_status.subprocess, "run", return_value=result) as run:
             self.assertEqual(v2_status.status_as_runner()["data"], {"runners": []})
         args, kwargs = run.call_args
@@ -47,6 +48,7 @@ class StatusBoundaryTests(unittest.TestCase):
             with self.subTest(code=result.returncode, size=len(result.stdout)), \
                  patch.object(v2_status.os, "geteuid", return_value=0), \
                  patch.object(v2_status, "runner_identity", return_value=(1000, 1000, "/home/actions")), \
+                 patch("v2_code_provenance.verify_launch"), \
                  patch.object(v2_status.subprocess, "run", return_value=result), \
                  self.assertRaises(v2_status.StatusError) as caught:
                 v2_status.status_as_runner()

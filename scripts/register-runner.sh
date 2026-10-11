@@ -86,9 +86,35 @@ Cross-user provisioning is intentionally unsupported in v1.
 USAGE
 }
 
+grt_reason_for_event() {
+  # Fixed enum only; never persist any argument or subprocess output.
+  case "$GRT_LOG_EVENT" in
+    archive_check) echo archive_unavailable ;;
+    release_lookup) echo release_metadata_failed ;;
+    runner_download) echo download_failed ;;
+    digest_check|runner_extract) echo integrity_failed ;;
+    dependency_check) echo dependency_failed ;;
+    lifecycle_checkpoint) echo checkpoint_failed ;;
+    registration_permissions) echo permissions_failed ;;
+    registration_attestation) echo attestation_failed ;;
+    service_install) echo service_install_failed ;;
+    service_start) echo service_start_failed ;;
+    service_health) echo service_health_failed ;;
+    service_stop) echo service_stop_failed ;;
+    service_uninstall) echo service_uninstall_failed ;;
+    local_cleanup) echo local_cleanup_failed ;;
+    inventory) echo inventory_failed ;;
+    remote_registration|remote_removal) echo remote_result_uncertain ;;
+    *) echo unexpected_cli_failure ;;
+  esac
+}
 die() {
   if [[ "$GRT_LOG_READY" == 1 ]]; then
-    grt_log "$GRT_LOG_EVENT" failed unexpected_cli_failure || :
+    case "$GRT_LOG_STAGE" in
+      REGISTRATION_OUTCOME_UNKNOWN|REMOTE_REMOVE_OUTCOME_UNKNOWN)
+        grt_log "$GRT_LOG_EVENT" unknown remote_result_uncertain || : ;;
+      *) grt_log "$GRT_LOG_EVENT" failed "$(grt_reason_for_event)" || : ;;
+    esac
   fi
   echo "ERROR: $*" >&2
   exit 1

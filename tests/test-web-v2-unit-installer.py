@@ -61,6 +61,17 @@ class UnitTests(unittest.TestCase):
     def account(self):
         return SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid())
 
+    def test_live_failure_class_maps_to_specific_missing_wrapper_reason_before_unit_write(self):
+        with tempfile.TemporaryDirectory() as td:
+            runner = self.make_runner(pathlib.Path(td), wrapper=False)
+            with patch.object(m.os, "geteuid", return_value=0), \
+                 patch.object(m.pwd, "getpwnam", return_value=self.account()):
+                with self.assertRaises(m.UnitInstallError) as ctx:
+                    m.install_canonical_unit(
+                        "owner/repo", "runner", str(runner), "actions")
+            self.assertEqual(ctx.exception.reason, "runner_service_entrypoint_missing")
+            self.assertFalse((runner / "runsvc.sh").exists())
+
     def test_fresh_post_config_bootstrap_requires_archive_wrapper(self):
         with tempfile.TemporaryDirectory() as td:
             runner = self.make_runner(pathlib.Path(td), wrapper=False)

@@ -29,17 +29,27 @@ new_start=$(grep -n "sudo systemctl enable --now github-runner-tools-executor.se
 [[ -n "$old_stop" && -n "$new_start" && "$old_stop" -lt "$new_start" ]]
 echo "PASS: old runtime owner is stopped before new Executor binds its socket"
 
-# A V1 writer must be excluded and V1 stopped *before* copying root state.
+# A V1 writer must be excluded by the shared lock; backup and validation must finish before V1 stops.
 cutover_lock_line=$(grep -nF 'flock -n "$CUTOVER_LOCK"' "$source_file" | head -1 | cut -d: -f1)
 state_backup_line=$(grep -nF 'BACKUP="$(sudo mktemp' "$source_file" | head -1 | cut -d: -f1)
 web_stop_line=$(grep -nF 'sudo systemctl stop github-runner-tools-web.service' "$source_file" | head -1 | cut -d: -f1)
 [[ -n "$cutover_lock_line" && -n "$state_backup_line" && -n "$web_stop_line" ]]
-[[ "$cutover_lock_line" -lt "$web_stop_line" && "$web_stop_line" -lt "$state_backup_line" ]]
+[[ "$cutover_lock_line" -lt "$state_backup_line" && "$state_backup_line" -lt "$web_stop_line" ]]
 grep -Fq 'lifecycle-sha256.txt' "$source_file"
 grep -Fq 'lifecycle-metadata.txt' "$source_file"
-echo "PASS: cutover lock and quiescent V1 snapshot precede V2 code switch"
+echo "PASS: shared lock and V1 snapshot precede service interruption"
 
 preflight_line=$(grep -nF 'unreadable V1 lifecycle schema' "$source_file" | head -1 | cut -d: -f1)
 install_code_line=$(grep -nF 'for file in v2_executor_contract.py' "$source_file" | head -1 | cut -d: -f1)
 [[ -n "$preflight_line" && -n "$install_code_line" && "$preflight_line" -lt "$install_code_line" ]]
 echo "PASS: V1 state schema validation precedes V2 executable replacement"
+
+helper="$ROOT/scripts/web-v2-cutover-rollback.sh"
+bash -n "$helper"
+[[ -f "$helper" && ! -L "$helper" ]]
+stop_line=$(grep -nF 'sudo systemctl stop github-runner-tools-web.service' "$source_file" | head -1 | cut -d: -f1)
+rollback_arm=$(grep -nF 'trap grt_v2_rollback_on_exit EXIT' "$source_file" | head -1 | cut -d: -f1)
+[[ "$preflight_line" -lt "$stop_line" && "$rollback_arm" -lt "$stop_line" ]]
+grep -Fq 'CUTOVER_COMMITTED=1' "$source_file"
+echo "PASS: transactional rollback armed before stopping V1"
+

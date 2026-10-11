@@ -47,5 +47,28 @@ class RealCliTests(unittest.TestCase):
         self.assertEqual(p.returncode,0,p.stderr)
         self.assertEqual(json.loads(p.stdout),[])
         self.assertEqual((logdir/"unexpected").read_text(),"fixed fixture")
+    def test_create_remove_logger_failure_boundary(self):
+        # Call actual sourced CLI logger without any runner mutation.
+        for op, script in (("create", "register-runner.sh"), ("remove", "remove-runner.sh")):
+            for crossed in (0, 1):
+                with self.subTest(op=op, crossed=crossed):
+                    code = (
+                        "export RUNNER_TOOLS_LIB_ONLY=1; "
+                        f'source "{BASE}/scripts/{script}"; '
+                        "GRT_LOG_READY=1; grt_log operation begin; "
+                        'touch "$RUNNER_TEMP/grt-native-logging-$(id -u)/unexpected-entry"; '
+                        f"GRT_LOG_SIDE_EFFECT={crossed}; "
+                        "grt_log archive_check begin; echo SURVIVED"
+                    )
+                    env={**self.env, "RUNNER_TEMP": str(self.root/op/str(crossed))}
+                    pathlib.Path(env["RUNNER_TEMP"]).mkdir(parents=True)
+                    p=subprocess.run(["bash", "-c", code], env=env, capture_output=True, text=True, timeout=20)
+                    if crossed:
+                        self.assertEqual(p.returncode, 0, p.stderr)
+                        self.assertIn("SURVIVED", p.stdout)
+                    else:
+                        self.assertNotEqual(p.returncode, 0)
+                        self.assertNotIn("SURVIVED", p.stdout)
+                    self.assertTrue((pathlib.Path(env["RUNNER_TEMP"])/f"grt-native-logging-{os.getuid()}"/"unexpected-entry").exists())
 if __name__=="__main__":
     unittest.main()

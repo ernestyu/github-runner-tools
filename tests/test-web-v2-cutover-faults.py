@@ -42,7 +42,9 @@ V1_DISPATCH_ACTIVE=1; V1_DISPATCH_ENABLED=1
 CUTOVER_STARTED=1; CUTOVER_COMMITTED=0
 trap grt_v2_rollback_on_exit EXIT
 trap 'exit 130' INT
-# Failure before cutover must never stop or rewrite a healthy V1.\nif [[ "$CASE" == preflight_failure ]]; then CUTOVER_STARTED=0; false; fi\n# Pretend the installer has interrupted V1 and partially installed V2:
+# Failure before cutover must never stop or rewrite a healthy V1.
+if [[ "$CASE" == preflight_failure ]]; then CUTOVER_STARTED=0; false; fi
+# Pretend the installer has interrupted V1 and partially installed V2:
 systemctl stop github-runner-tools-web.service github-runner-tools-dispatch.service
 echo v2-code > "$INSTALL_ROOT/app.py"
 echo v2-unit > "$WEB_UNIT"

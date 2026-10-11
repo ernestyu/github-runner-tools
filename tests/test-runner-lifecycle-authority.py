@@ -392,5 +392,68 @@ class AuthorityTests(unittest.TestCase):
             auth.create_attestation("foreign/repo", RUNNER, self.repo, "root", "2.328.0")
 
 
+
+    def make_incomplete_create(self):
+        auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_PERMISSION_INCOMPLETE")
+        auth.create_attestation(REPO, RUNNER, self.repo, "root", "2.338.0")
+        auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_UNIT_INCOMPLETE")
+
+    def test_ordinary_remove_still_rejects_incomplete_create(self):
+        self.make_incomplete_create()
+        with self.assertRaises(auth.AuthorityError):
+            auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        active = auth._current(REPO, RUNNER, self.repo)
+        self.assertIsNone(auth._cycle_record(
+            auth.REMOVE_STATES, REPO, RUNNER, self.repo, active["instance"]))
+
+    def test_bounded_incomplete_create_reconciliation_closes_cycle_without_forging_success(self):
+        self.make_incomplete_create()
+        active = auth._current(REPO, RUNNER, self.repo)
+        instance = active["instance"]
+        begin = auth.reconcile_incomplete_create_stage(
+            REPO, RUNNER, self.repo, "root", "BEGIN")
+        self.assertEqual(begin["github_runner_id"], 101)
+        removed = auth._cycle_record(
+            auth.REMOVE_STATES, REPO, RUNNER, self.repo, instance)
+        self.assertEqual(removed["stage"], "REMOTE_REMOVE_OUTCOME_UNKNOWN")
+        self.assertEqual(removed["origin"], "incomplete-create-reconciliation")
+        self.assertEqual(removed["create_stage_at_begin"], "REGISTERED_UNIT_INCOMPLETE")
+
+        proof = auth.reconcile_incomplete_create_stage(
+            REPO, RUNNER, self.repo, "root", "CONFIRM_REMOTE_REMOVED")
+        self.assertEqual(proof["inode"], self.runner.stat().st_ino)
+        shutil.rmtree(self.runner)
+        auth.reconcile_incomplete_create_stage(
+            REPO, RUNNER, self.repo, "root", "COMPLETE")
+
+        created = auth._cycle_record(
+            auth.CREATE_STATES, REPO, RUNNER, self.repo, instance)
+        removed = auth._cycle_record(
+            auth.REMOVE_STATES, REPO, RUNNER, self.repo, instance)
+        self.assertEqual(created["stage"], "CREATE_ABORTED_RECONCILED")
+        self.assertEqual(created["reconciled_from_stage"], "REGISTERED_UNIT_INCOMPLETE")
+        self.assertNotEqual(created["stage"], "CREATE_COMPLETE")
+        self.assertEqual(removed["stage"], "REMOVE_COMPLETE")
+
+        self.runner.mkdir()
+        self.repo = str(self.runner)
+        auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        self.assertNotEqual(auth._current(REPO, RUNNER, self.repo)["instance"], instance)
+
+    def test_incomplete_reconciliation_rejects_changed_attested_registration(self):
+        self.make_incomplete_create()
+        (self.runner / ".runner").write_text(json.dumps({
+            "agentName": RUNNER, "agentId": 202,
+            "gitHubUrl": "https://github.com/example/repo"}))
+        (self.runner / ".runner").chmod(0o600)
+        with self.assertRaises(auth.AuthorityError):
+            auth.reconcile_incomplete_create_stage(
+                REPO, RUNNER, self.repo, "root", "BEGIN")
+        active = auth._current(REPO, RUNNER, self.repo)
+        self.assertIsNone(auth._cycle_record(
+            auth.REMOVE_STATES, REPO, RUNNER, self.repo, active["instance"]))
+
+
 if __name__ == "__main__":
     unittest.main()

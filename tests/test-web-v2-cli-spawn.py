@@ -47,6 +47,17 @@ class SpawnTests(unittest.TestCase):
                 launch.spawn_cli(request, b"dummy-token", 14)
             spawn.assert_not_called()
 
+    def test_missing_installed_cli_blocks_root_spawn(self):
+        request = decode_request(b'{"op":"create","repository":"owner/repo"}')
+        from v2_code_provenance import CodeProvenanceError
+        with patch.object(launch.os, "geteuid", return_value=0), \
+             patch("v2_code_provenance.verify_launch",
+                   side_effect=CodeProvenanceError("untrusted")), \
+             patch.object(launch.os, "posix_spawn") as spawn:
+            with self.assertRaisesRegex(launch.SpawnError, "provenance"):
+                launch.spawn_cli(request, b"dummy-token", 14)
+            spawn.assert_not_called()
+
     def test_reject_privileged_socket_under_fd5(self):
         request = decode_request(b'{"op":"remove","repository":"o/r","runner_name":"runner","runner_id":123,"instance":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}')
         with patch.object(launch.os, "geteuid", return_value=0), \

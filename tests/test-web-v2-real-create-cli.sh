@@ -37,7 +37,7 @@ curl() {
     if [[ "$1" == "-o" ]]; then out="$2"; shift 2; else last="$1"; shift; fi
   done
   if [[ "$last" == *"/releases/latest" ]]; then
-    printf '%s\n' '{"tag_name":"v2.328.0","assets":[{"name":"actions-runner-linux-x64-2.328.0.tar.gz","browser_download_url":"https://example.invalid/fixture","digest":""}]}' > "$out"
+    printf '%s\n' '{"tag_name":"v2.328.0","assets":[{"name":"actions-runner-linux-x64-2.328.0.tar.gz","browser_download_url":"https://example.invalid/fixture","digest":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}]}' > "$out"
   else
     : > "$out"
   fi
@@ -62,8 +62,9 @@ with open(".runner", "w") as f:
     json.dump({"agentName": name, "agentId": 7, "gitHubUrl": url}, f)
 PY
   chmod 0755 config.sh
-  printf '#!/bin/sh\nexit 0\n' > runsvc.sh
-  chmod 0755 runsvc.sh
+  printf '#!/bin/sh\nexit 0\n' > bin/runsvc.sh
+  chmod 0755 bin/runsvc.sh
+  [[ ! -e runsvc.sh ]]
 }
 python3() {
   if [[ "${1:-}" == *"/web-service-record.py" ]]; then return 0; fi

@@ -61,7 +61,7 @@ class BindingTests(unittest.TestCase):
     def test_create_service_requires_registration_stage(self):
         req = {"op":"service_install","repository":"owner/repo",
                "runner_dir":"/home/actions/actions-runner-owner--repo",
-               "runner_name":"local-ci-owner--repo"}
+               "runner_name":"local-ci-owner--repo","version":"2.338.0"}
         with patch.object(binding, "_current", return_value={"instance":"aa"*16}), \
              patch.object(binding, "_cycle_record", return_value={"stage":"PRE_REGISTRATION"}):
             with self.assertRaises(binding.TransactionBindingError):
@@ -77,7 +77,7 @@ class BindingTests(unittest.TestCase):
         for action in ("registration_permission_normalize", "registration_attestation_create",
                        "service_install", "service_start"):
             req = {**base, "op":action}
-            if action == "registration_attestation_create":
+            if action in ("registration_attestation_create", "service_install"):
                 req["version"] = "2.328.0"
             if action == "service_start":
                 req["service"] = "actions.runner.owner-repo.runner.service"

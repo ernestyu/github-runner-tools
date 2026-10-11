@@ -650,8 +650,8 @@ echo "==> Configuring local artifact completed hook..."
 configure_runner_archive_hook "$RUNNER_DIR/.env"
 
 if [[ "$WEB_MODE" == "1" ]]; then
-  INSTALL_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" --arg runner_name "$RUNNER_NAME" \
-    '{op:"service_install",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name}')"
+  INSTALL_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" --arg runner_name "$RUNNER_NAME" --arg version "$VERSION" \
+    '{op:"service_install",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,version:$version}')"
   grt_log service_install begin
   web_priv_request "$INSTALL_REQ" || die "Privileged canonical service installation failed."
   grt_log service_install ok
@@ -679,7 +679,7 @@ else
   # Use the exact same trusted installer as executor-mode Create. Do not
   # delegate unit creation to official svc.sh install (can produce 0664).
   grt_log service_install begin
-  cli_create_authority install - -
+  cli_create_authority install - "$VERSION"
   grt_log service_install ok
   SERVICE_NAME="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
   printf '%s\n' "$SERVICE_NAME" > "$RUNNER_DIR/.service"

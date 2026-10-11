@@ -42,7 +42,7 @@ V1_DISPATCH_ACTIVE=1; V1_DISPATCH_ENABLED=1
 CUTOVER_STARTED=1; CUTOVER_COMMITTED=0
 trap grt_v2_rollback_on_exit EXIT
 trap 'exit 130' INT
-# Pretend the installer has interrupted V1 and partially installed V2:
+# Failure before cutover must never stop or rewrite a healthy V1.\nif [[ "$CASE" == preflight_failure ]]; then CUTOVER_STARTED=0; false; fi\n# Pretend the installer has interrupted V1 and partially installed V2:
 systemctl stop github-runner-tools-web.service github-runner-tools-dispatch.service
 echo v2-code > "$INSTALL_ROOT/app.py"
 echo v2-unit > "$WEB_UNIT"
@@ -100,7 +100,12 @@ class CutoverFaults(unittest.TestCase):
             self.assertNotEqual(outcome.returncode,0)
             self.assertEqual((state/"active-instances"/"fixture.json").read_bytes(),
                              record if scenario != "journal_changed" else record+b"\nchanged")
-            if scenario == "journal_changed":
+            if scenario == "preflight_failure":
+                self.assertEqual((services/"github-runner-tools-web.service").read_text(),"running")
+                self.assertEqual((services/"github-runner-tools-dispatch.service").read_text(),"running")
+                self.assertEqual((etc/"web.conf").read_text(),"v1-config")
+                self.assertNotIn("V2 cutover failed",outcome.stderr)
+            elif scenario == "journal_changed":
                 self.assertIn("manual reconciliation",outcome.stderr)
                 self.assertNotEqual((services/"github-runner-tools-web.service").read_text(),"running")
                 self.assertEqual((etc/"web.conf").read_text().strip(),"v2-config")
@@ -113,6 +118,9 @@ class CutoverFaults(unittest.TestCase):
                 self.assertEqual((installed/"app.py").read_text(),"v1-code")
                 self.assertEqual((cli/"register-runner.sh").read_text(),"v1-cli")
                 self.assertFalse((etc/"github-runner-tools-executor.service").exists())
+
+    def test_preflight_failure_leaves_v1_running(self):
+        self.check_case("preflight_failure")
 
     def test_failure_immediately_after_stopping_v1(self):
         self.check_case("fail_after_stop")

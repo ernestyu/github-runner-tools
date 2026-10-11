@@ -164,6 +164,15 @@ sudo grep -Fqx "$MARKER_V1" "$BACKUP/web.conf" ||
   { echo "Invalid V1 backup; V1 unchanged" >&2; exit 1; }
 sudo grep -Fqx "$MARKER_V1" "$BACKUP/github-runner-tools-web.service" ||
   { echo "Invalid V1 Unit backup; V1 unchanged" >&2; exit 1; }
+if sudo grep -q '^V2_EXECUTOR_MODE=' "$CONFIG"; then
+  echo "Existing configuration already declares V2; V1 unchanged" >&2
+  exit 1
+fi
+# Backup contents must match live files before beginning service interruption.
+for source_file in "$CONFIG" "$AUTH" "$WEB_UNIT"; do
+  sudo cmp -s "$source_file" "$BACKUP/${source_file##*/}" ||
+    { echo "V1 source changed during backup; V1 unchanged" >&2; exit 1; }
+done
 
 # Mutation lock is held; no lifecycle writers may race snapshot or cutover.
 # Only arm EXIT rollback after backup, schema, code, and privilege preflights.

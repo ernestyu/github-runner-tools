@@ -55,7 +55,7 @@ class MutationTests(unittest.TestCase):
         runtime.privileged.return_value = {"ok": True}
         request = {"op":"service_install", "repository":"owner/repo",
                    "runner_dir":"/home/actions/actions-runner-owner--repo",
-                   "runner_name":"runner"}
+                   "runner_name":"runner", "version":"2.338.0"}
         from v2_privileged import execute_privileged
         self.assertEqual(execute_privileged(runtime, request), {"ok":True})
         runtime.privileged.assert_called_once()

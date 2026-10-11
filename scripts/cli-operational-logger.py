@@ -70,6 +70,22 @@ class Logger:
                 raise LoggingUnavailable("unsafe_directory")
         try:
             self.df = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            opened = os.fstat(self.df)
+            if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+                raise LoggingUnavailable("directory_changed")
+            if self.root == ROOT:
+                actions = pwd.getpwnam("actions")
+                if (opened.st_uid != 0 or opened.st_gid != actions.pw_gid
+                        or stat.S_IMODE(opened.st_mode) != 0o2770):
+                    raise LoggingUnavailable("unsafe_directory")
+                for xattr in ("system.posix_acl_access", "system.posix_acl_default"):
+                    try:
+                        os.getxattr(self.df, xattr)
+                    except OSError as exc:
+                        if exc.errno != 61:  # ENODATA on Linux
+                            raise LoggingUnavailable("unverifiable_acl") from exc
+                    else:
+                        raise LoggingUnavailable("unexpected_acl")
             self.lf = os.open(LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=self.df)
             if not owned(os.fstat(self.lf), 0o600, self.uid):
                 raise LoggingUnavailable("unsafe_lock")
@@ -110,7 +126,7 @@ class Logger:
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.df)
             try:
                 st = os.fstat(fd)
-                if not owned(st, 0o600, self.uid):
+                if not owned(st, 0o600, self.uid) or st.st_size > MAX_FILE:
                     raise LoggingUnavailable("unsafe_log_file")
                 # Detect partial and non-JSON trailing records before writing.
                 if st.st_size:
@@ -182,6 +198,7 @@ class Logger:
                 raise LoggingUnavailable("unsafe_active_log")
             if os.write(fd, raw) != len(raw):
                 raise LoggingUnavailable("short_write")
+            os.fsync(fd)
         finally:
             os.close(fd)
 

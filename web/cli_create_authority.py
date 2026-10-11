@@ -30,7 +30,7 @@ EXIT_BY_REASON = {
 
 from runner_lifecycle_authority import (
     AuthorityError, create_attestation, create_stage, create_unit_attestation, normalize_new_registration,
-    _safe_directory, _current, _cycle_record, CREATE_STATES,
+    _safe_directory, _current, _cycle_record, CREATE_STATES, verify_service_install_provenance,
 )
 
 INSTALL = "/usr/local/lib/github-runner-tools/web/cli_create_authority.py"
@@ -127,8 +127,10 @@ def main(argv: list[str]) -> None:
             raise AuthorityError("invalid attestation request")
         create_attestation(repo, runner_name, directory, user, version)
     elif op == "install":
-        if action != "-" or version != "-":
+        if action != "-" or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
             raise AuthorityError("invalid Unit installation request")
+        verify_service_install_provenance(
+            repo, runner_name, directory, user, version)
         install_canonical_unit(repo, runner_name, directory, user)
     else:
         if action != "-" or version != "-":

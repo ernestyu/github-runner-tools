@@ -103,7 +103,7 @@ class CutoverFaults(unittest.TestCase):
             if scenario == "journal_changed":
                 self.assertIn("manual reconciliation",outcome.stderr)
                 self.assertNotEqual((services/"github-runner-tools-web.service").read_text(),"running")
-                self.assertEqual((etc/"web.conf").read_text(),"v2-config")
+                self.assertEqual((etc/"web.conf").read_text().strip(),"v2-config")
             else:
                 self.assertIn("V1 Web restored",outcome.stderr)
                 self.assertEqual((services/"github-runner-tools-web.service").read_text().strip(),"running")

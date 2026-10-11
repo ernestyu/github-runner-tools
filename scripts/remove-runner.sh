@@ -60,6 +60,7 @@ EXECUTOR_MODE=0
 TOKEN_FD=""
 PRIVILEGED_FD=""
 RESULT_FD=""
+CLI_REMOVE_PROOF=""
 REMOVE_STAGE="preflight_failed"
 REMOVE_EXIT="unknown"
 REMOVE_MARKED=0
@@ -348,8 +349,16 @@ cli_remove_authority() {
     die "Trusted interactive Remove authority unavailable."
   [[ "$(stat -c '%U:%G:%a' "$authority")" == "root:root:755" ]] ||
     die "Interactive Remove authority ownership or mode invalid."
-  sudo /usr/bin/python3 "$authority" "$REPO" "$RUNNER_NAME" "$RUNNER_DIR" "$stage" ||
-    die "Durable Remove lifecycle checkpoint failed; reconcile before retry."
+  if [[ "$stage" == "RECONCILE_CONFIRM_REMOTE_REMOVED" ]]; then
+    local output=""
+    if output="$(sudo /usr/bin/python3 "$authority" "$REPO" "$RUNNER_NAME" "$RUNNER_DIR" "$stage")"; then
+      CLI_REMOVE_PROOF="$output"
+      return 0
+    fi
+  elif sudo /usr/bin/python3 "$authority" "$REPO" "$RUNNER_NAME" "$RUNNER_DIR" "$stage"; then
+    return 0
+  fi
+  die "Durable Remove lifecycle checkpoint failed; reconcile before retry."
 }
 
 remove_lifecycle_stage() {
@@ -815,6 +824,8 @@ INFO
   GRT_LOG_STAGE="CONFIRM_REMOTE_REMOVED"
   grt_log lifecycle_checkpoint begin
   cli_remove_authority RECONCILE_CONFIRM_REMOTE_REMOVED
+  RECONCILE_PROOF_DEVICE="$(jq -er '.device | numbers' <<<"$CLI_REMOVE_PROOF")" || die "Reconciliation authority returned invalid target device."
+  RECONCILE_PROOF_INODE="$(jq -er '.inode | numbers' <<<"$CLI_REMOVE_PROOF")" || die "Reconciliation authority returned invalid target inode."
   grt_log lifecycle_checkpoint ok
 
   cd "$RUNNER_BASE_DIR"
@@ -824,9 +835,9 @@ INFO
   esac
   GRT_LOG_STAGE="REGISTERED_REMOVED_LOCAL_CLEANUP_PENDING"
   grt_log local_cleanup begin
-  rm -rf -- "$RUNNER_DIR"
+  python3 "${BASH_SOURCE[0]%/*}/web-runner-cleanup.py" "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RECONCILE_PROOF_DEVICE" "$RECONCILE_PROOF_INODE" || die "Bounded reconciliation cleanup rejected; remote unregister is confirmed and local evidence is preserved."
   [[ ! -e "$RUNNER_DIR" && ! -L "$RUNNER_DIR" ]] ||
-    die "Runner directory still exists after reconciliation cleanup."
+    die "Runner directory still exists after bounded reconciliation cleanup."
   grt_log local_cleanup ok
 
   GRT_LOG_STAGE="CREATE_ABORTED_RECONCILED"

@@ -70,5 +70,29 @@ class RealCliTests(unittest.TestCase):
                         self.assertNotEqual(p.returncode, 0)
                         self.assertNotIn("SURVIVED", p.stdout)
                     self.assertTrue((pathlib.Path(env["RUNNER_TEMP"])/f"grt-native-logging-{os.getuid()}"/"unexpected-entry").exists())
+
+    def test_operation_exit_preserves_specific_trusted_reason(self):
+        work=self.root/"preserve-reason"
+        work.mkdir()
+        code=(
+            "export RUNNER_TOOLS_LIB_ONLY=1; "
+            f'source "{BASE}/scripts/register-runner.sh"; '
+            'GRT_LOG_READY=1; GRT_LOG_REPO="owner/repo"; '
+            'GRT_LOG_RUNNER="runner"; GRT_LOG_STAGE="REGISTERED_UNIT_INCOMPLETE"; '
+            'GRT_LOG_LAST_REASON="runner_service_entrypoint_missing"; '
+            'grt_log_finish 1'
+        )
+        env={**self.env,"RUNNER_TEMP":str(work)}
+        p=subprocess.run(["bash","-c",code],env=env,capture_output=True,text=True,timeout=20)
+        self.assertEqual(p.returncode,0,p.stderr)
+        path=work/f"grt-native-logging-{os.getuid()}"/"operational.jsonl"
+        rows=[json.loads(line) for line in path.read_text().splitlines()]
+        event=rows[-1]
+        self.assertEqual(event["event"],"operation_exit")
+        self.assertEqual(event["reason"],"runner_service_entrypoint_missing")
+        self.assertEqual(event["stage"],"REGISTERED_UNIT_INCOMPLETE")
+        self.assertEqual(event["exit_code"],1)
+
+
 if __name__=="__main__":
     unittest.main()

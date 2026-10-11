@@ -37,6 +37,42 @@ fi
 sudo grep -Fqx "$BEFORE" "$UNIT" || {
   echo "Unknown Executor mount whitelist; not overwriting" >&2; exit 1;
 }
+# Compare complete exact installed V2 unit against the frozen generated baseline.
+BASELINE="$(mktemp --suffix=.service)"
+cat > "$BASELINE" <<'UNIT_EOF'
+# managed-by=github-runner-tools-web-v2
+[Unit]
+Description=github-runner-tools bounded Web V2 Executor
+After=network-online.target systemd-tmpfiles-setup.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+RuntimeDirectory=github-runner-tools
+RuntimeDirectoryMode=0755
+ExecStart=/usr/bin/python3 /usr/local/lib/github-runner-tools/web/v2_executor.py
+Restart=on-failure
+RestartSec=2
+AmbientCapabilities=CAP_SETUID CAP_SETGID
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/home/actions /etc/systemd/system /run/github-runner-tools /run/lock/github-runner-tools /var/lib/github-runner-tools
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+sudo cmp -s "$BASELINE" "$UNIT" || { echo "UNKNOWN_EXECUTOR_UNIT_BASELINE" >&2; rm -f "$BASELINE"; exit 1; }
+BASELINE_SHA="$(sha256sum "$BASELINE" | cut -d' ' -f1)"
+rm -f "$BASELINE"
+
 [[ "$(sudo stat -c '%U:%G:%a:%F' "$CLI_ROOT")" == "root:root:755:directory" ]] || exit 1
 [[ -f "$LOCK" && ! -L "$LOCK" ]] || exit 1
 [[ "$(stat -c '%U:%G:%a' "$LOCK")" == "root:actions:660" ]] || exit 1
@@ -52,18 +88,6 @@ done
 sudo systemctl is-active --quiet github-runner-tools-executor.service || exit 1
 sudo systemctl is-active --quiet github-runner-tools-web.service || exit 1
 RUNNER_UNITS_BEFORE="$(systemctl list-unit-files 'actions.runner.*.service' --no-legend --no-pager | sort | sha256sum)"
-
-# Pre-existing unexpected log roots require administrator reconciliation.
-if sudo test -e "$LOG_ROOT" || sudo test -L "$LOG_ROOT"; then
-  [[ "$(sudo stat -c '%U:%G:%a:%F' "$LOG_ROOT")" == "root:actions:2770:directory" ]] || exit 1
-else
-  sudo install -d -o root -g actions -m 2770 "$LOG_ROOT"
-fi
-if sudo test -e "$LOG_ROOT/operational.lock" || sudo test -L "$LOG_ROOT/operational.lock"; then
-  [[ "$(sudo stat -c '%U:%G:%a:%h:%F' "$LOG_ROOT/operational.lock")" == "actions:actions:600:1:regular file" ]] || exit 1
-else
-  sudo install -o actions -g actions -m 0600 /dev/null "$LOG_ROOT/operational.lock"
-fi
 
 # Root-only durable snapshot. It is deliberately OUTSIDE the log directory.
 BACKUP="$(sudo mktemp -d /var/lib/github-runner-tools/cli-logging-upgrade.XXXXXXXX)"
@@ -91,23 +115,63 @@ systemd-analyze verify "$STAGE" >/dev/null 2>&1 || { rm -f "$STAGE"; exit 1; }
 
 COMMITTED=0
 rollback() {
-  rc=$?
-  if [[ "$COMMITTED" == 1 ]]; then return; fi
-  echo "CLI logger upgrade incomplete; attempting code + Unit restoration" >&2
-  sudo cp -a "$BACKUP/executor.service" "$UNIT" || :
+  local original_rc=$? failed=0 name
+  if [[ "$COMMITTED" == 1 ]]; then return 0; fi
+  trap - EXIT
+  sudo cp -a "$BACKUP/executor.service" "$UNIT" || failed=1
   for name in "${FILES[@]}"; do
     if sudo test -f "$BACKUP/cli/$name"; then
-      sudo cp -a "$BACKUP/cli/$name" "$CLI_ROOT/$name" || :
+      sudo cp -a "$BACKUP/cli/$name" "$CLI_ROOT/$name" || failed=1
     else
-      sudo rm -f "$CLI_ROOT/$name" || :
+      sudo rm -f "$CLI_ROOT/$name" || failed=1
     fi
   done
-  sudo systemctl daemon-reload || :
-  sudo systemctl restart github-runner-tools-executor.service || :
-  echo "Confirm rollback and six runner identities manually; backup at $BACKUP" >&2
-  return "$rc"
+  sudo systemctl daemon-reload || failed=1
+  sudo systemctl restart github-runner-tools-executor.service || failed=1
+  sudo cmp -s "$BACKUP/executor.service" "$UNIT" || failed=1
+  [[ "$(sudo sha256sum "$UNIT" | cut -d' ' -f1)" == "$BASELINE_SHA" ]] || failed=1
+  for name in "${FILES[@]}"; do
+    if sudo test -f "$BACKUP/cli/$name"; then
+      sudo cmp -s "$BACKUP/cli/$name" "$CLI_ROOT/$name" || failed=1
+    else
+      sudo test ! -e "$CLI_ROOT/$name" || failed=1
+    fi
+  done
+  sudo systemctl is-active --quiet github-runner-tools-executor.service || failed=1
+  sudo systemctl is-active --quiet github-runner-tools-web.service || failed=1
+  sudo test -S /run/github-runner-tools/executor.sock || failed=1
+  [[ "$(systemctl list-unit-files 'actions.runner.*.service' --no-legend --no-pager | sort | sha256sum)" == "$RUNNER_UNITS_BEFORE" ]] || failed=1
+  # Do not discard new operational evidence from a failed smoke.
+  if [[ "${LOG_LOCK_CREATED:-0}" == 1 ]] && [[ "$(sudo find "$LOG_ROOT" -mindepth 1 -maxdepth 1 | wc -l)" == 1 ]]; then
+    sudo rm -f "$LOG_ROOT/operational.lock" || failed=1
+  fi
+  if [[ "${LOG_DIR_CREATED:-0}" == 1 ]]; then
+    sudo rmdir "$LOG_ROOT" || failed=1
+  fi
+  if [[ "$failed" == 1 ]]; then
+    echo "ROLLBACK_INCOMPLETE: preserve backup $BACKUP and reconcile" >&2
+    return 1
+  fi
+  echo "ROLLBACK_VERIFIED" >&2
+  return "${original_rc:-1}"
 }
 trap rollback EXIT
+LOG_DIR_CREATED=0
+LOG_LOCK_CREATED=0
+# Pre-existing unexpected log roots require administrator reconciliation.
+if sudo test -e "$LOG_ROOT" || sudo test -L "$LOG_ROOT"; then
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$LOG_ROOT")" == "root:actions:2770:directory" ]] || exit 1
+else
+  sudo install -d -o root -g actions -m 2770 "$LOG_ROOT"
+  LOG_DIR_CREATED=1
+fi
+if sudo test -e "$LOG_ROOT/operational.lock" || sudo test -L "$LOG_ROOT/operational.lock"; then
+  [[ "$(sudo stat -c '%U:%G:%a:%h:%F' "$LOG_ROOT/operational.lock")" == "actions:actions:600:1:regular file" ]] || exit 1
+else
+  sudo install -o actions -g actions -m 0600 /dev/null "$LOG_ROOT/operational.lock"
+  LOG_LOCK_CREATED=1
+fi
+
 # Install completed root-owned temp files, then rename on the same
 # filesystem. Never truncate a live executable while Status can be spawned.
 for name in "${FILES[@]}"; do

@@ -12,7 +12,7 @@ import re
 import stat
 import sys
 from grt_web_common import make_local_id, validate_repository
-from runner_lifecycle_authority import AuthorityError, remove_stage, _safe_directory
+from runner_lifecycle_authority import (AuthorityError, remove_stage, reconcile_incomplete_create_stage, _safe_directory)
 
 
 class RemoveCLIError(ValueError):
@@ -35,14 +35,20 @@ def checkpoint(argv: list[str], *, sudo_user: str | None = None) -> None:
     repo = validate_repository(repo)
     if not isinstance(runner, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", runner):
         raise RemoveCLIError("invalid runner identity")
-    if stage not in ("BEGIN", "CONFIRM_REMOTE_REMOVED", "COMPLETE"):
+    ordinary = {"BEGIN", "CONFIRM_REMOTE_REMOVED", "COMPLETE"}
+    reconciliation = {
+        "RECONCILE_BEGIN": "BEGIN",
+        "RECONCILE_CONFIRM_REMOTE_REMOVED": "CONFIRM_REMOTE_REMOVED",
+        "RECONCILE_COMPLETE": "COMPLETE",
+    }
+    if stage not in ordinary and stage not in reconciliation:
         raise RemoveCLIError("invalid removal stage")
     owner, name = repo.split("/", 1)
     canonical = os.path.join(os.path.realpath(account.pw_dir),
                              "actions-runner-" + make_local_id(owner, name))
     if directory != canonical:
         raise RemoveCLIError("noncanonical runner target")
-    if stage != "COMPLETE":
+    if stage not in ("COMPLETE", "RECONCILE_COMPLETE"):
         fd = _safe_directory(directory)
         try:
             st = os.fstat(fd)
@@ -52,7 +58,11 @@ def checkpoint(argv: list[str], *, sudo_user: str | None = None) -> None:
             os.close(fd)
     elif os.path.lexists(directory):
         raise RemoveCLIError("runner still exists after cleanup")
-    remove_stage(repo, runner, directory, user, stage)
+    if stage in reconciliation:
+        reconcile_incomplete_create_stage(
+            repo, runner, directory, user, reconciliation[stage])
+    else:
+        remove_stage(repo, runner, directory, user, stage)
 
 
 def main() -> int:

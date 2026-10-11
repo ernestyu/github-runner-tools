@@ -51,6 +51,7 @@ for name in "${FILES[@]}"; do
 done
 sudo systemctl is-active --quiet github-runner-tools-executor.service || exit 1
 sudo systemctl is-active --quiet github-runner-tools-web.service || exit 1
+RUNNER_UNITS_BEFORE="$(systemctl list-unit-files 'actions.runner.*.service' --no-legend --no-pager | sort | sha256sum)"
 
 # Pre-existing unexpected log roots require administrator reconciliation.
 if sudo test -e "$LOG_ROOT" || sudo test -L "$LOG_ROOT"; then
@@ -78,7 +79,7 @@ for name in "${FILES[@]}"; do
   fi
 done
 # Stage and validate exact single-line Unit amendment before replacing.
-STAGE="$(mktemp)"
+STAGE="$(mktemp --suffix=.service)"
 sudo cat "$UNIT" > "$STAGE"
 /usr/bin/python3 - "$STAGE" "$BEFORE" "$AFTER" <<'PY'
 import pathlib,sys
@@ -117,8 +118,34 @@ sudo systemctl restart github-runner-tools-executor.service
 sudo systemctl is-active --quiet github-runner-tools-executor.service
 sudo systemctl is-active --quiet github-runner-tools-web.service
 sudo grep -Fqx "$AFTER" "$UNIT"
-# A non-mutating status exercise through Web's already-connected endpoint
-# still requires an explicit acceptance step before Create/Remove.
+[[ "$(systemctl list-unit-files 'actions.runner.*.service' --no-legend --no-pager | sort | sha256sum)" == "$RUNNER_UNITS_BEFORE" ]] || {
+  echo "Production runner unit inventory changed during upgrade" >&2; exit 1;
+}
+# B-01 acceptance: actual root Executor spawns installed Status CLI under
+# actions, subject to its mount namespace. No remote registration is invoked.
+SMOKE_STARTED="$(date +%s)"
+sudo -u grt-web /usr/bin/python3 - <<'PY'
+import sys
+sys.path.insert(0, "/usr/local/lib/github-runner-tools/web")
+from v2_executor_client import fetch_status
+reply = fetch_status()
+if reply.get("ok") is not True:
+    raise SystemExit("Executor CLI Status smoke failed")
+PY
+# Status is read-only; require evidence actually produced by its CLI logger.
+sudo -u actions /usr/bin/python3 - "$SMOKE_STARTED" <<'PY'
+import json,sys
+from pathlib import Path
+from datetime import datetime
+path=Path("/var/log/github-runner-tools/operational.jsonl")
+started=int(sys.argv[1])
+if not path.is_file():
+    raise SystemExit("CLI logger produced no active file")
+records=[json.loads(line) for line in path.read_text().splitlines()[-100:]]
+assert any(r.get("op")=="status" and r.get("event")=="operation_exit"
+           and datetime.fromisoformat(r["ts"]).timestamp()>=started-2
+           for r in records), "No Executor-launched CLI status event found"
+PY
 COMMITTED=1
 trap - EXIT
 echo "CLI logging upgrade installed; verify real Executor CLI log write before Create/Remove."

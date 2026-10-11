@@ -372,8 +372,9 @@ finally:
     shutil.rmtree(tmp, ignore_errors=True)
 PY
 
-# Create retains PTY secret handling. Web Remove intentionally uses the
-# official GitHub CLI --token argv contract per the approved SPEC.
+# Both V1 Web and V2 Executor keep the registered CLI Token out of
+# Create argv. The V1 Remove path retains its originally approved official
+# --token argv contract, while the new V2 path uses one-shot FD + PTY.
 python3 - "$ROOT" <<'PY' || fail "Web final config.sh consumer contract mismatch"
 from pathlib import Path
 import sys
@@ -382,18 +383,23 @@ root = Path(sys.argv[1])
 reg = (root / "scripts/register-runner.sh").read_text()
 rem = (root / "scripts/remove-runner.sh").read_text()
 
-reg_start = reg.index('if [[ "$WEB_MODE" == "1" ]]; then', reg.index('echo "==> Registering runner'))
-reg_end = reg.index("else", reg_start)
-reg_web = reg[reg_start:reg_end]
-if '--mode create' not in reg_web or './config.sh' not in reg_web or '--token "$TOKEN"' in reg_web:
+reg_start = reg.index('echo "==> Registering runner')
+reg_tail = reg[reg_start:]
+if '--mode create' not in reg_tail or './config.sh' not in reg_tail:
     raise SystemExit(1)
-
-rem_start = rem.index('if [[ "$WEB_MODE" == "1" ]]; then', rem.index('echo "==> Removing runner registration'))
-rem_end = rem.index("else", rem_start)
-rem_web = rem[rem_start:rem_end]
-if '--mode remove' in rem_web or './config.sh remove --token "$TOKEN"' not in rem_web:
+if '--token "$TOKEN"' in reg_tail:
     raise SystemExit(1)
-if 'exec {RESULT_FD}>&-' not in rem_web:
+rem_start = rem.index('echo "==> Removing runner registration')
+rem_tail = rem[rem_start:]
+v2 = rem_tail.index('if [[ "$EXECUTOR_MODE" == "1" ]]; then')
+v1 = rem_tail.index('elif ( exec {RESULT_FD}>&-;', v2)
+if '--mode remove -- ./config.sh remove' not in rem_tail[v2:v1]:
+    raise SystemExit(1)
+if '--token "$TOKEN"' in rem_tail[v2:v1]:
+    raise SystemExit(1)
+if './config.sh remove --token "$TOKEN"' not in rem_tail[v1:]:
+    raise SystemExit(1)
+if 'exec {RESULT_FD}>&-' not in rem_tail[v1:]:
     raise SystemExit(1)
 PY
 

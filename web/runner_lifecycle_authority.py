@@ -31,6 +31,7 @@ STAGES = (
     "CREATE_COMPLETE",
 )
 UNKNOWN = "REGISTRATION_OUTCOME_UNKNOWN"
+ABORTED_RECONCILED = "CREATE_ABORTED_RECONCILED"
 
 
 class AuthorityError(RuntimeError):
@@ -205,7 +206,7 @@ def create_stage(repo: str, runner: str, runner_dir: str, stage: str) -> None:
                                          active["instance"])
                 removed = _cycle_record(REMOVE_STATES, repo, runner, runner_dir,
                                         active["instance"])
-                if (previous is None or previous.get("stage") not in ("CREATE_COMPLETE", "LEGACY_VERIFIED")
+                if (previous is None or previous.get("stage") not in ("CREATE_COMPLETE", "LEGACY_VERIFIED", ABORTED_RECONCILED)
                         or removed is None or removed.get("stage") != "REMOVE_COMPLETE"):
                     raise AuthorityError("prior cycle not closed")
             st = os.stat(runner_dir, follow_symlinks=False)
@@ -578,6 +579,131 @@ def remove_stage(repo: str, runner: str, runner_dir: str, user: str, stage: str)
         return {"complete": True}
     finally:
         os.close(fd)
+
+
+def reconcile_incomplete_create_stage(repo: str, runner: str, runner_dir: str,
+                                      user: str, stage: str) -> dict:
+    """Bounded removal of an attested REGISTERED_UNIT_INCOMPLETE Create.
+
+    Ordinary remove_stage(BEGIN) intentionally rejects incomplete Creates.
+    This path admits only the exact no-Unit/no-.service failure class and
+    persists same-instance Remove intent before any remote unregister.
+    """
+    _assert_root()
+    if stage not in ("BEGIN", "CONFIRM_REMOTE_REMOVED", "COMPLETE"):
+        raise AuthorityError("unknown reconciliation checkpoint")
+
+    active = _current(repo, runner, runner_dir)
+    if active is None:
+        raise AuthorityError("missing active create instance")
+    instance = active["instance"]
+
+    if stage != "BEGIN":
+        result = remove_stage(repo, runner, runner_dir, user, stage)
+        if stage == "COMPLETE":
+            fd = _store(CREATE_STATES)
+            try:
+                name = _instance_name(repo, runner, runner_dir, instance)
+                created = _read_record(fd, name)
+                removed = _cycle_record(REMOVE_STATES, repo, runner, runner_dir, instance)
+                if (created is None or created.get("stage") != "REGISTERED_UNIT_INCOMPLETE"
+                        or removed is None or removed.get("stage") != "REMOVE_COMPLETE"):
+                    raise AuthorityError("reconciliation completion state mismatch")
+                item = {**created, "stage": ABORTED_RECONCILED,
+                        "reconciled_from_stage": "REGISTERED_UNIT_INCOMPLETE",
+                        "reconciled_at": int(time.time())}
+                _publish(fd, name, item, replace=True)
+            finally:
+                os.close(fd)
+        return result
+
+    created = _cycle_record(CREATE_STATES, repo, runner, runner_dir, instance)
+    if created is None or created.get("stage") != "REGISTERED_UNIT_INCOMPLETE":
+        raise AuthorityError("incomplete Create stage not eligible")
+    att = _cycle_record(ATTESTATIONS, repo, runner, runner_dir, instance)
+    if att is None or att.get("instance") != instance:
+        raise AuthorityError("missing instance-bound registration attestation")
+    if _cycle_record(REMOVE_STATES, repo, runner, runner_dir, instance) is not None:
+        raise AuthorityError("prior remove attempt requires review")
+    if _cycle_record(UNIT_ATTESTATIONS, repo, runner, runner_dir, instance) is not None:
+        raise AuthorityError("unit attestation conflicts with incomplete reconciliation")
+
+    account = pwd.getpwnam(user)
+    runnerfd = _safe_directory(runner_dir)
+    try:
+        st = os.fstat(runnerfd)
+        if (st.st_uid != account.pw_uid or st.st_gid != account.pw_gid
+                or st.st_mode & 0o022):
+            raise AuthorityError("invalid reconciliation directory")
+        if ((st.st_dev, st.st_ino) !=
+                (created.get("directory_device"), created.get("directory_inode"))
+                or (st.st_dev, st.st_ino) !=
+                (att.get("directory_device"), att.get("directory_inode"))):
+            raise AuthorityError("reconciliation directory identity mismatch")
+        path = os.stat(runner_dir, follow_symlinks=False)
+        if (path.st_dev, path.st_ino) != (st.st_dev, st.st_ino):
+            raise AuthorityError("reconciliation path changed")
+
+        files = att.get("files")
+        if not isinstance(files, dict) or set(files) != {".runner", ".credentials"}:
+            raise AuthorityError("invalid attestation file set")
+        for name in (".runner", ".credentials"):
+            actual = _file_digest(runnerfd, name, account.pw_uid, account.pw_gid)
+            if actual != files.get(name):
+                raise AuthorityError("attested registration file changed")
+
+        meta = os.open(".runner", os.O_RDONLY | os.O_NOFOLLOW |
+                       os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=runnerfd)
+        try:
+            raw = os.read(meta, 16385)
+            if len(raw) > 16384:
+                raise AuthorityError("oversize Runner identity")
+            reg = json.loads(raw)
+        finally:
+            os.close(meta)
+        remote_id = reg.get("agentId")
+        if (reg.get("agentName") != runner
+                or reg.get("gitHubUrl", "").rstrip("/").lower()
+                != ("https://github.com/" + repo).lower()
+                or isinstance(remote_id, bool) or not isinstance(remote_id, int)
+                or remote_id <= 0 or remote_id != att.get("github_runner_id")):
+            raise AuthorityError("reconciliation remote identity mismatch")
+
+        try:
+            os.stat(".service", dir_fd=runnerfd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AuthorityError("service record exists during incomplete reconciliation")
+    finally:
+        os.close(runnerfd)
+
+    from grt_web_common import canonical_service_name
+    service = canonical_service_name(repo, runner)
+    if os.path.lexists("/etc/systemd/system/" + service):
+        raise AuthorityError("systemd Unit exists during incomplete reconciliation")
+
+    fd = _store(REMOVE_STATES)
+    try:
+        name = _instance_name(repo, runner, runner_dir, instance)
+        item = {
+            "schema": 2,
+            "instance": instance,
+            "repository": repo,
+            "runner": runner,
+            "runner_dir": runner_dir,
+            "directory_device": st.st_dev,
+            "directory_inode": st.st_ino,
+            "github_runner_id": remote_id,
+            "stage": "REMOTE_REMOVE_OUTCOME_UNKNOWN",
+            "origin": "incomplete-create-reconciliation",
+            "create_stage_at_begin": "REGISTERED_UNIT_INCOMPLETE",
+            "created_at": int(time.time()),
+        }
+        _publish(fd, name, item, replace=False)
+    finally:
+        os.close(fd)
+    return {"device": st.st_dev, "inode": st.st_ino, "github_runner_id": remote_id}
 
 
 def create_unit_attestation(repo: str, runner: str, runner_dir: str,

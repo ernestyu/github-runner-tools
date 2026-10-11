@@ -804,11 +804,15 @@ if [[ "$WEB_MODE" == "1" ]]; then
     die "Could not validate privileged systemd service state."
   if [[ "$SERVICE_STATE" != "absent" ]]; then
     REMOVE_STAGE="service_stop_failed"
+    grt_log service_stop begin
     web_service_operation service_stop "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME" ||
       die "Privileged service stop failed."
+    grt_log service_stop ok
     REMOVE_STAGE="service_uninstall_failed"
+    grt_log service_uninstall begin
     web_service_operation service_uninstall "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME" ||
       die "Privileged service uninstall failed."
+    grt_log service_uninstall ok
   fi
   REMOVE_STAGE="service_uninstall_failed"
   FINAL_SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
@@ -827,12 +831,16 @@ if [[ "$WEB_MODE" == "1" ]]; then
   python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" verify "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" "$RECORD_PROOF" ||
     die "Local service record identity changed after reconciliation."
 else
+  grt_log service_stop begin
   echo "==> Stopping service..."
   if ! sudo ./svc.sh stop; then
     echo "WARNING: Service stop failed; continuing to service uninstall in case it is already stopped." >&2
   fi
+  grt_log service_stop ok
+  grt_log service_uninstall begin
   echo "==> Uninstalling service..."
   uninstall_service_safely
+  grt_log service_uninstall ok
 fi
 
 grt_log remote_removal begin
@@ -888,6 +896,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
 else
   ./config.sh remove --token "$TOKEN"
   unset TOKEN
+  grt_log remote_removal ok
   remove_lifecycle_stage CONFIRM_REMOTE_REMOVED
 fi
 
@@ -895,8 +904,10 @@ REMOVE_STAGE="local_cleanup_failed"
 cd "$RUNNER_BASE_DIR"
 case "$RUNNER_DIR" in "$RUNNER_BASE_DIR"/actions-runner-*) ;; *) die "Safety check failed; refusing to delete unexpected path: $RUNNER_DIR" ;; esac
 
+grt_log local_cleanup begin
 echo "==> Deleting local runner directory..."
 remove_local_runner_dir
+grt_log local_cleanup ok
 remove_lifecycle_stage COMPLETE ||
   die "Runner directory deletion completed but durable Remove closeout failed."
 

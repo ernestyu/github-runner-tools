@@ -60,7 +60,7 @@ class AuthorityTransportTests(unittest.TestCase):
             def create_stage(*args): pass
             def create_unit_attestation(*args): pass
             def normalize_new_registration(*args): pass
-            def verify_service_install_provenance(*args): pass
+            def verify_service_install_provenance(*args): return {"service_wrapper": {}}
         """))
         (self.auth / "v2_unit_installer.py").write_text(textwrap.dedent("""
             import sys
@@ -68,7 +68,7 @@ class AuthorityTransportTests(unittest.TestCase):
                 def __init__(self, reason):
                     super().__init__(reason)
                     self.reason=reason
-            def install_canonical_unit(repo, runner, directory, user):
+            def install_canonical_unit(repo, runner, directory, user, expected_wrapper):
                 print("TOKEN_SHOULD_NOT_CONTROL_REASON authority_install_failed", file=sys.stderr)
                 if runner == "exit64":
                     raise UnitInstallError("runner_service_entrypoint_missing")

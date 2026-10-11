@@ -196,8 +196,8 @@ class FreshRunnerBootstrapE2E(unittest.TestCase):
 
         self.assertTrue(wrapper.is_file())
         self.assertTrue(service_template.is_file())
-        self.assertTrue(svc.is_file())
         self.assertTrue(config.is_file())
+        self.assertFalse(svc.exists())
 
         # Cross-check the two bootstrap-critical files against the audited
         # upstream Git blobs in addition to the whole-archive SHA-256 pin.
@@ -213,8 +213,22 @@ class FreshRunnerBootstrapE2E(unittest.TestCase):
         service = canonical_service_name(repository, runner_name)
 
         # Frozen SPEC permits a faithful isolated registration fixture instead
-        # of a real GitHub registration. Only registration outputs are
-        # synthesized; archive-origin files remain exactly as extracted.
+        # of a real GitHub registration. The official config flow creates the
+        # root svc.sh control wrapper; materialize it from the separately pinned
+        # upstream systemd.svc.sh.template, while leaving every archive-origin
+        # file exactly as extracted.
+        svc_template = (
+            FIXTURES / "actions-runner-v2.328.0-systemd.svc.sh.template"
+        ).read_text()
+        svc.write_text(
+            svc_template
+            .replace("{{SvcNameVar}}", service)
+            .replace(
+                "{{SvcDescription}}",
+                f"GitHub Actions Runner ({repository}.{runner_name})"))
+        svc.chmod(0o755)
+
+        # Faithful isolated registration identity/credential outputs.
         (runner_dir / ".runner").write_text(json.dumps({
             "agentName": runner_name,
             "agentId": 100000 + os.getpid(),
@@ -236,6 +250,8 @@ class FreshRunnerBootstrapE2E(unittest.TestCase):
             for name in files:
                 os.chown(Path(root) / name,
                          self.account.pw_uid, self.account.pw_gid)
+
+        self.assertTrue(svc.is_file())
 
         # Live-regression preconditions, now proven from a real official
         # extraction rather than a hand-built archive-layout fixture.

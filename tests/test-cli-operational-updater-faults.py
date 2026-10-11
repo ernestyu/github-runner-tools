@@ -39,6 +39,7 @@ if [[ "$cmd" == stat && "${1:-}" == -c ]]; then
   case "${@: -1}" in
     "$TEST_UNIT") echo "root:root:644:regular file";;
     "$TEST_CLI") echo "root:root:755:directory";;
+    "$TEST_WEB") echo "root:root:755:directory";;
     "$TEST_LOCK") echo "root:actions:660";;
     "$TEST_LOG") echo "root:actions:2770:directory";;
     "$TEST_LOG/operational.lock") echo "actions:actions:600:1:regular file";;
@@ -214,7 +215,7 @@ class TransactionFaultTests(unittest.TestCase):
         (self.scripts / SOURCE.name).write_text(source)
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
                         MOCK_DIR=str(self.bin), APPROVED_SHA=SHA,
-                        TEST_UNIT=str(self.unit), TEST_CLI=str(self.cli),
+                        TEST_UNIT=str(self.unit), TEST_CLI=str(self.cli), TEST_WEB=str(self.web),
                         TEST_LOCK=str(self.lock), TEST_LOG=str(self.log),
                         TEST_BACKUPS=str(self.backups),
                         SERVICE_STATE=str(self.state), RUNNER_UNITS=str(self.runner_units),

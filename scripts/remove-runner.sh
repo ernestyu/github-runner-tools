@@ -12,6 +12,7 @@ GRT_LOG_REPO="none"
 GRT_LOG_RUNNER="none"
 GRT_LOG_STAGE="none"
 GRT_LOG_EVENT="preflight"
+GRT_LOG_LAST_REASON="none"
 grt_log() {
   local event="$1" result="$2" reason="${3:-none}" rc="${4:--1}"
   # An isolated CI source-tree CLI uses the same logger, with a test-only
@@ -39,9 +40,13 @@ grt_log() {
   return 0
 }
 grt_log_finish() {
-  local rc="$1"
+  local rc="$1" reason="none"
   if [[ "$GRT_LOG_READY" == "1" ]]; then
-    grt_log operation_exit "$([[ "$rc" == 0 ]] && echo ok || echo failed)" "$([[ "$rc" == 0 ]] && echo none || echo unexpected_cli_failure)" "$rc" || :
+    if [[ "$rc" != 0 ]]; then
+      reason="$GRT_LOG_LAST_REASON"
+      [[ "$reason" != "none" ]] || reason="$(grt_reason_for_event)"
+    fi
+    grt_log operation_exit "$([[ "$rc" == 0 ]] && echo ok || echo failed)" "$reason" "$rc" || :
   fi
 }
 
@@ -153,6 +158,7 @@ usage() {
 Usage:
   remove-runner.sh [--base-dir PATH] OWNER/REPO
   remove-runner.sh [--base-dir PATH] --recover-local OWNER/REPO
+  remove-runner.sh [--base-dir PATH] --reconcile-incomplete-create OWNER/REPO
 
 Environment variable:
   RUNNER_BASE_DIR
@@ -182,6 +188,9 @@ grt_reason_for_event() {
   esac
 }
 die() {
+  local safe_reason
+  safe_reason="$GRT_LOG_LAST_REASON"
+  [[ "$safe_reason" != "none" ]] || safe_reason="$(grt_reason_for_event)"
   if [[ "$GRT_LOG_READY" == 1 ]]; then
     # A remote outcome may be unknown despite CLI exit 1. Never imply retry.
     if [[ "$GRT_LOG_EVENT" == "remote_registration" || "$GRT_LOG_EVENT" == "remote_removal" ]]; then
@@ -190,7 +199,7 @@ die() {
     case "$GRT_LOG_STAGE" in
       REGISTRATION_OUTCOME_UNKNOWN|REMOTE_REMOVE_OUTCOME_UNKNOWN)
         grt_log "$GRT_LOG_EVENT" unknown remote_result_uncertain || : ;;
-      *) grt_log "$GRT_LOG_EVENT" failed "$(grt_reason_for_event)" || : ;;
+      *) GRT_LOG_LAST_REASON="$safe_reason"; grt_log "$GRT_LOG_EVENT" failed "$safe_reason" || : ;;
     esac
     fi
   fi
@@ -564,11 +573,12 @@ if [[ ${EUID} -eq 0 ]]; then die "Do not run this script as root. Run it as the 
 for cmd in jq id awk tr sed sha256sum cut find systemctl flock stat python3; do require_command "$cmd"; done
 if [[ "$WEB_MODE" != "1" ]]; then require_command sudo; fi
 
-CLI_BASE_DIR=""; RECOVER_LOCAL=0; POSITIONAL=()
+CLI_BASE_DIR=""; RECOVER_LOCAL=0; RECONCILE_INCOMPLETE=0; POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base-dir) [[ $# -ge 2 ]] || die "--base-dir requires a value"; CLI_BASE_DIR="$2"; shift 2 ;;
     --recover-local) RECOVER_LOCAL=1; shift ;;
+    --reconcile-incomplete-create) RECONCILE_INCOMPLETE=1; shift ;;
     --web-worker) WEB_MODE=1; shift ;;
     --executor-mode) WEB_MODE=1; EXECUTOR_MODE=1; shift ;;
     --token-fd) [[ $# -ge 2 ]] || die "--token-fd requires a value"; TOKEN_FD="$2"; shift 2 ;;
@@ -592,7 +602,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
     [[ "${GRT_WEB_CONTEXT:-0}" == "1" ]] || die "Internal Web mode requires dispatcher context."
   fi
   [[ "$PRIVILEGED_FD" =~ ^[0-9]+$ && "$LOCK_ALREADY_HELD" == "1" ]] || die "Incomplete internal Web lifecycle context."
-  if [[ "$RECOVER_LOCAL" != "1" ]]; then
+  if [[ "$RECOVER_LOCAL" != "1" && "$RECONCILE_INCOMPLETE" != "1" ]]; then
     [[ "$TOKEN_FD" =~ ^[0-9]+$ ]] || die "Normal noninteractive removal requires token FD."
     if [[ "$EXECUTOR_MODE" != "1" ]]; then
       [[ "$RESULT_FD" =~ ^[0-9]+$ ]] || die "Web worker removal requires result FD."
@@ -758,6 +768,75 @@ fi
 
 [[ -n "$RUNNER_DIR" ]] || die "Runner directory not found for $REPO"
 [[ -f "$RUNNER_DIR/.runner" ]] || die "Configured runner metadata not found: $RUNNER_DIR/.runner"
+
+if [[ "$RECONCILE_INCOMPLETE" == "1" ]]; then
+  [[ "$WEB_MODE" != "1" ]] || die "Incomplete Create reconciliation is interactive CLI-only."
+  [[ "$RECOVER_LOCAL" != "1" ]] || die "Recovery modes cannot be combined."
+  [[ -x "$RUNNER_DIR/config.sh" ]] || die "Runner config.sh is missing or not executable."
+  RUNNER_NAME="$(jq -er '.agentName' "$RUNNER_DIR/.runner")" ||
+    die "Configured Runner name is unavailable."
+  GRT_LOG_RUNNER="$RUNNER_NAME"
+  cat <<INFO
+Repository : $REPO
+Runner dir : $RUNNER_DIR
+Mode       : incomplete Create reconciliation
+Runner     : $RUNNER_NAME
+
+This path is only for an authority-attested REGISTERED_UNIT_INCOMPLETE
+Create with no Unit and no .service. It writes durable Remove intent before
+calling the official GitHub unregister flow. Any uncertain remote result
+preserves all local evidence and stops.
+INFO
+  TOKEN="$(read_tty_line "Paste fresh GitHub removal token: " 1)"
+  [[ -n "$TOKEN" ]] || die "Removal token cannot be empty."
+  CONFIRM="$(read_tty_line "Type RECONCILE-REMOVE to unregister this failed Create: ")"
+  [[ "$CONFIRM" == "RECONCILE-REMOVE" ]] || die "Cancelled."
+
+  GRT_LOG_STAGE="BEGIN"
+  grt_log lifecycle_checkpoint begin
+  cli_remove_authority RECONCILE_BEGIN
+  GRT_LOG_SIDE_EFFECT=1
+  grt_log lifecycle_checkpoint ok
+
+  cd "$RUNNER_DIR"
+  GRT_LOG_STAGE="REMOTE_REMOVE_OUTCOME_UNKNOWN"
+  grt_log remote_removal begin
+  if ./config.sh remove --token "$TOKEN"; then
+    unset TOKEN
+    grt_log remote_removal ok
+  else
+    REMOVE_EXIT=$?
+    unset TOKEN
+    GRT_LOG_LAST_REASON="remote_result_uncertain"
+    grt_log remote_removal unknown remote_result_uncertain
+    die "Runner registration removal failed or remains uncertain."
+  fi
+
+  GRT_LOG_STAGE="CONFIRM_REMOTE_REMOVED"
+  grt_log lifecycle_checkpoint begin
+  cli_remove_authority RECONCILE_CONFIRM_REMOTE_REMOVED
+  grt_log lifecycle_checkpoint ok
+
+  cd "$RUNNER_BASE_DIR"
+  case "$RUNNER_DIR" in
+    "$RUNNER_BASE_DIR"/actions-runner-*) ;;
+    *) die "Safety check failed; refusing to delete unexpected path: $RUNNER_DIR" ;;
+  esac
+  GRT_LOG_STAGE="REGISTERED_REMOVED_LOCAL_CLEANUP_PENDING"
+  grt_log local_cleanup begin
+  rm -rf -- "$RUNNER_DIR"
+  [[ ! -e "$RUNNER_DIR" && ! -L "$RUNNER_DIR" ]] ||
+    die "Runner directory still exists after reconciliation cleanup."
+  grt_log local_cleanup ok
+
+  GRT_LOG_STAGE="CREATE_ABORTED_RECONCILED"
+  grt_log lifecycle_checkpoint begin
+  cli_remove_authority RECONCILE_COMPLETE
+  grt_log lifecycle_checkpoint ok
+  echo "Incomplete Create reconciled and removed successfully."
+  exit 0
+fi
+
 [[ -x "$RUNNER_DIR/config.sh" && -x "$RUNNER_DIR/svc.sh" ]] || die "Runner management scripts are missing from: $RUNNER_DIR"
 
 cat <<INFO

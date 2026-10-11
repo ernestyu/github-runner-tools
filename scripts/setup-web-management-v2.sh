@@ -152,7 +152,7 @@ for file in v2_executor_contract.py v2_executor_transport.py v2_token_fd.py \
     { echo "Missing V2 source: $file; V1 unchanged" >&2; exit 1; }
 done
 for file in register-runner.sh remove-runner.sh status-runners.sh \
-            web-service-record.py web-runner-cleanup.py; do
+            cli-operational-logger.py web-service-record.py web-runner-cleanup.py; do
   [[ -f "$ROOT/scripts/$file" && ! -L "$ROOT/scripts/$file" ]] ||
     { echo "Missing V2 CLI source: $file; V1 unchanged" >&2; exit 1; }
 done
@@ -217,6 +217,21 @@ for file in register-runner.sh remove-runner.sh status-runners.sh \
     { echo "Missing fixed CLI artifact $file" >&2; exit 1; }
   sudo install -o root -g root -m 0755 "$ROOT/scripts/$file" "$CLI_ROOT/$file"
 done
+
+# CLI logger's fixed local sink is created only by authorized root installation.
+# Refuse unexpected pre-existing content; do not repair insecure paths.
+if sudo test -e /var/log/github-runner-tools || sudo test -L /var/log/github-runner-tools; then
+  [[ "$(sudo stat -c '%U:%G:%a:%F' /var/log/github-runner-tools)" == "root:actions:2770:directory" ]] ||
+    { echo "Unsafe existing CLI log directory" >&2; exit 1; }
+else
+  sudo install -d -o root -g actions -m 2770 /var/log/github-runner-tools
+fi
+if sudo test -e /var/log/github-runner-tools/operational.lock || sudo test -L /var/log/github-runner-tools/operational.lock; then
+  [[ "$(sudo stat -c '%U:%G:%a:%h:%F' /var/log/github-runner-tools/operational.lock)" == "actions:actions:600:1:regular file" ]] ||
+    { echo "Unsafe existing CLI log lock" >&2; exit 1; }
+else
+  sudo install -o actions -g actions -m 0600 /dev/null /var/log/github-runner-tools/operational.lock
+fi
 
 # Preserve all existing configuration fields; only opt into V2 routing.
 TMP_CONFIG="$(mktemp)"
@@ -284,7 +299,7 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-ReadWritePaths=$RUNNER_HOME /etc/systemd/system /run/github-runner-tools /run/lock/github-runner-tools $STATE_DIR
+ReadWritePaths=$RUNNER_HOME /etc/systemd/system /run/github-runner-tools /run/lock/github-runner-tools $STATE_DIR /var/log/github-runner-tools
 
 [Install]
 WantedBy=multi-user.target

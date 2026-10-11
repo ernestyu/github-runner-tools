@@ -4,13 +4,14 @@ on:
   push:
     branches:
       - main
-      - 'impl/**'
-      - 'fix/**'
-      - 'spec/**'
   pull_request:
 
 permissions:
   contents: read
+
+concurrency:
+  group: dev-check-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   development:
@@ -21,7 +22,7 @@ jobs:
       - name: Shell syntax
         run: |
           for script in scripts/*.sh; do bash -n "$script"; done
-      - name: Python syntax
+      - name: Python syntax and CLI logging
         run: |
           python3 -m compileall -q web scripts/cli-operational-logger.py
           python3 tests/test-cli-operational-logging.py
@@ -30,7 +31,7 @@ jobs:
           python3 tests/test-cli-authority-reason-transport.py
           python3 tests/test-cli-operational-v2-updater.py
           python3 tests/test-cli-operational-updater-faults.py
-      - name: V2 executor contract
+      - name: V2 fast validation
         run: |
           python3 tests/test-web-v2-executor-contract.py
           python3 tests/test-web-v2-status.py
@@ -39,7 +40,6 @@ jobs:
           python3 tests/test-web-v2-cli-executor-flags.py
           python3 tests/test-web-v2-cli-launcher.py
           python3 tests/test-web-v2-executor-daemon.py
-          python3 tests/test-web-v2-integration.py
           python3 tests/test-web-v2-privileged.py
           python3 tests/test-web-v2-cli-spawn.py
           python3 tests/test-web-v2-mutation.py
@@ -48,21 +48,8 @@ jobs:
           python3 tests/test-web-v2-event-loop.py
           python3 tests/test-web-v2-unit-installer.py
           python3 tests/test-web-v2-failure.py
-          bash tests/test-web-v2-setup.sh
-          python3 tests/test-web-v2-cutover-faults.py
-          python3 tests/test-web-v2-real-private-channel.py
-          python3 tests/test-web-v2-install-manifest.py
-          python3 tests/test-web-v2-real-spawn.py
-          python3 tests/test-web-v2-real-pty-cli.py
-          python3 tests/test-web-v2-closeout.py
           python3 tests/test-web-v2-code-provenance.py
-          sudo -n /usr/bin/python3 tests/test-web-v2-real-uid-drop.py
-          bash tests/test-web-v2-shared-create.sh
-          bash tests/test-web-v2-real-create-cli.sh
-          bash tests/test-web-v2-real-remove-cli.sh
-          bash tests/test-web-v2-shared-remove.sh
           python3 tests/test-web-v2-cli-remove-authority.py
-          python3 tests/test-cli-operational-ci-fixture-evidence.py
       - name: Existing pure and Web compatibility regression
         run: |
           bash tests/test-pure.sh

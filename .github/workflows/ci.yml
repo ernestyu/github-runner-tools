@@ -59,6 +59,7 @@ jobs:
           bash tests/test-web-v2-real-remove-cli.sh
           bash tests/test-web-v2-shared-remove.sh
           python3 tests/test-web-v2-cli-remove-authority.py
+          python3 tests/test-cli-operational-ci-fixture-evidence.py
       - name: Existing pure and Web compatibility regression
         run: |
           bash tests/test-pure.sh

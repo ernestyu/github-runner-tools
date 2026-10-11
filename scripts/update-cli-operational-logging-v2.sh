@@ -32,12 +32,15 @@ sudo test ! -L "$UNIT" || exit 1
 sudo grep -Fqx 'ProtectSystem=strict' "$UNIT" || exit 1
 BEFORE='ReadWritePaths=/home/actions /etc/systemd/system /run/github-runner-tools /run/lock/github-runner-tools /var/lib/github-runner-tools'
 AFTER="$BEFORE $LOG_ROOT"
+UNIT_HAS_LOG=0
 if sudo grep -Fqx "$AFTER" "$UNIT"; then
-  echo "Logger upgrade already present: stop and reconcile installed code" >&2; exit 1
+  UNIT_HAS_LOG=1
+  UNIT_EXPECTED_RW="$AFTER"
+elif sudo grep -Fqx "$BEFORE" "$UNIT"; then
+  UNIT_EXPECTED_RW="$BEFORE"
+else
+  echo "Unknown Executor mount whitelist; not overwriting" >&2; exit 1
 fi
-sudo grep -Fqx "$BEFORE" "$UNIT" || {
-  echo "Unknown Executor mount whitelist; not overwriting" >&2; exit 1;
-}
 # Compare complete exact installed V2 unit against the frozen generated baseline.
 BASELINE="$(mktemp --suffix=.service)"
 cat > "$BASELINE" <<'UNIT_EOF'
@@ -70,6 +73,15 @@ ReadWritePaths=/home/actions /etc/systemd/system /run/github-runner-tools /run/l
 [Install]
 WantedBy=multi-user.target
 UNIT_EOF
+if [[ "$UNIT_HAS_LOG" == 1 ]]; then
+  /usr/bin/python3 - "$BASELINE" "$BEFORE" "$AFTER" <<'PY'
+import pathlib,sys
+p=pathlib.Path(sys.argv[1])
+lines=p.read_text().splitlines()
+assert lines.count(sys.argv[2]) == 1
+p.write_text("\n".join(sys.argv[3] if x == sys.argv[2] else x for x in lines) + "\n")
+PY
+fi
 sudo cmp -s "$BASELINE" "$UNIT" || { echo "UNKNOWN_EXECUTOR_UNIT_BASELINE" >&2; rm -f "$BASELINE"; exit 1; }
 BASELINE_SHA="$(sha256sum "$BASELINE" | cut -d' ' -f1)"
 rm -f "$BASELINE"
@@ -117,10 +129,11 @@ done
 # Stage and validate exact single-line Unit amendment before replacing.
 STAGE="$(mktemp --suffix=.service)"
 sudo cat "$UNIT" > "$STAGE"
-/usr/bin/python3 - "$STAGE" "$BEFORE" "$AFTER" <<'PY'
+/usr/bin/python3 - "$STAGE" "$UNIT_EXPECTED_RW" "$AFTER" <<'PY'
 import pathlib,sys
 p=pathlib.Path(sys.argv[1]); lines=p.read_text().splitlines()
-assert lines.count(sys.argv[2])==1 and not any(x.startswith("ReadWritePaths=") and x!=sys.argv[2] for x in lines)
+assert lines.count(sys.argv[2])==1 and not any(
+    x.startswith("ReadWritePaths=") and x!=sys.argv[2] for x in lines)
 p.write_text("\n".join(sys.argv[3] if x==sys.argv[2] else x for x in lines)+"\n")
 PY
 systemd-analyze verify "$STAGE" >/dev/null 2>&1 || { rm -f "$STAGE"; exit 1; }
@@ -159,8 +172,12 @@ rollback() {
   sudo systemctl is-active --quiet github-runner-tools-web.service || failed=1
   sudo test -S /run/github-runner-tools/executor.sock || failed=1
   sudo systemctl show github-runner-tools-executor.service -p ProtectSystem --value | grep -Fx strict >/dev/null || failed=1
-  if sudo systemctl show github-runner-tools-executor.service -p ReadWritePaths --value | grep -Fq "$LOG_ROOT"; then
-    failed=1
+  if [[ "$UNIT_HAS_LOG" == 1 ]]; then
+    sudo systemctl show github-runner-tools-executor.service -p ReadWritePaths --value | grep -Fq "$LOG_ROOT" || failed=1
+  else
+    if sudo systemctl show github-runner-tools-executor.service -p ReadWritePaths --value | grep -Fq "$LOG_ROOT"; then
+      failed=1
+    fi
   fi
   # Verify the restored socket speaks the existing read-only Status protocol.
   sudo -u grt-web /usr/bin/python3 - <<'ROLLBACK_STATUS' || failed=1
@@ -260,5 +277,5 @@ for name in "${WEB_FILES[@]}"; do
 done
 COMMITTED=1
 trap - EXIT
-echo "CLI logging upgrade installed; verify real Executor CLI log write before Create/Remove."
+echo "CLI logging/remediation update installed; real Executor CLI Status log write verified."
 echo "Root-only backup available at: $BACKUP"

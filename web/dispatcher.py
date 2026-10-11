@@ -382,10 +382,11 @@ class Runtime:
         )
         runner_name = str(request["runner_name"])
         version = str(request["version"])
-        verify_service_install_provenance(
+        provenance = verify_service_install_provenance(
             repository, runner_name, runner_dir, self.runner_user, version)
         service = install_canonical_unit(
             repository, runner_name, runner_dir, self.runner_user,
+            provenance["service_wrapper"],
             timeout=self._remaining_timeout(deadline) or 20,
         )
         self.validate_unit(repository, runner_dir, runner_name, service, deadline=deadline)

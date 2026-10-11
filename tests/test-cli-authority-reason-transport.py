@@ -24,6 +24,7 @@ class AuthorityTransportTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="grt-authority-transport-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        self.addCleanup(self._restore_tmp_ownership)
         self.user = pwd.getpwuid(os.getuid())
         self.repo = f"fixture/transport-{os.getpid()}"
         self.local_id = f"fixture--transport-{os.getpid()}"
@@ -83,6 +84,13 @@ class AuthorityTransportTests(unittest.TestCase):
         self.exit99.write_text("#!/usr/bin/env python3\nimport sys\nprint('runner_service_entrypoint_missing TOKEN_FAKE', file=sys.stderr)\nsys.exit(99)\n")
         self.exit99.chmod(0o755)
         subprocess.run(["sudo", "-n", "chown", "root:root", str(self.exit99)], check=True)
+
+    def _restore_tmp_ownership(self):
+        if hasattr(self, "root") and self.root.exists():
+            subprocess.run(
+                ["sudo", "-n", "chown", "-R",
+                 f"{os.getuid()}:{os.getgid()}", str(self.root)],
+                capture_output=True)
 
     def run_case(self, runner, authority):
         case = self.root / runner

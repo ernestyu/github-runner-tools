@@ -93,7 +93,7 @@ class LoggerTests(unittest.TestCase):
             p = Path(root)
             (p / "operational.lock").touch(mode=0o600)
             os.chmod(p / "operational.lock", 0o600)
-            (p / "operational.jsonl").write_text('{"v":1}\\n')
+            (p / "operational.jsonl").write_text('{"v":1}\n')
             os.chmod(p / "operational.jsonl", 0o600)
             os.link(p / "operational.jsonl", p / "alias")
             with self.assertRaises(mod.LoggingUnavailable):
@@ -112,7 +112,7 @@ class LoggerTests(unittest.TestCase):
                 for i, minutes in enumerate((3, 2, 1)):
                     stamp=(before-dt.timedelta(minutes=minutes)).strftime("%Y%m%dT%H%M%S%fZ")
                     name=p / f"operational.{stamp}.{i:032x}.jsonl"
-                    name.write_text('{"v":1}\\n' * 6)
+                    name.write_text('{"v":1}\n' * 6)
                     os.chmod(name, 0o600)
                 with mod.Logger(root):
                     pass
@@ -127,7 +127,7 @@ class LoggerTests(unittest.TestCase):
             (p / "operational.lock").touch(mode=0o600)
             os.chmod(p / "operational.lock", 0o600)
             active=p / "operational.jsonl"
-            active.write_text('{"v":1}\\n')
+            active.write_text('{"v":1}\n')
             os.chmod(active, 0o600)
             old=(dt.datetime.now(dt.timezone.utc)-dt.timedelta(days=20)).timestamp()
             os.utime(active, (old, old))

@@ -55,4 +55,14 @@ def diagnostic(runtime, request, error: str, *,
                 result["outcome"] = "UNKNOWN_RECONCILIATION_REQUIRED"
     except (AuthorityError, OSError, TypeError, ValueError, KeyError):
         pass
+    # This ID is also returned to Web. Log only constrained fixed enums,
+    # never raw subprocess output, CLI arguments, user input or secret bytes.
+    safe_errors = {"outcome_unknown", "completion_not_verified", "lifecycle_failed"}
+    safe_stage = result.get("stage") if result.get("stage") in SAFE_STAGES else "absent"
+    safe_error = error if error in safe_errors else "other"
+    safe_exit = result.get("exit_code", "unknown")
+    import sys
+    print("v2_mutation_result request_id=%s op=%s error=%s stage=%s outcome=%s exit=%s" %
+          (result["correlation_id"], request.op, safe_error, safe_stage,
+           result["outcome"], safe_exit), file=sys.stderr, flush=True)
     return result

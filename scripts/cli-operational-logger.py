@@ -52,6 +52,15 @@ class Logger:
         # production directory from an unprivileged CLI.
         if os.path.islink(self.root):
             raise LoggingUnavailable("unsafe_directory")
+        if self.root == ROOT:
+            # An untrusted ancestor could redirect the fixed log sink.
+            walk = "/"
+            for part in ROOT.strip("/").split("/")[:-1]:
+                walk = os.path.join(walk, part)
+                parent_st = os.lstat(walk)
+                if (not stat.S_ISDIR(parent_st.st_mode) or parent_st.st_uid != 0
+                        or parent_st.st_mode & 0o022):
+                    raise LoggingUnavailable("unsafe_directory_parent")
         st = os.stat(self.root)
         if not stat.S_ISDIR(st.st_mode):
             raise LoggingUnavailable("unsafe_directory")
@@ -59,21 +68,27 @@ class Logger:
             actions = pwd.getpwnam("actions")
             if st.st_uid != 0 or st.st_gid != actions.pw_gid or stat.S_IMODE(st.st_mode) != 0o2770:
                 raise LoggingUnavailable("unsafe_directory")
-        self.df = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        self.lf = os.open(LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=self.df)
-        if not owned(os.fstat(self.lf), 0o600, self.uid):
-            raise LoggingUnavailable("unsafe_lock")
-        until = time.monotonic() + 2
-        while True:
-            try:
-                fcntl.flock(self.lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= until:
-                    raise LoggingUnavailable("lock_timeout")
-                time.sleep(.02)
-        self.maintain()
-        return self
+        try:
+            self.df = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            self.lf = os.open(LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=self.df)
+            if not owned(os.fstat(self.lf), 0o600, self.uid):
+                raise LoggingUnavailable("unsafe_lock")
+            until = time.monotonic() + 2
+            while True:
+                try:
+                    fcntl.flock(self.lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= until:
+                        raise LoggingUnavailable("lock_timeout")
+                    time.sleep(.02)
+            self.maintain()
+            return self
+        except BaseException:
+            self.__exit__(None, None, None)
+            self.df = None
+            self.lf = None
+            raise
 
     def __exit__(self, *_):
         if self.lf is not None:
@@ -127,8 +142,8 @@ class Logger:
                 os.close(fd)
         return active, sorted(closed), total
 
-    def rotate(self):
-        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    def rotate(self, at=None):
+        stamp = (at or dt.datetime.now(dt.timezone.utc)).strftime("%Y%m%dT%H%M%S%fZ")
         name = f"operational.{stamp}.{secrets.token_hex(16)}.jsonl"
         os.rename(ACTIVE, name, src_dir_fd=self.df, dst_dir_fd=self.df)
 
@@ -136,7 +151,8 @@ class Logger:
         active, closed, total = self.paths()
         now = dt.datetime.now(dt.timezone.utc)
         if active and active.st_size and (now.timestamp() - active.st_mtime > RETENTION or active.st_size >= MAX_FILE):
-            self.rotate()
+            expired = now.timestamp() - active.st_mtime > RETENTION
+            self.rotate(dt.datetime.fromtimestamp(active.st_mtime, dt.timezone.utc) if expired else None)
             active, closed, total = self.paths()
         for ts, name, size in closed:
             if (now - ts).total_seconds() > RETENTION:

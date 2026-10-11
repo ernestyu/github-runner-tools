@@ -3,6 +3,8 @@ name: Integration Check
 on:
   workflow_dispatch:
   push:
+    branches:
+      - 'impl/web-management-v2-cli-first-20261010' # TEMPORARY CI VERIFICATION ONLY
     tags:
       - 'v*'
 

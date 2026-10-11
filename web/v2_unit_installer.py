@@ -76,7 +76,8 @@ def _digest_fd(fd: int) -> str:
     return h.hexdigest()
 
 
-def bootstrap_service_entrypoint(directory: str, user: str) -> str:
+def bootstrap_service_entrypoint(directory: str, user: str,
+                                 expected_wrapper: dict | None = None) -> str:
     """Publish verified bin/runsvc.sh as root-level runsvc.sh, no overwrite."""
     try:
         account = pwd.getpwnam(user)
@@ -120,6 +121,15 @@ def bootstrap_service_entrypoint(directory: str, user: str) -> str:
                         or not (source_st.st_mode & stat.S_IXUSR)):
                     raise UnitInstallError("runner_service_entrypoint_invalid")
                 source_digest = _digest_fd(sourcefd)
+                if expected_wrapper is not None:
+                    if (not isinstance(expected_wrapper, dict)
+                            or expected_wrapper.get("device") != source_st.st_dev
+                            or expected_wrapper.get("inode") != source_st.st_ino
+                            or expected_wrapper.get("sha256") != source_digest
+                            or expected_wrapper.get("size") != source_st.st_size
+                            or expected_wrapper.get("mode") !=
+                            f"{stat.S_IMODE(source_st.st_mode):04o}"):
+                        raise UnitInstallError("runner_service_entrypoint_invalid")
 
                 try:
                     os.stat("runsvc.sh", dir_fd=runnerfd, follow_symlinks=False)
@@ -171,6 +181,19 @@ def bootstrap_service_entrypoint(directory: str, user: str) -> str:
                     finally:
                         os.close(checkfd)
 
+                    source_path_st = os.stat(
+                        "runsvc.sh", dir_fd=binfd, follow_symlinks=False)
+                    if (source_path_st.st_dev, source_path_st.st_ino,
+                            source_path_st.st_ctime_ns) != (
+                            source_st.st_dev, source_st.st_ino,
+                            source_st.st_ctime_ns):
+                        raise UnitInstallError("runner_service_entrypoint_invalid")
+                    temp_path_st = os.stat(
+                        temp, dir_fd=runnerfd, follow_symlinks=False)
+                    if (temp_path_st.st_dev, temp_path_st.st_ino,
+                            temp_path_st.st_ctime_ns) != (
+                            dst_st.st_dev, dst_st.st_ino, dst_st.st_ctime_ns):
+                        raise UnitInstallError("runner_service_entrypoint_invalid")
                     try:
                         os.link(temp, "runsvc.sh", src_dir_fd=runnerfd,
                                 dst_dir_fd=runnerfd, follow_symlinks=False)
@@ -194,7 +217,8 @@ def bootstrap_service_entrypoint(directory: str, user: str) -> str:
 
 
 def install_canonical_unit(repo: str, runner_name: str, directory: str,
-                           user: str, *, timeout: float = 20.0) -> str:
+                           user: str, expected_wrapper: dict,
+                           *, timeout: float = 20.0) -> str:
     """Bootstrap official wrapper, publish canonical Unit, never overwrite."""
     if os.geteuid() != 0:
         raise UnitInstallError("authority_install_failed")
@@ -203,7 +227,7 @@ def install_canonical_unit(repo: str, runner_name: str, directory: str,
 
     # Official Runner archives ship bin/runsvc.sh; official svc.sh install
     # copies it to the runner root. Do the bounded equivalent first.
-    bootstrap_service_entrypoint(directory, user)
+    bootstrap_service_entrypoint(directory, user, expected_wrapper)
 
     try:
         unit_dir = os.open(UNIT_DIR, os.O_RDONLY | os.O_DIRECTORY |

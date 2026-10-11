@@ -92,8 +92,8 @@ rm -f "$BASELINE"
 exec {MUTATION_LOCK}<>"$LOCK"
 flock -n "$MUTATION_LOCK" || { echo "Lifecycle operation active" >&2; exit 1; }
 
-FILES=(register-runner.sh remove-runner.sh status-runners.sh cli-operational-logger.py)
-WEB_FILES=(cli_create_authority.py cli_remove_authority.py runner_lifecycle_authority.py v2_unit_installer.py)
+FILES=(register-runner.sh remove-runner.sh status-runners.sh cli-operational-logger.py web-runner-cleanup.py)
+WEB_FILES=(cli_create_authority.py cli_remove_authority.py runner_lifecycle_authority.py v2_unit_installer.py dispatcher.py v2_privileged.py v2_event_loop.py)
 for name in "${FILES[@]}"; do
   [[ -f "$ROOT/scripts/$name" && ! -L "$ROOT/scripts/$name" ]] || exit 1
   /usr/bin/python3 -m py_compile "$ROOT/scripts/cli-operational-logger.py"

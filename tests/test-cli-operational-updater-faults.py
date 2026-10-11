@@ -254,6 +254,42 @@ class TransactionFaultTests(unittest.TestCase):
             self.assertEqual((self.web / name).read_bytes(),
                              (self.source_web / name).read_bytes())
 
+    def prepare_logged_baseline(self):
+        before = ("ReadWritePaths=/home/actions /etc/systemd/system "
+                  "/run/github-runner-tools /run/lock/github-runner-tools "
+                  "/var/lib/github-runner-tools")
+        after = before + " " + str(self.log)
+        self.unit.write_text(self.baseline_unit.replace(before, after))
+        self.log.mkdir(exist_ok=True)
+        (self.log / "operational.lock").touch(exist_ok=True)
+        (self.log / "operational.jsonl").write_text('{"evidence":"existing"}\n')
+
+    def test_success_from_already_logged_baseline_updates_code_without_losing_evidence(self):
+        self.prepare_logged_baseline()
+        p = self.invoke()
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(str(self.log), self.unit.read_text())
+        self.assertIn('{"evidence":"existing"}',
+                      (self.log / "operational.jsonl").read_text())
+        for name in WEB_FILES:
+            self.assertEqual((self.web / name).read_bytes(),
+                             (self.source_web / name).read_bytes())
+        self.assertEqual(self.runner_units.read_bytes(), self.original_units)
+
+    def test_logged_baseline_rollback_restores_logged_unit_and_old_dependencies(self):
+        self.prepare_logged_baseline()
+        original_unit = self.unit.read_bytes()
+        p = self.invoke("restart")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("ROLLBACK_VERIFIED", p.stderr)
+        self.assertEqual(self.unit.read_bytes(), original_unit)
+        self.assertIn(str(self.log), self.unit.read_text())
+        self.assertEqual({p.name: p.read_bytes() for p in self.web.iterdir()
+                          if not p.name.startswith(".grt-web-update")},
+                         self.original_web)
+        self.assertIn('{"evidence":"existing"}',
+                      (self.log / "operational.jsonl").read_text())
+
     def test_preflight_cannot_mutate_installation(self):
         self.unit.write_text(self.baseline_unit.replace("ProtectSystem=strict", "ProtectSystem=full"))
         before = self.unit.read_bytes()

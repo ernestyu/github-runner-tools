@@ -29,6 +29,31 @@ class LoggerTests(unittest.TestCase):
             with self.assertRaises(mod.LoggingUnavailable):
                 mod.event(self.args(**kw))
 
+    def test_remediation_reason_allowlist_is_fixed(self):
+        reasons = {
+            "runner_service_entrypoint_missing",
+            "runner_service_entrypoint_invalid",
+            "unit_target_exists",
+            "unit_stage_create_failed",
+            "unit_publish_failed",
+            "unit_daemon_reload_failed",
+            "unit_enable_failed",
+            "authority_state_rejected",
+            "authority_identity_rejected",
+            "authority_install_failed",
+        }
+        self.assertTrue(reasons.issubset(mod.REASONS))
+        for reason in reasons:
+            with self.subTest(reason=reason):
+                record = mod.event(self.args(
+                    event="service_install",
+                    stage="REGISTERED_UNIT_INCOMPLETE",
+                    result="failed",
+                    reason=reason,
+                    exit_code=1,
+                ))
+                self.assertEqual(record["reason"], reason)
+
     def test_jsonl_and_rotation(self):
         with tempfile.TemporaryDirectory() as root:
             p = Path(root)

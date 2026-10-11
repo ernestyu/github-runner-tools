@@ -5,11 +5,11 @@ Root-isolated lifecycle state, disposable canonical runner directories, and
 ephemeral canonical Units are used. No GitHub API, production runner, or
 production lifecycle state is touched.
 
-The registration network call is replaced by the frozen SPEC's permitted
-isolated post-config fixture: exact files consumed by the lifecycle authority
-(.runner/.credentials plus official svc.sh layout) are created after a fresh
-version-specific archive-layout fixture. Root-level runsvc.sh is asserted
-absent immediately before the production bootstrap.
+Each tested version begins from the pinned official GitHub Runner release
+archive, verifies the frozen SHA-256, and performs a normal tar extraction.
+Only the registration network result is replaced by the frozen SPEC's
+permitted isolated post-config fixture (.runner/.credentials). Root-level
+runsvc.sh is asserted absent immediately before the production bootstrap.
 
 Both direct CLI Authority and Web/Executor Runtime paths exercise the real
 production bootstrap, canonical Unit validation, start, and health sequence.
@@ -17,6 +17,7 @@ production bootstrap, canonical Unit validation, start, and health sequence.
 from __future__ import annotations
 
 import grp
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.request
 from types import SimpleNamespace
 from unittest import mock
 
@@ -41,10 +43,53 @@ import v2_unit_installer as installer
 
 FIXTURES = ROOT / "tests" / "fixtures"
 VERSIONS = ("2.328.0", "2.338.0")
+ARCHIVES = {
+    "2.328.0": {
+        "url": "https://github.com/actions/runner/releases/download/v2.328.0/actions-runner-linux-x64-2.328.0.tar.gz",
+        "sha256": "01066fad3a2893e63e6ca880ae3a1fad5bf9329d60e77ee15f2b97c148c3cd4e",
+    },
+    "2.338.0": {
+        "url": "https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz",
+        "sha256": "af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32",
+    },
+}
 
 
 @unittest.skipUnless(os.geteuid() == 0, "root-only isolated fresh-runner E2E")
 class FreshRunnerBootstrapE2E(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sudo_user = os.environ.get("SUDO_USER")
+        if not sudo_user or sudo_user == "root":
+            raise unittest.SkipTest(
+                "requires sudo from a non-root CI runner account")
+        cls.archive_tmp = tempfile.TemporaryDirectory(
+            prefix="grt-b02-official-archives-")
+        cls.archive_root = Path(cls.archive_tmp.name)
+        cls.archives: dict[str, Path] = {}
+        for version in VERSIONS:
+            meta = ARCHIVES[version]
+            archive = cls.archive_root / (
+                f"actions-runner-linux-x64-{version}.tar.gz")
+            digest = hashlib.sha256()
+            with urllib.request.urlopen(meta["url"], timeout=120) as response, \
+                    archive.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    handle.write(chunk)
+            if digest.hexdigest() != meta["sha256"]:
+                raise AssertionError(
+                    f"official Runner archive digest mismatch for {version}")
+            cls.archives[version] = archive
+
+    @classmethod
+    def tearDownClass(cls):
+        if hasattr(cls, "archive_tmp"):
+            cls.archive_tmp.cleanup()
+
     def setUp(self):
         sudo_user = os.environ.get("SUDO_USER")
         if not sudo_user or sudo_user == "root":
@@ -127,41 +172,49 @@ class FreshRunnerBootstrapE2E(unittest.TestCase):
         repository = f"fixture/b02-{mode}-{suffix}-{os.getpid()}"
         runner_name = f"b02-{mode}-{suffix}-{os.getpid()}"
         owner, project = repository.split("/", 1)
-        runner_dir = self.home / ("actions-runner-" + make_local_id(owner, project))
+        runner_dir = self.home / (
+            "actions-runner-" + make_local_id(owner, project))
         if runner_dir.exists() or runner_dir.is_symlink():
-            self.fail(f"disposable runner directory unexpectedly exists: {runner_dir}")
+            self.fail(
+                f"disposable runner directory unexpectedly exists: {runner_dir}")
         runner_dir.mkdir(mode=0o700)
         self.created_dirs.append(runner_dir)
 
-        # Fresh archive-layout fixture: exact pinned official wrapper bytes.
+        # Frozen SPEC §4.6 #1/#2: begin from the pinned official release
+        # archive and perform a normal tar extraction into an empty runner dir.
+        archive = self.archives[version]
+        extracted = subprocess.run(
+            ["tar", "-xzf", str(archive), "-C", str(runner_dir)],
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(extracted.returncode, 0, extracted.stderr)
+
         bindir = runner_dir / "bin"
-        bindir.mkdir(mode=0o755)
-        wrapper_fixture = FIXTURES / f"actions-runner-v{version}-runsvc.sh"
         wrapper = bindir / "runsvc.sh"
-        wrapper.write_bytes(wrapper_fixture.read_bytes())
-        wrapper.chmod(0o755)
+        service_template = bindir / "actions.runner.service.template"
+        svc = runner_dir / "svc.sh"
+        config = runner_dir / "config.sh"
+
+        self.assertTrue(wrapper.is_file())
+        self.assertTrue(service_template.is_file())
+        self.assertTrue(svc.is_file())
+        self.assertTrue(config.is_file())
+
+        # Cross-check the two bootstrap-critical files against the audited
+        # upstream Git blobs in addition to the whole-archive SHA-256 pin.
+        wrapper_fixture = FIXTURES / f"actions-runner-v{version}-runsvc.sh"
         service_template_fixture = (
             FIXTURES /
             f"actions-runner-v{version}-actions.runner.service.template")
-        service_template = bindir / "actions.runner.service.template"
-        service_template.write_bytes(service_template_fixture.read_bytes())
-        service_template.chmod(0o644)
+        self.assertEqual(wrapper.read_bytes(), wrapper_fixture.read_bytes())
+        self.assertEqual(
+            service_template.read_bytes(),
+            service_template_fixture.read_bytes())
 
-        # The upstream Linux service wrapper template is the same audited blob
-        # in both pinned versions. Materialize the post-config svc.sh identity.
-        template = (
-            FIXTURES / "actions-runner-v2.328.0-systemd.svc.sh.template"
-        ).read_text()
         service = canonical_service_name(repository, runner_name)
-        svc = (template
-               .replace("{{SvcNameVar}}", service)
-               .replace("{{SvcDescription}}",
-                        f"GitHub Actions Runner ({repository}.{runner_name})"))
-        (runner_dir / "svc.sh").write_text(svc)
-        (runner_dir / "svc.sh").chmod(0o755)
 
-        # Faithful isolated registration result for the authority-consumed
-        # post-config identity/credential surfaces.
+        # Frozen SPEC permits a faithful isolated registration fixture instead
+        # of a real GitHub registration. Only registration outputs are
+        # synthesized; archive-origin files remain exactly as extracted.
         (runner_dir / ".runner").write_text(json.dumps({
             "agentName": runner_name,
             "agentId": 100000 + os.getpid(),
@@ -172,12 +225,20 @@ class FreshRunnerBootstrapE2E(unittest.TestCase):
         for name in (".runner", ".credentials"):
             (runner_dir / name).chmod(0o600)
 
-        for path in (runner_dir, bindir, wrapper, service_template,
-                     runner_dir / "svc.sh", runner_dir / ".runner",
-                     runner_dir / ".credentials"):
-            os.chown(path, self.account.pw_uid, self.account.pw_gid)
+        # Production extraction is performed by the runner account. The E2E
+        # itself is root-isolated, so normalize ownership after the otherwise
+        # ordinary tar extraction without altering archive file contents/modes.
+        for root, dirs, files in os.walk(runner_dir):
+            os.chown(root, self.account.pw_uid, self.account.pw_gid)
+            for name in dirs:
+                os.chown(Path(root) / name,
+                         self.account.pw_uid, self.account.pw_gid)
+            for name in files:
+                os.chown(Path(root) / name,
+                         self.account.pw_uid, self.account.pw_gid)
 
-        # This is the live regression precondition.
+        # Live-regression preconditions, now proven from a real official
+        # extraction rather than a hand-built archive-layout fixture.
         self.assertFalse((runner_dir / "runsvc.sh").exists())
         self.assertFalse((runner_dir / ".service").exists())
         unit = Path("/etc/systemd/system") / service

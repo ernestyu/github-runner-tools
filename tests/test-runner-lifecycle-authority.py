@@ -441,6 +441,22 @@ class AuthorityTests(unittest.TestCase):
         auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
         self.assertNotEqual(auth._current(REPO, RUNNER, self.repo)["instance"], instance)
 
+    def test_incomplete_reconciliation_revalidates_no_service_before_confirmation(self):
+        self.make_incomplete_create()
+        active = auth._current(REPO, RUNNER, self.repo)
+        instance = active["instance"]
+        auth.reconcile_incomplete_create_stage(
+            REPO, RUNNER, self.repo, "root", "BEGIN")
+        service = self.runner / ".service"
+        service.write_text("unexpected\n")
+        with self.assertRaises(auth.AuthorityError):
+            auth.reconcile_incomplete_create_stage(
+                REPO, RUNNER, self.repo, "root", "CONFIRM_REMOTE_REMOVED")
+        removed = auth._cycle_record(
+            auth.REMOVE_STATES, REPO, RUNNER, self.repo, instance)
+        self.assertEqual(removed["stage"], "REMOTE_REMOVE_OUTCOME_UNKNOWN")
+        self.assertTrue(self.runner.exists())
+
     def test_incomplete_reconciliation_rejects_changed_attested_registration(self):
         self.make_incomplete_create()
         (self.runner / ".runner").write_text(json.dumps({

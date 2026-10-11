@@ -4,6 +4,7 @@
 set -Eeuo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 CLI_ROOT="/usr/local/lib/github-runner-tools/cli"
+WEB_ROOT="/usr/local/lib/github-runner-tools/web"
 UNIT="/etc/systemd/system/github-runner-tools-executor.service"
 LOG_ROOT="/var/log/github-runner-tools"
 LOCK="/run/lock/github-runner-tools/mutation.lock"
@@ -80,10 +81,17 @@ exec {MUTATION_LOCK}<>"$LOCK"
 flock -n "$MUTATION_LOCK" || { echo "Lifecycle operation active" >&2; exit 1; }
 
 FILES=(register-runner.sh remove-runner.sh status-runners.sh cli-operational-logger.py)
+WEB_FILES=(cli_create_authority.py cli_remove_authority.py runner_lifecycle_authority.py v2_unit_installer.py)
 for name in "${FILES[@]}"; do
   [[ -f "$ROOT/scripts/$name" && ! -L "$ROOT/scripts/$name" ]] || exit 1
   /usr/bin/python3 -m py_compile "$ROOT/scripts/cli-operational-logger.py"
   [[ "$name" == *.sh ]] && bash -n "$ROOT/scripts/$name"
+done
+[[ "$(sudo stat -c '%U:%G:%a:%F' "$WEB_ROOT")" == "root:root:755:directory" ]] || exit 1
+for name in "${WEB_FILES[@]}"; do
+  [[ -f "$ROOT/web/$name" && ! -L "$ROOT/web/$name" ]] || exit 1
+  /usr/bin/python3 -m py_compile "$ROOT/web/$name"
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$WEB_ROOT/$name")" == "root:root:755:regular file" ]] || exit 1
 done
 sudo systemctl is-active --quiet github-runner-tools-executor.service || exit 1
 sudo systemctl is-active --quiet github-runner-tools-web.service || exit 1
@@ -101,6 +109,10 @@ for name in "${FILES[@]}"; do
   else
     [[ "$name" == "cli-operational-logger.py" ]] || exit 1
   fi
+done
+sudo mkdir -m 0700 "$BACKUP/web"
+for name in "${WEB_FILES[@]}"; do
+  sudo cp -a "$WEB_ROOT/$name" "$BACKUP/web/$name"
 done
 # Stage and validate exact single-line Unit amendment before replacing.
 STAGE="$(mktemp --suffix=.service)"
@@ -126,6 +138,9 @@ rollback() {
       sudo rm -f "$CLI_ROOT/$name" || failed=1
     fi
   done
+  for name in "${WEB_FILES[@]}"; do
+    sudo cp -a "$BACKUP/web/$name" "$WEB_ROOT/$name" || failed=1
+  done
   sudo systemctl daemon-reload || failed=1
   sudo systemctl restart github-runner-tools-executor.service || failed=1
   sudo cmp -s "$BACKUP/executor.service" "$UNIT" || failed=1
@@ -136,6 +151,9 @@ rollback() {
     else
       sudo test ! -e "$CLI_ROOT/$name" || failed=1
     fi
+  done
+  for name in "${WEB_FILES[@]}"; do
+    sudo cmp -s "$BACKUP/web/$name" "$WEB_ROOT/$name" || failed=1
   done
   sudo systemctl is-active --quiet github-runner-tools-executor.service || failed=1
   sudo systemctl is-active --quiet github-runner-tools-web.service || failed=1
@@ -192,6 +210,11 @@ for name in "${FILES[@]}"; do
   sudo install -o root -g root -m 0755 "$ROOT/scripts/$name" "$TEMP_TARGET"
   sudo mv -f -- "$TEMP_TARGET" "$CLI_ROOT/$name"
 done
+for name in "${WEB_FILES[@]}"; do
+  TEMP_TARGET="$(sudo mktemp "$WEB_ROOT/.grt-web-update.XXXXXXXX")"
+  sudo install -o root -g root -m 0755 "$ROOT/web/$name" "$TEMP_TARGET"
+  sudo mv -f -- "$TEMP_TARGET" "$WEB_ROOT/$name"
+done
 TEMP_UNIT="$(sudo mktemp /etc/systemd/system/.grt-executor-update.XXXXXXXX)"
 sudo install -o root -g root -m 0644 "$STAGE" "$TEMP_UNIT"
 sudo mv -f -- "$TEMP_UNIT" "$UNIT"
@@ -229,6 +252,12 @@ assert any(r.get("op")=="status" and r.get("event")=="operation_exit"
            and datetime.fromisoformat(r["ts"]).timestamp()>=started-2
            for r in records), "No Executor-launched CLI status event found"
 PY
+for name in "${FILES[@]}"; do
+  sudo cmp -s "$ROOT/scripts/$name" "$CLI_ROOT/$name" || { echo "Installed CLI dependency closure mismatch: $name" >&2; exit 1; }
+done
+for name in "${WEB_FILES[@]}"; do
+  sudo cmp -s "$ROOT/web/$name" "$WEB_ROOT/$name" || { echo "Installed trusted dependency closure mismatch: $name" >&2; exit 1; }
+done
 COMMITTED=1
 trap - EXIT
 echo "CLI logging upgrade installed; verify real Executor CLI log write before Create/Remove."

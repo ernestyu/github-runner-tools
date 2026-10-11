@@ -13,6 +13,21 @@ import sys
 from pathlib import Path
 
 from grt_web_common import canonical_service_name, make_local_id, validate_repository
+from v2_unit_installer import UnitInstallError, install_canonical_unit
+
+EXIT_BY_REASON = {
+    "runner_service_entrypoint_missing": 64,
+    "runner_service_entrypoint_invalid": 65,
+    "unit_target_exists": 66,
+    "unit_stage_create_failed": 67,
+    "unit_publish_failed": 68,
+    "unit_daemon_reload_failed": 69,
+    "unit_enable_failed": 70,
+    "authority_state_rejected": 71,
+    "authority_identity_rejected": 72,
+    "authority_install_failed": 73,
+}
+
 from runner_lifecycle_authority import (
     AuthorityError, create_attestation, create_stage, create_unit_attestation, normalize_new_registration,
     _safe_directory, _current, _cycle_record, CREATE_STATES,
@@ -114,7 +129,6 @@ def main(argv: list[str]) -> None:
     elif op == "install":
         if action != "-" or version != "-":
             raise AuthorityError("invalid Unit installation request")
-        from v2_unit_installer import install_canonical_unit
         install_canonical_unit(repo, runner_name, directory, user)
     else:
         if action != "-" or version != "-":
@@ -173,9 +187,28 @@ def main(argv: list[str]) -> None:
         create_unit_attestation(repo, runner_name, directory, service, str(unit))
 
 
+def _safe_reason(exc: BaseException) -> str:
+    if isinstance(exc, UnitInstallError):
+        return exc.reason if exc.reason in EXIT_BY_REASON else "authority_install_failed"
+    text = str(exc)
+    identity_markers = (
+        "identity", "runner name", "repository", "noncanonical", "directory",
+        "owner", "target", "user",
+    )
+    state_markers = (
+        "stage", "cycle", "attestation", "state", "ledger", "create",
+    )
+    if any(marker in text.lower() for marker in identity_markers):
+        return "authority_identity_rejected"
+    if any(marker in text.lower() for marker in state_markers):
+        return "authority_state_rejected"
+    return "authority_install_failed"
+
+
 if __name__ == "__main__":
     try:
         main(sys.argv[1:])
-    except Exception:
+    except Exception as exc:
+        reason = _safe_reason(exc)
         print("CLI lifecycle authority refused; registration may be incomplete", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_BY_REASON[reason])

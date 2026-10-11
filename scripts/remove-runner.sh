@@ -14,15 +14,16 @@ GRT_LOG_STAGE="none"
 GRT_LOG_EVENT="preflight"
 grt_log() {
   local event="$1" result="$2" reason="${3:-none}" rc="${4:--1}"
-  # Existing source-tree regression fixtures do not install host logger files.
-  # This exception requires an explicit test flag AND execution from a
-  # non-installed checkout; the fixed installed production CLI never bypasses.
+  # An isolated CI source-tree CLI uses the same logger, with a test-only
+  # directory. Installed CLI never accepts caller-controlled log locations.
+  local -a grt_log_args=()
   if [[ "${GITHUB_ACTIONS:-}" == "true" && "${BASH_SOURCE[0]}" != /usr/local/lib/github-runner-tools/cli/* ]]; then
-    return 0
+    GRT_LOGGER="${BASH_SOURCE[0]%/*}/cli-operational-logger.py"
+    grt_log_args=(--test-root "${RUNNER_TEMP:-/tmp}/grt-native-logging-$(id -u)")
   fi
   [[ "$result" == "begin" && "$event" != "operation" ]] && GRT_LOG_EVENT="$event"
   GRT_LOG_SEQ=$((GRT_LOG_SEQ + 1))
-  if /usr/bin/python3 "$GRT_LOGGER" --run-id "$GRT_LOG_RUN_ID" --seq "$GRT_LOG_SEQ" --op remove \
+  if /usr/bin/python3 "$GRT_LOGGER" "${grt_log_args[@]}" --run-id "$GRT_LOG_RUN_ID" --seq "$GRT_LOG_SEQ" --op remove \
        --event "$event" --stage "$GRT_LOG_STAGE" --result "$result" --reason "$reason" \
        --exit-code "$rc" --repository "$GRT_LOG_REPO" --runner "$GRT_LOG_RUNNER"; then
     return 0
@@ -603,10 +604,15 @@ elif [[ -n "$TOKEN_FD" || -n "$RESULT_FD" || -n "$PRIVILEGED_FD" || "$LOCK_ALREA
 fi
 
 REPO="$1"
-GRT_LOG_REPO="$REPO"
 GRT_LOG_READY=1
+if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ${#REPO} -gt 201 ]]; then
+  GRT_LOG_REPO="none"
+  grt_log operation failed invalid_input
+  echo "ERROR: Repository must be in OWNER/REPO form." >&2
+  exit 1
+fi
+GRT_LOG_REPO="$REPO"
 grt_log operation begin
-[[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "Repository must be in OWNER/REPO form."
 OWNER="${REPO%%/*}"; REPO_NAME="${REPO##*/}"
 SAFE_REPO="$(sanitize_component "$REPO_NAME")" || die "Could not derive safe repository name."
 LOCAL_ID="$(make_local_id "$OWNER" "$REPO_NAME")" || die "Could not derive local identity."

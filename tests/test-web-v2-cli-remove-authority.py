@@ -56,5 +56,21 @@ class RemoveCLIJournalTests(unittest.TestCase):
                 m.checkpoint([*ARGS[:-1],"RESET_UNKNOWN"], sudo_user="actions")
             authority.assert_not_called()
 
+
+    def test_reconcile_complete_delegates_only_to_dedicated_authority(self):
+        args = ["owner/repo", "runner",
+                "/home/actions/actions-runner-owner--repo", "RECONCILE_COMPLETE"]
+        with patch.object(m.os, "geteuid", return_value=0), \
+             patch.object(m.pwd, "getpwnam", return_value=ACCOUNT), \
+             patch.object(m.os.path, "lexists", return_value=False), \
+             patch.object(m, "remove_stage") as ordinary, \
+             patch.object(m, "reconcile_incomplete_create_stage") as reconcile:
+            m.checkpoint(args, sudo_user="actions")
+        ordinary.assert_not_called()
+        reconcile.assert_called_once_with(
+            "owner/repo", "runner",
+            "/home/actions/actions-runner-owner--repo", "actions", "COMPLETE")
+
+
 if __name__ == "__main__":
     unittest.main()

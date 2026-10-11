@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "web"))
 import runner_lifecycle_authority as auth
 import cli_create_authority as cli
+import v2_unit_installer as installer
 
 REPO = "example/repo"
 RUNNER = "fixture"
@@ -402,6 +403,43 @@ class AuthorityTests(unittest.TestCase):
         auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_PERMISSION_INCOMPLETE")
         auth.create_attestation(REPO, RUNNER, self.repo, "root", "2.338.0")
         auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_UNIT_INCOMPLETE")
+
+    def test_service_install_provenance_requires_same_cycle_stage_version_and_wrapper(self):
+        self.make_incomplete_create()
+        proof = auth.verify_service_install_provenance(
+            REPO, RUNNER, self.repo, "root", "2.338.0")
+        self.assertEqual(proof["runner_version"], "2.338.0")
+        with self.assertRaises(auth.AuthorityError):
+            auth.verify_service_install_provenance(
+                REPO, RUNNER, self.repo, "root", "2.328.0")
+        wrapper = self.runner / "bin" / "runsvc.sh"
+        wrapper.write_text("#!/bin/bash\necho changed-wrapper\n")
+        wrapper.chmod(0o755)
+        with self.assertRaises(auth.AuthorityError):
+            auth.verify_service_install_provenance(
+                REPO, RUNNER, self.repo, "root", "2.338.0")
+
+    def test_fresh_post_config_trusted_authority_runs_production_bootstrap(self):
+        self.make_incomplete_create()
+        self.assertFalse((self.runner / "runsvc.sh").exists())
+        fake_systemd = self.base / "systemd"
+        fake_systemd.mkdir()
+        fake_account = SimpleNamespace(
+            pw_uid=0, pw_gid=0, pw_dir=str(self.base))
+        with mock.patch.dict(os.environ, {"SUDO_USER": "fixture"}), \
+             mock.patch("pwd.getpwnam", return_value=fake_account), \
+             mock.patch.object(installer, "UNIT_DIR", str(fake_systemd)), \
+             mock.patch.object(installer.subprocess, "run",
+                               return_value=SimpleNamespace(returncode=0)):
+            cli.main(["install", REPO, RUNNER, self.repo, "-", "2.338.0"])
+        self.assertTrue((self.runner / "runsvc.sh").is_file())
+        self.assertEqual(
+            (self.runner / "runsvc.sh").read_bytes(),
+            (self.runner / "bin" / "runsvc.sh").read_bytes())
+        service = "actions.runner.example-repo.fixture.service"
+        unit = fake_systemd / service
+        self.assertTrue(unit.is_file())
+        self.assertEqual(unit.stat().st_mode & 0o777, 0o644)
 
     def test_ordinary_remove_still_rejects_incomplete_create(self):
         self.make_incomplete_create()

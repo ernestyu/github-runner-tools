@@ -1,6 +1,41 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# CLI-native operational events; no Web/Executor business log parsing.
+GRT_LOGGER="/usr/local/lib/github-runner-tools/cli/cli-operational-logger.py"
+GRT_LOG_RUN_ID="$(/usr/bin/python3 -c 'import secrets; print(secrets.token_hex(16))')"
+GRT_LOG_SEQ=0
+GRT_LOG_READY=0
+GRT_LOG_SIDE_EFFECT=0
+GRT_LOG_WARNED=0
+GRT_LOG_REPO="none"
+GRT_LOG_RUNNER="none"
+GRT_LOG_STAGE="none"
+grt_log() {
+  local event="$1" result="$2" reason="${3:-none}" rc="${4:--1}"
+  GRT_LOG_SEQ=$((GRT_LOG_SEQ + 1))
+  if /usr/bin/python3 "$GRT_LOGGER" --run-id "$GRT_LOG_RUN_ID" --seq "$GRT_LOG_SEQ" --op remove \
+       --event "$event" --stage "$GRT_LOG_STAGE" --result "$result" --reason "$reason" \
+       --exit-code "$rc" --repository "$GRT_LOG_REPO" --runner "$GRT_LOG_RUNNER"; then
+    return 0
+  fi
+  if [[ "$GRT_LOG_SIDE_EFFECT" == "0" && "remove" != "status" ]]; then
+    printf 'ERROR: CLI logging unavailable before side effects.\n' >&2
+    exit 1
+  fi
+  if [[ "$GRT_LOG_WARNED" == "0" ]]; then
+    printf 'WARNING: CLI operational logging unavailable; lifecycle authority remains decisive.\n' >&2
+    GRT_LOG_WARNED=1
+  fi
+  return 0
+}
+grt_log_finish() {
+  local rc="$1"
+  if [[ "$GRT_LOG_READY" == "1" ]]; then
+    grt_log operation_exit "$([[ "$rc" == 0 ]] && echo ok || echo failed)" "$([[ "$rc" == 0 ]] && echo none || echo unexpected_cli_failure)" "$rc" || :
+  fi
+}
+
 MAX_LOCAL_ID_LENGTH=64
 HASH_LENGTH=8
 TOKEN=""
@@ -118,7 +153,7 @@ USAGE
 die() { echo "ERROR: $*" >&2; exit 1; }
 require_command() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
 cleanup() { unset TOKEN || true; }
-trap 'rc=$?; remove_result "$rc"; cleanup' EXIT
+trap 'rc=$?; grt_log_finish "$rc"; remove_result "$rc"; cleanup' EXIT
 
 sanitize_component() {
   local value="$1" out
@@ -264,11 +299,14 @@ cli_remove_authority() {
 
 remove_lifecycle_stage() {
   local stage="$1"
+  GRT_LOG_STAGE="$stage"
+  grt_log lifecycle_checkpoint begin
   if [[ "$WEB_MODE" == "1" ]]; then
     web_remove_state "$stage"
   else
     cli_remove_authority "$stage"
   fi
+  grt_log lifecycle_checkpoint ok
 }
 
 web_remove_state() {
@@ -519,6 +557,9 @@ elif [[ -n "$TOKEN_FD" || -n "$RESULT_FD" || -n "$PRIVILEGED_FD" || "$LOCK_ALREA
 fi
 
 REPO="$1"
+GRT_LOG_REPO="$REPO"
+GRT_LOG_READY=1
+grt_log operation begin
 [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "Repository must be in OWNER/REPO form."
 OWNER="${REPO%%/*}"; REPO_NAME="${REPO##*/}"
 SAFE_REPO="$(sanitize_component "$REPO_NAME")" || die "Could not derive safe repository name."
@@ -659,6 +700,7 @@ if [[ -d "$LEGACY_DIR" ]]; then
   fi
 fi
 
+GRT_LOG_SIDE_EFFECT=1
 [[ -n "$RUNNER_DIR" ]] || die "Runner directory not found for $REPO"
 [[ -f "$RUNNER_DIR/.runner" ]] || die "Configured runner metadata not found: $RUNNER_DIR/.runner"
 [[ -x "$RUNNER_DIR/config.sh" && -x "$RUNNER_DIR/svc.sh" ]] || die "Runner management scripts are missing from: $RUNNER_DIR"
@@ -749,6 +791,7 @@ else
   uninstall_service_safely
 fi
 
+grt_log remote_removal begin
 echo "==> Removing runner registration from GitHub..."
 if [[ "$WEB_MODE" == "1" ]]; then
   REMOVE_STAGE="config_remove_failed"
@@ -776,6 +819,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
     REMOVE_RC=$?
   fi
   if [[ "$REMOVE_RC" == "0" ]]; then
+    grt_log remote_removal ok
     unset TOKEN
     REMOVE_STAGE="local_cleanup_failed"
     remove_lifecycle_stage CONFIRM_REMOTE_REMOVED ||
@@ -794,6 +838,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
       REMOVE_EXIT="unknown"
     fi
     unset TOKEN
+    grt_log remote_removal unknown remote_result_uncertain
     die "Runner registration removal failed or remains uncertain."
   fi
 else

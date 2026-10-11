@@ -25,6 +25,7 @@ jobs:
         run: |
           python3 -m compileall -q web scripts/cli-operational-logger.py
           python3 tests/test-cli-operational-logging.py
+          python3 tests/test-cli-operational-faults.py
           python3 tests/test-cli-operational-end-to-end.py
           python3 tests/test-cli-operational-v2-updater.py
       - name: V2 executor contract

@@ -372,6 +372,10 @@ class AuthorityTests(unittest.TestCase):
         (self.runner / ".runner").write_text(json.dumps({
             "agentName": RUNNER, "agentId": 202, "gitHubUrl": "https://github.com/example/repo"}))
         (self.runner / ".credentials").write_text("SECOND_CYCLE_SYNTHETIC")
+        (self.runner / "bin").mkdir()
+        (self.runner / "bin" / "runsvc.sh").write_text(
+            "#!/bin/bash\necho second-cycle-wrapper\n")
+        (self.runner / "bin" / "runsvc.sh").chmod(0o755)
         for name in (".runner", ".credentials"):
             (self.runner / name).chmod(0o600)
         auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")

@@ -11,6 +11,7 @@ GRT_LOG_WARNED=0
 GRT_LOG_REPO="none"
 GRT_LOG_RUNNER="none"
 GRT_LOG_STAGE="none"
+GRT_LOG_EVENT="preflight"
 grt_log() {
   local event="$1" result="$2" reason="${3:-none}" rc="${4:--1}"
   # Existing source-tree regression fixtures do not install host logger files.
@@ -19,6 +20,7 @@ grt_log() {
   if [[ "${GITHUB_ACTIONS:-}" == "true" && "${BASH_SOURCE[0]}" != /usr/local/lib/github-runner-tools/cli/* ]]; then
     return 0
   fi
+  [[ "$result" == "begin" && "$event" != "operation" ]] && GRT_LOG_EVENT="$event"
   GRT_LOG_SEQ=$((GRT_LOG_SEQ + 1))
   if /usr/bin/python3 "$GRT_LOGGER" --run-id "$GRT_LOG_RUN_ID" --seq "$GRT_LOG_SEQ" --op remove \
        --event "$event" --stage "$GRT_LOG_STAGE" --result "$result" --reason "$reason" \
@@ -156,7 +158,13 @@ Environment variable:
 USAGE
 }
 
-die() { echo "ERROR: $*" >&2; exit 1; }
+die() {
+  if [[ "$GRT_LOG_READY" == 1 ]]; then
+    grt_log "$GRT_LOG_EVENT" failed unexpected_cli_failure || :
+  fi
+  echo "ERROR: $*" >&2
+  exit 1
+}
 require_command() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
 cleanup() { unset TOKEN || true; }
 trap 'rc=$?; grt_log_finish "$rc"; remove_result "$rc"; cleanup' EXIT
@@ -307,6 +315,7 @@ remove_lifecycle_stage() {
   local stage="$1"
   GRT_LOG_STAGE="$stage"
   grt_log lifecycle_checkpoint begin
+  [[ "$stage" == "BEGIN" ]] && GRT_LOG_SIDE_EFFECT=1
   if [[ "$WEB_MODE" == "1" ]]; then
     web_remove_state "$stage" || return $?
   else
@@ -706,7 +715,6 @@ if [[ -d "$LEGACY_DIR" ]]; then
   fi
 fi
 
-GRT_LOG_SIDE_EFFECT=1
 [[ -n "$RUNNER_DIR" ]] || die "Runner directory not found for $REPO"
 [[ -f "$RUNNER_DIR/.runner" ]] || die "Configured runner metadata not found: $RUNNER_DIR/.runner"
 [[ -x "$RUNNER_DIR/config.sh" && -x "$RUNNER_DIR/svc.sh" ]] || die "Runner management scripts are missing from: $RUNNER_DIR"

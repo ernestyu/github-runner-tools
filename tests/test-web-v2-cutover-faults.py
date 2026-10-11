@@ -101,8 +101,8 @@ class CutoverFaults(unittest.TestCase):
             self.assertEqual((state/"active-instances"/"fixture.json").read_bytes(),
                              record if scenario != "journal_changed" else record+b"\nchanged")
             if scenario == "preflight_failure":
-                self.assertEqual((services/"github-runner-tools-web.service").read_text(),"running")
-                self.assertEqual((services/"github-runner-tools-dispatch.service").read_text(),"running")
+                self.assertEqual((services/"github-runner-tools-web.service").read_text().strip(),"running")
+                self.assertEqual((services/"github-runner-tools-dispatch.service").read_text().strip(),"running")
                 self.assertEqual((etc/"web.conf").read_text(),"v1-config")
                 self.assertNotIn("V2 cutover failed",outcome.stderr)
             elif scenario == "journal_changed":

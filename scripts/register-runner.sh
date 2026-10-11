@@ -16,7 +16,7 @@ grt_log() {
   # Existing source-tree regression fixtures do not install host logger files.
   # This exception requires an explicit test flag AND execution from a
   # non-installed checkout; the fixed installed production CLI never bypasses.
-  if [[ "${GRT_TEST_MODE:-0}" == "1" && "${BASH_SOURCE[0]}" != /usr/local/lib/github-runner-tools/cli/* ]]; then
+  if [[ "${GITHUB_ACTIONS:-}" == "true" && "${BASH_SOURCE[0]}" != /usr/local/lib/github-runner-tools/cli/* ]]; then
     return 0
   fi
   GRT_LOG_SEQ=$((GRT_LOG_SEQ + 1))

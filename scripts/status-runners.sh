@@ -152,8 +152,8 @@ repo_from_new_dir_residue() {
 JSON_MODE=0
 if [[ "${1:-}" == "--json" ]]; then JSON_MODE=1; shift; fi
 [[ $# -eq 0 ]] || die "Usage: status-runners.sh [--json]"
+grt_log inventory begin
 if [[ "$JSON_MODE" == "1" ]]; then
-  grt_log inventory begin
   command -v jq >/dev/null 2>&1 || die "jq is required for --json"
   command -v systemctl >/dev/null 2>&1 || die "systemctl is required for --json"
 fi
@@ -170,7 +170,7 @@ shopt -u nullglob
 
 if [[ "$JSON_MODE" == "1" ]]; then
   TMP="$(mktemp)"
-  trap 'rm -f -- "$TMP"' EXIT
+  trap 'rc=$?; grt_log_finish "$rc"; rm -f -- "$TMP"' EXIT
   for dir in "${RUNNER_DIRS[@]}"; do
     repository=""
     runner_name=""
@@ -269,6 +269,7 @@ else
 fi
 echo
 
+grt_log inventory ok
 if [[ ${#RUNNER_DIRS[@]} -eq 0 ]]; then echo "No actions-runner-* directories found."; exit 0; fi
 
 for dir in "${RUNNER_DIRS[@]}"; do

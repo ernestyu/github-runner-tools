@@ -15,6 +15,9 @@ import cli_create_authority as cli_auth
 from cli_create_authority import validate_official_unit
 
 
+FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
+
+
 class UnitTests(unittest.TestCase):
     def test_canonical_template_matches_interactive_cli_validator(self):
         content = m.unit_bytes("owner/repo", "runner",
@@ -82,6 +85,21 @@ class UnitTests(unittest.TestCase):
             self.assertEqual(dest.stat().st_mode & 0o777, 0o755)
             self.assertEqual(dest.stat().st_uid, os.getuid())
             self.assertEqual(dest.stat().st_gid, os.getgid())
+
+    def test_bootstrap_preserves_official_2328_and_2338_wrapper_bytes(self):
+        for filename in (
+            "actions-runner-v2.328.0-runsvc.sh",
+            "actions-runner-v2.338.0-runsvc.sh",
+        ):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as td:
+                runner = self.make_runner(pathlib.Path(td), wrapper=False)
+                source = runner / "bin/runsvc.sh"
+                official = FIXTURES / filename
+                source.write_bytes(official.read_bytes())
+                source.chmod(0o755)
+                with patch.object(m.pwd, "getpwnam", return_value=self.account()):
+                    m.bootstrap_service_entrypoint(str(runner), "actions")
+                self.assertEqual((runner / "runsvc.sh").read_bytes(), official.read_bytes())
 
     def test_bootstrap_refuses_symlink_source_and_existing_destination(self):
         with tempfile.TemporaryDirectory() as td:

@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "web"))
 import v2_unit_installer as m
+import cli_create_authority as cli_auth
 from cli_create_authority import validate_official_unit
 
 
@@ -102,6 +103,32 @@ class UnitTests(unittest.TestCase):
                     m.bootstrap_service_entrypoint(str(runner), "actions")
             self.assertEqual(ctx.exception.reason, "runner_service_entrypoint_invalid")
             self.assertEqual((runner / "runsvc.sh").read_text(), "preexisting")
+
+
+    def test_trusted_authority_reason_exit_mapping_is_fixed(self):
+        expected = {
+            "runner_service_entrypoint_missing": 64,
+            "runner_service_entrypoint_invalid": 65,
+            "unit_target_exists": 66,
+            "unit_stage_create_failed": 67,
+            "unit_publish_failed": 68,
+            "unit_daemon_reload_failed": 69,
+            "unit_enable_failed": 70,
+            "authority_state_rejected": 71,
+            "authority_identity_rejected": 72,
+            "authority_install_failed": 73,
+        }
+        self.assertEqual(cli_auth.EXIT_BY_REASON, expected)
+        for reason, code in expected.items():
+            with self.subTest(reason=reason):
+                exc = m.UnitInstallError(reason)
+                self.assertEqual(cli_auth._safe_reason(exc), reason)
+                self.assertEqual(cli_auth.EXIT_BY_REASON[cli_auth._safe_reason(exc)], code)
+        self.assertEqual(
+            cli_auth._safe_reason(m.UnitInstallError("arbitrary-untrusted-detail")),
+            "authority_install_failed",
+        )
+
 
 
 if __name__ == "__main__":

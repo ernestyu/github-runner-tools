@@ -224,6 +224,7 @@ def event(args):
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument("--test-root", default=None)
     p.add_argument("--run-id", required=True)
     p.add_argument("--seq", type=int, required=True)
     p.add_argument("--op", required=True)
@@ -237,7 +238,20 @@ def main():
     a = p.parse_args()
     try:
         record = event(a)
-        with Logger() as log:
+        root = ROOT
+        if a.test_root is not None:
+            # Only checkout CI, never an installed production CLI, can direct
+            # the logging sink into its isolated fixture directory.
+            if os.environ.get("GITHUB_ACTIONS") != "true":
+                raise LoggingUnavailable("test_root_not_authorized")
+            candidate = os.path.realpath(a.test_root)
+            runner_temp = os.path.realpath(os.environ.get("RUNNER_TEMP", "/tmp"))
+            if (not candidate.startswith(runner_temp + os.sep)
+                    or not os.path.basename(candidate).startswith("grt-native-logging-")):
+                raise LoggingUnavailable("unsafe_test_root")
+            os.makedirs(candidate, mode=0o700, exist_ok=True)
+            root = candidate
+        with Logger(root) as log:
             log.append(record)
     except (OSError, ValueError, LoggingUnavailable):
         print("CLI operational logging unavailable", file=sys.stderr)

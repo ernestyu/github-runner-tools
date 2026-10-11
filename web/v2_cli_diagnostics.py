@@ -11,6 +11,11 @@ import sys
 
 # Entire categories are static literals, not substrings copied from output.
 SIGNATURES = (
+    (b"v2_cli_launcher: restricted launch rejected capability_drop_failed", "launcher_capability_drop_failed"),
+    (b"v2_cli_launcher: restricted launch rejected identity_drop_failed", "launcher_identity_drop_failed"),
+    (b"v2_cli_launcher: restricted launch rejected fd_missing", "launcher_fd_missing"),
+    (b"v2_cli_launcher: restricted launch rejected peer_rejected", "launcher_peer_rejected"),
+    (b"v2_cli_launcher: restricted launch rejected runner_identity_invalid", "launcher_runner_identity_invalid"),
     (b"v2_cli_launcher: restricted launch rejected", "launcher_rejected"),
     (b"Local archive platform is not installed", "archive_library_missing"),
     (b"Local archive config is missing", "archive_config_missing"),

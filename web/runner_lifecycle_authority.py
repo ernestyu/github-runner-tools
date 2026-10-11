@@ -353,6 +353,54 @@ def normalize_new_registration(repo: str, runner: str, runner_dir: str, user: st
         os.close(fd)
 
 
+def _wrapper_digest(runner_dir: str, uid: int, gid: int) -> dict:
+    """Digest the official archive service wrapper without following links."""
+    dirfd = _safe_directory(runner_dir)
+    try:
+        try:
+            binfd = os.open("bin", os.O_RDONLY | os.O_DIRECTORY |
+                            os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dirfd)
+        except OSError as exc:
+            raise AuthorityError("official service wrapper directory unavailable") from exc
+        try:
+            try:
+                fd = os.open("runsvc.sh", os.O_RDONLY | os.O_NOFOLLOW |
+                             os.O_CLOEXEC, dir_fd=binfd)
+            except OSError as exc:
+                raise AuthorityError("official service wrapper unavailable") from exc
+            try:
+                st = os.fstat(fd)
+                if (not stat.S_ISREG(st.st_mode) or st.st_uid != uid or st.st_gid != gid
+                        or st.st_nlink != 1 or st.st_mode & 0o022
+                        or not (st.st_mode & stat.S_IXUSR)):
+                    raise AuthorityError("official service wrapper untrusted")
+                digest = hashlib.sha256()
+                total = 0
+                while True:
+                    chunk = os.read(fd, 8192)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > 65536:
+                        raise AuthorityError("official service wrapper too large")
+                    digest.update(chunk)
+                if total == 0:
+                    raise AuthorityError("official service wrapper empty")
+                path_st = os.stat("runsvc.sh", dir_fd=binfd, follow_symlinks=False)
+                if (path_st.st_dev, path_st.st_ino, path_st.st_ctime_ns) != (
+                        st.st_dev, st.st_ino, st.st_ctime_ns):
+                    raise AuthorityError("official service wrapper changed")
+                return {"device": st.st_dev, "inode": st.st_ino,
+                        "sha256": digest.hexdigest(), "size": total,
+                        "mode": f"{stat.S_IMODE(st.st_mode):04o}"}
+            finally:
+                os.close(fd)
+        finally:
+            os.close(binfd)
+    finally:
+        os.close(dirfd)
+
+
 def create_attestation(repo: str, runner: str, runner_dir: str, user: str, version: str) -> None:
     _assert_root()
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
@@ -395,12 +443,14 @@ def create_attestation(repo: str, runner: str, runner_dir: str, user: str, versi
         path_state = os.stat(runner_dir, follow_symlinks=False)
         if (path_state.st_dev, path_state.st_ino) != (parent.st_dev, parent.st_ino):
             raise AuthorityError("runner directory path replaced")
+        wrapper = _wrapper_digest(runner_dir, account.pw_uid, account.pw_gid)
         item = {
             "schema": 2, "instance": active["instance"], "issuer": "root-dispatcher-create", "issued_at": int(time.time()),
             "repository": repo, "runner": runner, "runner_dir": runner_dir,
             "github_runner_id": runner_id, "runner_uid": account.pw_uid, "runner_gid": account.pw_gid,
             "directory_device": parent.st_dev, "directory_inode": parent.st_ino,
             "files": {".runner": agent, ".credentials": credentials},
+            "service_wrapper": wrapper,
             "runner_version": version, "capture_stage": "registered-secure-before-service",
         }
     finally:
@@ -579,6 +629,54 @@ def remove_stage(repo: str, runner: str, runner_dir: str, user: str, stage: str)
         return {"complete": True}
     finally:
         os.close(fd)
+
+
+def verify_service_install_provenance(repo: str, runner: str, runner_dir: str,
+                                      user: str, version: str) -> dict:
+    """Root-enforced same-cycle provenance gate for canonical service install."""
+    _assert_root()
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise AuthorityError("invalid attested Runner version")
+    active = _current(repo, runner, runner_dir)
+    if active is None:
+        raise AuthorityError("missing active Create instance")
+    instance = active["instance"]
+    created = _cycle_record(CREATE_STATES, repo, runner, runner_dir, instance)
+    att = _cycle_record(ATTESTATIONS, repo, runner, runner_dir, instance)
+    if (created is None or created.get("stage") != "REGISTERED_UNIT_INCOMPLETE"
+            or (created.get("repository"), created.get("runner"),
+                created.get("runner_dir"), created.get("instance"))
+            != (repo, runner, runner_dir, instance)):
+        raise AuthorityError("service install Create stage rejected")
+    if (att is None or
+            (att.get("repository"), att.get("runner"), att.get("runner_dir"),
+             att.get("instance"))
+            != (repo, runner, runner_dir, instance)
+            or att.get("capture_stage") != "registered-secure-before-service"
+            or att.get("runner_version") != version):
+        raise AuthorityError("service install attestation/version rejected")
+    account = pwd.getpwnam(user)
+    if (att.get("runner_uid"), att.get("runner_gid")) != (
+            account.pw_uid, account.pw_gid):
+        raise AuthorityError("service install owner identity rejected")
+    dirfd = _safe_directory(runner_dir)
+    try:
+        st = os.fstat(dirfd)
+        if (st.st_uid != account.pw_uid or st.st_gid != account.pw_gid
+                or st.st_mode & 0o022
+                or (st.st_dev, st.st_ino) !=
+                (created.get("directory_device"), created.get("directory_inode"))
+                or (st.st_dev, st.st_ino) !=
+                (att.get("directory_device"), att.get("directory_inode"))):
+            raise AuthorityError("service install directory identity rejected")
+    finally:
+        os.close(dirfd)
+    current_wrapper = _wrapper_digest(
+        runner_dir, account.pw_uid, account.pw_gid)
+    if current_wrapper != att.get("service_wrapper"):
+        raise AuthorityError("service wrapper provenance changed")
+    return {"instance": instance, "runner_version": version,
+            "service_wrapper": current_wrapper}
 
 
 def reconcile_incomplete_create_stage(repo: str, runner: str, runner_dir: str,

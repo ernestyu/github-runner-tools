@@ -56,7 +56,7 @@ class UpdaterFaultTests(unittest.TestCase):
 set +e
 CLI_ROOT="$TEST_CLI"; UNIT="$TEST_UNIT"; BACKUP="$TEST_BACKUP"
 LOG_ROOT="$TEST_LOG"; BASELINE_SHA="$TEST_SHA"
-RUNNER_UNITS_BEFORE="$(printf 'actions.runner.test.service enabled\\n' | sha256sum)"
+RUNNER_UNITS_BEFORE="$(printf 'actions.runner.test.service enabled\n' | sha256sum)"
 FILES=(register-runner.sh remove-runner.sh status-runners.sh cli-operational-logger.py)
 COMMITTED=0
 LOG_LOCK_CREATED="$TEST_LOCK_CREATED"
@@ -78,10 +78,10 @@ systemctl() {
     restart) [[ "$TEST_FAIL" == "restart" ]] && return 1; return 0 ;;
     is-active) return 0 ;;
     show)
-      if [[ "$*" == *"ProtectSystem"* ]]; then printf 'strict\\n'
-      else printf '/home/actions /etc/systemd/system\\n'
+      if [[ "$*" == *"ProtectSystem"* ]]; then printf 'strict\n'
+      else printf '/home/actions /etc/systemd/system\n'
       fi ;;
-    list-unit-files) printf 'actions.runner.test.service enabled\\n' ;;
+    list-unit-files) printf 'actions.runner.test.service enabled\n' ;;
     *) return 2 ;;
   esac
 }

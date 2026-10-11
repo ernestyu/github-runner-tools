@@ -11,6 +11,7 @@ GRT_LOG_WARNED=0
 GRT_LOG_REPO="none"
 GRT_LOG_RUNNER="none"
 GRT_LOG_STAGE="none"
+GRT_LOG_EVENT="preflight"
 grt_log() {
   local event="$1" result="$2" reason="${3:-none}" rc="${4:--1}"
   # Existing source-tree regression fixtures do not install host logger files.
@@ -19,6 +20,7 @@ grt_log() {
   if [[ "${GITHUB_ACTIONS:-}" == "true" && "${BASH_SOURCE[0]}" != /usr/local/lib/github-runner-tools/cli/* ]]; then
     return 0
   fi
+  [[ "$result" == "begin" && "$event" != "operation" ]] && GRT_LOG_EVENT="$event"
   GRT_LOG_SEQ=$((GRT_LOG_SEQ + 1))
   if /usr/bin/python3 "$GRT_LOGGER" --run-id "$GRT_LOG_RUN_ID" --seq "$GRT_LOG_SEQ" --op create \
        --event "$event" --stage "$GRT_LOG_STAGE" --result "$result" --reason "$reason" \
@@ -84,7 +86,13 @@ Cross-user provisioning is intentionally unsupported in v1.
 USAGE
 }
 
-die() { echo "ERROR: $*" >&2; exit 1; }
+die() {
+  if [[ "$GRT_LOG_READY" == 1 ]]; then
+    grt_log "$GRT_LOG_EVENT" failed unexpected_cli_failure || :
+  fi
+  echo "ERROR: $*" >&2
+  exit 1
+}
 require_command() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
 
 cleanup() {
@@ -442,6 +450,7 @@ if [[ "$WEB_MODE" != "1" ]]; then
   [[ -n "$TOKEN" ]] || die "Registration token cannot be empty."
 fi
 
+grt_log release_lookup begin
 RELEASE_JSON="$(mktemp)"
 if [[ -n "$TAG" ]]; then API_URL="https://api.github.com/repos/actions/runner/releases/tags/$TAG"; echo "==> Fetching official GitHub Actions Runner release $TAG..."; else API_URL="https://api.github.com/repos/actions/runner/releases/latest"; echo "==> Fetching latest official GitHub Actions Runner release..."; fi
 curl -fsSL --retry 3 --retry-delay 2 "$API_URL" -o "$RELEASE_JSON" || die "Could not fetch GitHub Actions Runner release metadata."
@@ -456,11 +465,14 @@ fi
 ARCHIVE="actions-runner-linux-${RUNNER_ARCH}-${VERSION}.tar.gz"
 DOWNLOAD_URL="$(jq -er --arg NAME "$ARCHIVE" '.assets[] | select(.name == $NAME) | .browser_download_url' "$RELEASE_JSON")" || die "Could not find $ARCHIVE in official release $TAG"
 DIGEST="$(jq -r --arg NAME "$ARCHIVE" '.assets[] | select(.name == $NAME) | (.digest // empty)' "$RELEASE_JSON")"
+grt_log release_lookup ok
 ARCHIVE_PATH="$RUNNER_DIR/$ARCHIVE"
 
 echo "==> Runner release: $TAG"
+grt_log runner_download begin
 echo "==> Downloading $ARCHIVE..."
 curl -fL --retry 3 --retry-delay 2 -o "$ARCHIVE_PATH" "$DOWNLOAD_URL" || die "Runner download failed."
+grt_log runner_download ok
 if [[ "$DIGEST" == sha256:* ]]; then
   EXPECTED_SHA256="${DIGEST#sha256:}"; ACTUAL_SHA256="$(sha256sum "$ARCHIVE_PATH" | awk '{print $1}')"
   [[ "$EXPECTED_SHA256" == "$ACTUAL_SHA256" ]] || die "SHA-256 verification failed for $ARCHIVE"
@@ -469,8 +481,10 @@ else
   echo "WARNING: GitHub release metadata did not provide a SHA-256 digest for this asset." >&2
 fi
 
+grt_log runner_extract begin
 echo "==> Extracting runner..."
 tar xzf "$ARCHIVE_PATH"; rm -f -- "$ARCHIVE_PATH"; ARCHIVE_PATH=""
+grt_log runner_extract ok
 echo "==> Checking/installing official runner dependencies..."
 if [[ "$WEB_MODE" == "1" ]]; then
   if command -v ldd >/dev/null 2>&1 && ldd ./bin/Runner.Listener 2>/dev/null | grep -q 'not found'; then

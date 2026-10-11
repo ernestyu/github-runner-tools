@@ -64,6 +64,8 @@ def pump_transaction(runtime, transaction, pid: int, control: socket.socket,
                 if got == pid:
                     exited, status = True, code
             if exited and (control_eof or not input_buffer) and output_eof:
+                from v2_cli_diagnostics import log_cli_exit
+                log_cli_exit(transaction.op, status, bytes(output))
                 return status, False
             events = poll.select(min(max(deadline - time.monotonic(), 0), 0.15))
             for key, _mask in events:

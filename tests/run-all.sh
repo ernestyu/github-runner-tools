@@ -66,6 +66,8 @@ echo "RUN: tests/test-runner-version-compatibility.py"
 python3 "$ROOT/tests/test-runner-version-compatibility.py"
 echo "RUN: tests/test-cli-clean-incomplete-safety.py"
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/test-cli-clean-incomplete-safety.py"
+echo "RUN: tests/test-cli-authority-reason-transport.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/test-cli-authority-reason-transport.py"
 echo "RUN: tests/test-runner-lifecycle-authority.py (root-isolated)"
 if [[ "$(id -u)" == "0" ]]; then
   PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/test-runner-lifecycle-authority.py"

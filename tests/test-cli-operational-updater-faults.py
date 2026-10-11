@@ -194,6 +194,7 @@ class TransactionFaultTests(unittest.TestCase):
         substitutions = (
             ("/usr/local/lib/github-runner-tools/cli", str(self.cli)),
             ("/etc/systemd/system/github-runner-tools-executor.service", str(self.unit)),
+            ("/etc/systemd/system/.grt-executor-update.", str(self.root / ".grt-executor-update.")),
             ("/var/log/github-runner-tools", str(self.log)),
             ("/run/lock/github-runner-tools/mutation.lock", str(self.lock)),
             ("/var/lib/github-runner-tools/cli-logging-upgrade.", str(self.backups / "cli-logging-upgrade.")),

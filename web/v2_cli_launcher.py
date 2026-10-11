@@ -128,24 +128,8 @@ def main() -> int:
     repo = sys.argv[2] if len(sys.argv) == 3 else None
     try:
         launch(op, repo)
-    except (LaunchError, OSError, ValueError) as exc:
-        # Only known fixed error messages are reportable. Never echo external
-        # paths, credentials, exception repr or caller-derived values.
-        known = {
-            "invalid root launch identity": "identity_invalid",
-            "privilege drop failed": "capability_drop_failed",
-            "capability drop failed": "capability_drop_failed",
-            "capability pre-drop verification failed": "capability_drop_failed",
-            "identity drop verification failed": "identity_drop_failed",
-            "capabilities not cleared": "capability_drop_failed",
-            "missing privileged descriptor": "fd_missing",
-            "privileged peer not root": "peer_rejected",
-            "unsupported operation": "operation_invalid",
-            "unsupported runner identity": "runner_identity_invalid",
-        }
-        category = known.get(str(exc), "other_rejected")
-        print("v2_cli_launcher: restricted launch rejected " + category,
-              file=sys.stderr, flush=True)
+    except (LaunchError, OSError, ValueError):
+        print("v2_cli_launcher: restricted launch rejected", file=sys.stderr)
         return 1
     return 0
 

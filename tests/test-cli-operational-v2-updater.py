@@ -12,7 +12,7 @@ class UpgradeContract(unittest.TestCase):
         s=self.text
         self.assertIn("sudo cmp -s \"$BASELINE\" \"$UNIT\"",s)
         self.assertIn("UNKNOWN_EXECUTOR_UNIT_BASELINE",s)
-        self.assertEqual(s.count("ReadWritePaths=/home/actions"),1)
+        self.assertIn("ReadWritePaths=/home/actions /etc/systemd/system",s)
         self.assertIn('ProtectSystem=strict',s)
     def test_log_creation_is_rollback_protected(self):
         s=self.text

@@ -43,6 +43,7 @@ jobs:
           python3 tests/test-web-v2-unit-installer.py
           python3 tests/test-web-v2-failure.py
           bash tests/test-web-v2-setup.sh
+          python3 tests/test-web-v2-cutover-faults.py
           python3 tests/test-web-v2-real-private-channel.py
           python3 tests/test-web-v2-install-manifest.py
           python3 tests/test-web-v2-real-spawn.py

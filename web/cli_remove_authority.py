@@ -6,6 +6,7 @@ No generic root execution, shell or alternate removal state machine.
 """
 from __future__ import annotations
 
+import json
 import os
 import pwd
 import re
@@ -19,7 +20,7 @@ class RemoveCLIError(ValueError):
     pass
 
 
-def checkpoint(argv: list[str], *, sudo_user: str | None = None) -> None:
+def checkpoint(argv: list[str], *, sudo_user: str | None = None) -> dict | None:
     if os.geteuid() != 0:
         raise RemoveCLIError("root checkpoint authority required")
     user = sudo_user if sudo_user is not None else os.environ.get("SUDO_USER")
@@ -59,15 +60,23 @@ def checkpoint(argv: list[str], *, sudo_user: str | None = None) -> None:
     elif os.path.lexists(directory):
         raise RemoveCLIError("runner still exists after cleanup")
     if stage in reconciliation:
-        reconcile_incomplete_create_stage(
+        return reconcile_incomplete_create_stage(
             repo, runner, directory, user, reconciliation[stage])
-    else:
-        remove_stage(repo, runner, directory, user, stage)
+    remove_stage(repo, runner, directory, user, stage)
+    return None
 
 
 def main() -> int:
     try:
-        checkpoint(sys.argv[1:])
+        result = checkpoint(sys.argv[1:])
+        if len(sys.argv) == 5 and sys.argv[4] == "RECONCILE_CONFIRM_REMOTE_REMOVED":
+            if (not isinstance(result, dict)
+                    or type(result.get("device")) is not int
+                    or type(result.get("inode")) is not int):
+                raise RemoveCLIError("invalid reconciliation cleanup proof")
+            print(json.dumps(
+                {"device": result["device"], "inode": result["inode"]},
+                sort_keys=True, separators=(",", ":")))
     except (AuthorityError, RemoveCLIError, OSError, ValueError, TypeError):
         print("CLI Remove checkpoint rejected; reconcile before retry", file=sys.stderr)
         return 1

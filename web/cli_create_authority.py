@@ -129,9 +129,11 @@ def main(argv: list[str]) -> None:
     elif op == "install":
         if action != "-" or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
             raise AuthorityError("invalid Unit installation request")
-        verify_service_install_provenance(
+        provenance = verify_service_install_provenance(
             repo, runner_name, directory, user, version)
-        install_canonical_unit(repo, runner_name, directory, user)
+        install_canonical_unit(
+            repo, runner_name, directory, user,
+            provenance["service_wrapper"])
     else:
         if action != "-" or version != "-":
             raise AuthorityError("invalid Unit verification")

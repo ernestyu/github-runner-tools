@@ -12,6 +12,7 @@ GRT_LOG_REPO="none"
 GRT_LOG_RUNNER="none"
 GRT_LOG_STAGE="none"
 GRT_LOG_EVENT="preflight"
+GRT_LOG_LAST_REASON="none"
 grt_log() {
   local event="$1" result="$2" reason="${3:-none}" rc="${4:--1}"
   # An isolated CI source-tree CLI uses the same logger, with a test-only
@@ -39,9 +40,13 @@ grt_log() {
   return 0
 }
 grt_log_finish() {
-  local rc="$1"
+  local rc="$1" reason="none"
   if [[ "$GRT_LOG_READY" == "1" ]]; then
-    grt_log operation_exit "$([[ "$rc" == 0 ]] && echo ok || echo failed)" "$([[ "$rc" == 0 ]] && echo none || echo unexpected_cli_failure)" "$rc" || :
+    if [[ "$rc" != 0 ]]; then
+      reason="$GRT_LOG_LAST_REASON"
+      [[ "$reason" != "none" ]] || reason="$(grt_reason_for_event)"
+    fi
+    grt_log operation_exit "$([[ "$rc" == 0 ]] && echo ok || echo failed)" "$reason" "$rc" || :
   fi
 }
 
@@ -110,6 +115,9 @@ grt_reason_for_event() {
   esac
 }
 die() {
+  local safe_reason
+  safe_reason="$GRT_LOG_LAST_REASON"
+  [[ "$safe_reason" != "none" ]] || safe_reason="$(grt_reason_for_event)"
   if [[ "$GRT_LOG_READY" == 1 ]]; then
     # A remote outcome may be unknown despite CLI exit 1. Never imply retry.
     if [[ "$GRT_LOG_EVENT" == "remote_registration" || "$GRT_LOG_EVENT" == "remote_removal" ]]; then
@@ -118,7 +126,7 @@ die() {
     case "$GRT_LOG_STAGE" in
       REGISTRATION_OUTCOME_UNKNOWN|REMOTE_REMOVE_OUTCOME_UNKNOWN)
         grt_log "$GRT_LOG_EVENT" unknown remote_result_uncertain || : ;;
-      *) grt_log "$GRT_LOG_EVENT" failed "$(grt_reason_for_event)" || : ;;
+      *) GRT_LOG_LAST_REASON="$safe_reason"; grt_log "$GRT_LOG_EVENT" failed "$safe_reason" || : ;;
     esac
     fi
   fi
@@ -220,8 +228,26 @@ cli_create_authority() {
     die "Trusted installed CLI lifecycle authority missing; install the approved tooling before Create."
   [[ "$(stat -c '%U:%G:%a' "$authority")" == "root:root:755" ]] ||
     die "CLI lifecycle authority ownership/mode invalid."
-  sudo /usr/bin/python3 "$authority" "$verb" "$REPO" "$RUNNER_NAME" "$RUNNER_DIR" "$action" "$version" ||
-    die "CLI lifecycle integrity checkpoint failed; keep registered resources for admin review."
+  local rc=0
+  if sudo /usr/bin/python3 "$authority" "$verb" "$REPO" "$RUNNER_NAME" "$RUNNER_DIR" "$action" "$version"; then
+    return 0
+  else
+    rc=$?
+  fi
+  case "$rc" in
+    64) GRT_LOG_LAST_REASON="runner_service_entrypoint_missing" ;;
+    65) GRT_LOG_LAST_REASON="runner_service_entrypoint_invalid" ;;
+    66) GRT_LOG_LAST_REASON="unit_target_exists" ;;
+    67) GRT_LOG_LAST_REASON="unit_stage_create_failed" ;;
+    68) GRT_LOG_LAST_REASON="unit_publish_failed" ;;
+    69) GRT_LOG_LAST_REASON="unit_daemon_reload_failed" ;;
+    70) GRT_LOG_LAST_REASON="unit_enable_failed" ;;
+    71) GRT_LOG_LAST_REASON="authority_state_rejected" ;;
+    72) GRT_LOG_LAST_REASON="authority_identity_rejected" ;;
+    73) GRT_LOG_LAST_REASON="authority_install_failed" ;;
+    *)  GRT_LOG_LAST_REASON="authority_install_failed" ;;
+  esac
+  die "CLI lifecycle integrity checkpoint failed; keep registered resources for admin review."
 }
 
 web_create_stage() {
@@ -518,8 +544,9 @@ if [[ "$DIGEST" == sha256:* ]]; then
   grt_log digest_check ok
   echo "==> SHA-256 verification: OK"
 else
-  grt_log digest_check skipped
-  echo "WARNING: GitHub release metadata did not provide a SHA-256 digest for this asset." >&2
+  grt_log digest_check begin
+  GRT_LOG_LAST_REASON="integrity_failed"
+  die "GitHub release metadata did not provide a SHA-256 digest; refusing unverified service bootstrap."
 fi
 
 grt_log runner_extract begin

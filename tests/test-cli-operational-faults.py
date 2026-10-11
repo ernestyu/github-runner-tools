@@ -22,8 +22,10 @@ def record(i):
                 op="status",event="inventory",stage="none",result="ok",
                 reason="none",exit_code=0,repository=None,runner=None)
 
-def worker(root, start, count, q):
+def worker(root, start, count, q, max_file=None):
     try:
+        if max_file is not None:
+            mod.MAX_FILE = max_file
         for i in range(start,start+count):
             with mod.Logger(root) as l:
                 l.append(record(i))
@@ -78,6 +80,30 @@ class OperationalFaultTests(unittest.TestCase):
         self.assertGreater(len(files),1)
         self.assertTrue(all(p.stat().st_size<=1500 for p in files))
         self.assertEqual(sum(len(p.read_text().splitlines()) for p in files),40)
+
+    def test_simultaneous_multiprocess_rotation_preserves_all_events(self):
+        ctx=mp.get_context("spawn")
+        q=ctx.Queue()
+        # Every spawned process runs the actual Logger with an isolated small
+        # rotation threshold, sharing one directory and one real flock.
+        procs=[ctx.Process(target=worker,args=(str(self.root),i*20,20,q,1100))
+               for i in range(4)]
+        for p in procs:p.start()
+        try:
+            errors=[q.get(timeout=35) for _ in procs]
+            self.assertEqual(errors,[None]*len(procs))
+        finally:
+            for p in procs:
+                p.join(timeout=8)
+                if p.is_alive():p.terminate()
+                self.assertEqual(p.exitcode,0)
+        rotated=list(self.root.glob("operational.*.jsonl"))
+        self.assertGreater(len(rotated),1)
+        files=list(self.root.glob("operational*.jsonl"))
+        self.assertTrue(all(p.stat().st_size<=1100 for p in files))
+        records=[json.loads(line) for p in files for line in p.read_text().splitlines()]
+        self.assertEqual(len(records),80)
+        self.assertEqual(len({r["run_id"] for r in records}),80)
 
     def test_lock_timeout_is_bounded_without_mutation(self):
         ctx=mp.get_context("spawn")

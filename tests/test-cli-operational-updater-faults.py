@@ -20,6 +20,8 @@ SOURCE = Path(__file__).resolve().parents[1] / "scripts/update-cli-operational-l
 SHA = "a" * 40
 FILES = ("register-runner.sh", "remove-runner.sh", "status-runners.sh",
          "cli-operational-logger.py")
+WEB_FILES = ("cli_create_authority.py", "cli_remove_authority.py",
+             "runner_lifecycle_authority.py", "v2_unit_installer.py")
 UNIT_BASE = re.search(r"cat > \"\$BASELINE\" <<'UNIT_EOF'\n(.*?)\nUNIT_EOF",
                       SOURCE.read_text(), re.S).group(1) + "\n"
 
@@ -163,6 +165,8 @@ class TransactionFaultTests(unittest.TestCase):
         self.backups.mkdir()
         self.web = self.root / "web"
         self.web.mkdir()
+        self.source_web = self.repo / "web"
+        self.source_web.mkdir()
         self.sock_path = self.root / "executor.sock"
         self.sock = socket.socket(socket.AF_UNIX)
         self.sock.bind(str(self.sock_path))
@@ -184,6 +188,10 @@ class TransactionFaultTests(unittest.TestCase):
             if old:
                 (self.cli / name).write_text(old)
         self.original = {p.name: p.read_bytes() for p in self.cli.iterdir()}
+        for name in WEB_FILES:
+            (self.source_web / name).write_text("#!/usr/bin/env python3\nprint('new-web')\n")
+            (self.web / name).write_text("#!/usr/bin/env python3\nprint('old-web')\n")
+        self.original_web = {p.name: p.read_bytes() for p in self.web.iterdir()}
         self.bin = self.root / "bin"
         self.bin.mkdir()
         (self.bin / "mock").write_text(MOCK)
@@ -230,6 +238,9 @@ class TransactionFaultTests(unittest.TestCase):
                           if not p.name.startswith(".grt-cli-update")}, self.original)
         self.assertEqual(self.state.read_text().strip(), "active")
         self.assertEqual(self.runner_units.read_bytes(), self.original_units)
+        self.assertEqual({p.name: p.read_bytes() for p in self.web.iterdir()
+                          if not p.name.startswith(".grt-web-update")},
+                         self.original_web)
 
     def test_success_commits_complete_transaction(self):
         p = self.invoke()
@@ -238,6 +249,9 @@ class TransactionFaultTests(unittest.TestCase):
         self.assertTrue((self.log / "operational.jsonl").is_file())
         self.assertEqual(len(self.backups_found()), 1)
         self.assertEqual(self.runner_units.read_bytes(), self.original_units)
+        for name in WEB_FILES:
+            self.assertEqual((self.web / name).read_bytes(),
+                             (self.source_web / name).read_bytes())
 
     def test_preflight_cannot_mutate_installation(self):
         self.unit.write_text(self.baseline_unit.replace("ProtectSystem=strict", "ProtectSystem=full"))

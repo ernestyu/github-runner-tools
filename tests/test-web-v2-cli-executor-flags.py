@@ -35,14 +35,14 @@ class PrivateExecutorFlagTests(unittest.TestCase):
 
     def test_executor_remove_keeps_secret_out_of_config_argv(self):
         script = (ROOT / "scripts" / "remove-runner.sh").read_text()
-        self.assertIn('if [[ "$EXECUTOR_MODE" != "1" ]]; then\n    web_token_from_fd', script)
         self.assertIn('--token-fd "$TOKEN_FD" --mode remove -- ./config.sh remove', script)
-        self.assertIn('if [[ "$EXECUTOR_MODE" == "1" ]]; then\n    # V2 consumes', script)
-        # V1 backward compatibility may still use the legacy --token form;
-        # the V2 branch must precede it and never reference the Bash secret.
-        start = script.index('if [[ "$EXECUTOR_MODE" == "1" ]]; then\n    # V2 consumes')
-        end = script.index('elif ( exec {RESULT_FD}>&-;', start)
-        self.assertNotIn('"$TOKEN"', script[start:end])
+        start = script.index('if [[ "$WEB_MODE" == "1" ]]; then\n  REMOVE_STAGE="config_remove_failed"')
+        end = script.index('\nelse\n  ./config.sh remove --token "$TOKEN"', start)
+        executor_branch = script[start:end]
+        self.assertNotIn('./config.sh remove --token "$TOKEN"', executor_branch)
+        self.assertNotIn('RESULT_FD', executor_branch)
+        self.assertIn('exec 4>&-', executor_branch)
+        self.assertIn('exec {TOKEN_FD}<&-', executor_branch)
     def test_executor_mode_rejects_fake_fd(self):
         for script in ("register-runner.sh", "remove-runner.sh"):
             with self.subTest(script=script):

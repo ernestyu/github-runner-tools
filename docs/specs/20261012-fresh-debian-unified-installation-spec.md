@@ -62,7 +62,28 @@ Initial acceptance target:
 - that user has working `sudo` access;
 - `curl` and CA certificates must exist sufficiently to fetch the bootstrap; the installer may install remaining Debian package dependencies through `sudo apt-get`.
 
-The installer must derive the Runner owner, primary group, and home directory from the invoking user. It must not hard-code `actions` or `/home/actions`.
+The fresh installer **must run as the intended non-root Runner owner**. This is a security boundary, not a convenience recommendation.
+
+Before any persistent host mutation, it must enforce:
+
+```text
+EUID == 0
+→ fail
+→ no persistent mutation
+```
+
+Therefore:
+
+- direct root execution is unsupported;
+- `sudo bash install.sh` is unsupported;
+- `curl ... | sudo bash` is unsupported;
+- the installer must not infer `SUDO_USER` and continue as though that user had invoked it;
+- the canonical entrypoint remains `curl -fsSL .../install.sh | bash` from the intended non-root Runner owner;
+- the installer itself invokes `sudo` only for bounded host-level mutations that require root authority.
+
+The installer must derive the Runner owner, primary group, and home directory from the actual non-root invoking user. It must not hard-code `actions` or `/home/actions`.
+
+All identity preflight, including the root-invocation rejection, must occur before creating or changing installation directories, users, configuration, systemd units, archive state, lifecycle state, log state, or other persistent host objects.
 
 ARM64 support already present in Runner lifecycle code is not removed, but fresh-installer release acceptance on ARM64 is not a release gate until separately validated.
 
@@ -264,7 +285,11 @@ Default automatic selection:
 
 Loopback, link-local, multicast, wildcard, and public IPv4 addresses must not be selected automatically.
 
-The selected address is persisted as `WEB_BIND_ADDRESS`.
+The selected address is persisted as the exact `WEB_BIND_ADDRESS`.
+
+That persisted address is authoritative after installation. Web startup must **not** re-run LAN discovery and must not silently switch to another interface or private address after reboot, DHCP change, VPN appearance, or routing change.
+
+If the configured address is no longer assigned to the host, Web startup must fail clearly rather than binding a different address. The administrator must explicitly reconfigure `WEB_BIND_ADDRESS` and restart the Web service.
 
 The Web application must permit that validated configured private address rather than enforcing `127.0.0.1`.
 
@@ -362,17 +387,137 @@ Implementation must not redesign:
 
 Any code edits needed to remove the V1 fallback or enable LAN HTTP must be narrowly limited to routing/transport/configuration and must not introduce an alternative lifecycle implementation.
 
-## 12. Fresh-install failure and existing-host behavior
+## 12. Fresh-install failure, retry, and existing-host behavior
 
 This installer is first-install authority, not a migration engine.
 
-By default it must fail closed if it detects an existing github-runner-tools management installation whose ownership/configuration cannot be proven as an exact supported reinstall target.
-
 It must not contain V1→current migration code.
 
-Replacement/upgrade of an already installed current version may be added only as a separately specified mode or release task. It is not required to satisfy fresh Debian installation.
+Replacement/upgrade of an already completed current installation may be added only as a separately specified mode or release task. It is not required to satisfy fresh Debian installation.
 
-Fresh-install failure after persistent mutation must report the exact failed stage and leave enough deterministic state for safe administrator cleanup/retry. It must never mutate registered Runner services as part of installer rollback.
+### 12.1 Root-owned install-attempt record
+
+Before the first persistent installation mutation, after all non-mutating preflights pass, the installer must create exactly one root-owned install-attempt record:
+
+```text
+/var/lib/github-runner-tools/install-state.json
+```
+
+Required properties:
+
+- root-owned;
+- mode `0600`;
+- regular file;
+- not a symlink;
+- atomically written/replaced;
+- never writable by the Runner owner or `grt-web`.
+
+The record is installer metadata only. It is not part of Runner lifecycle authority and must never be used to rewrite or infer Runner Create/Remove state.
+
+It must contain at least:
+
+```json
+{
+  "schema": 1,
+  "release": "<immutable release/version>",
+  "payload_sha256": "<verified archive sha256>",
+  "attempt_id": "<fresh random identifier>",
+  "runner_user": "<non-root invoking user>",
+  "runner_uid": 1000,
+  "runner_gid": 1000,
+  "runner_home": "/home/example",
+  "web_bind_address": "192.168.1.20",
+  "stage": "<recognized install stage>"
+}
+```
+
+Exact field encoding may vary, but these bindings and semantics are mandatory.
+
+Recognized stages must be finite and fixed by implementation/tests. At minimum the stage model must distinguish:
+
+```text
+ATTEMPT_STARTED
+RUNTIME_INSTALLED
+AUTHORITY_STATE_INITIALIZED
+ARCHIVE_PLATFORM_INITIALIZED
+EXECUTOR_INSTALLED
+WEB_INSTALLED
+SERVICES_STARTED
+SMOKE_VERIFIED
+INSTALL_COMPLETE
+```
+
+The implementation may combine adjacent internal steps only if fault-injection tests still prove deterministic retry for every required failure point in §13.7.
+
+### 12.2 Same-release partial-install re-entry
+
+This SPEC chooses one recovery model: **a proven partial install of the same release is idempotently re-entered and continued**.
+
+A second invocation may continue a partial installation only when all of the following are true:
+
+1. `install-state.json` exists and is valid;
+2. its release and payload SHA-256 exactly match the bootstrap being executed;
+3. recorded Runner owner/uid/gid/home exactly match the current non-root invoker;
+4. its stage is one of the recognized partial stages and is not `INSTALL_COMPLETE`;
+5. every already-created managed object expected at that stage is independently verified for exact path, type, ownership, mode, and where applicable byte identity/content;
+6. no unknown or conflicting github-runner-tools management object is present;
+7. no Runner Unit, Runner directory, registration, or Runner lifecycle record needs to be changed in order to resume.
+
+If all checks pass, the installer may re-run already completed installation steps only when those steps are defined and tested as idempotent, then continue forward. It must not trust the stage field alone.
+
+### 12.3 Fail-closed cases
+
+The installer must refuse automatic retry when any of the following is true:
+
+- release differs;
+- payload SHA differs;
+- Runner owner identity differs;
+- install-state is missing while partial managed objects exist;
+- install-state is malformed, symlinked, has unsafe ownership/mode/type, or has an unknown stage;
+- an existing managed file/unit/config differs from the exact expected object for the recorded stage;
+- a completed installation (`INSTALL_COMPLETE`) already exists;
+- any unknown management installation is detected.
+
+The refusal must identify the conflicting installation stage/object and must not delete or overwrite it automatically.
+
+A completed current installation is not treated as a partial fresh install. Reinstall/upgrade semantics for `INSTALL_COMPLETE` remain out of scope.
+
+### 12.4 Failure behavior
+
+On any failure after persistent mutation:
+
+- return nonzero;
+- report the exact failed installation stage;
+- atomically persist the last safely completed recognized stage;
+- preserve the verified same-release partial state for deterministic retry;
+- do not perform broad automatic rollback;
+- do not delete evidence needed to prove the partial state;
+- do not create, remove, stop, restart, rewrite, or unregister any GitHub Actions Runner Unit/registration as rollback behavior.
+
+Installer cleanup is limited to uncommitted private temporary objects created by the currently failing step. It must not recursively delete previously committed managed installation objects merely to recreate a “fresh” host.
+
+After `SMOKE_VERIFIED`, the installer atomically advances the record to `INSTALL_COMPLETE` only after all success conditions are proven.
+
+### 12.5 Retry outcome
+
+For the same verified release, repeating the canonical one-line install command after a recognized partial failure must have a deterministic result:
+
+```text
+recognized + exact partial state
+→ verify
+→ continue
+→ INSTALL_COMPLETE
+```
+
+or:
+
+```text
+mismatch / unknown state
+→ fail closed
+→ no destructive cleanup
+```
+
+Manual deletion of partial state is not the normal retry path and must not be required for faults covered by the supported stage model.
 
 ## 13. Required automated tests
 
@@ -397,12 +542,24 @@ Installer tests must execute from a directory that is not a Git checkout.
 In an isolated Debian/systemd-capable test environment or faithful root-isolated host fixture:
 
 - begin with no `/usr/local/lib/github-runner-tools`, no management config, no management units, and no lifecycle state;
-- execute the production fresh installer;
+- execute the production fresh installer as a normal non-root user with working sudo;
 - verify CLI + Web + Executor + archive platform installation;
 - verify root ownership/modes and dependency closure;
 - verify no old dispatcher unit;
 - verify no Tailscale dependency;
-- verify smoke checks.
+- verify smoke checks;
+- verify `install-state.json` reaches `INSTALL_COMPLETE`.
+
+Identity-boundary tests must additionally prove:
+
+```text
+normal non-root + sudo available → PASS
+direct root execution → FAIL before persistent mutation
+sudo bash install.sh → FAIL before persistent mutation
+curl ... | sudo bash → FAIL before persistent mutation
+```
+
+The root-rejection tests must assert that no install-state, runtime directory, management unit, service account, configuration, archive state, lifecycle state, or log state was created by the rejected invocation.
 
 ### 13.4 LAN binding
 
@@ -413,7 +570,10 @@ Cover:
 - no private IPv4 → fail;
 - public-only address → not automatically selected;
 - loopback-only → not accepted as default LAN install;
-- wildcard `0.0.0.0` → not selected automatically.
+- wildcard `0.0.0.0` → not selected automatically;
+- persisted configured address remains unchanged across service restart/reboot;
+- configured address absent from the host → Web startup fails clearly;
+- appearance of another RFC1918/VPN address must not cause automatic rebinding.
 
 ### 13.5 HTTP auth/session
 
@@ -427,7 +587,29 @@ Real HTTP tests must prove:
 - confirmation nonce remains one-time/bounded;
 - password/token values do not appear in application, systemd, or operational logs.
 
-### 13.6 CLI/Web fresh-host lifecycle acceptance
+### 13.6 Partial-install failure/retry fault injection
+
+Using the production installer in an isolated host fixture, inject failure after at least:
+
+- runtime installation;
+- authority/lifecycle state initialization;
+- archive-platform initialization;
+- Executor Unit installation;
+- Web Unit installation;
+- service start;
+- first-install smoke verification.
+
+For every injected failure, tests must prove:
+
+1. nonzero exit identifies the failed stage;
+2. the install-attempt record retains the last safely completed recognized stage;
+3. no Runner Unit/registration/lifecycle state is mutated as rollback;
+4. the same release/payload re-run verifies existing objects and reaches `INSTALL_COMPLETE`;
+5. corrupting one already-created managed object before retry causes fail-closed refusal rather than overwrite;
+6. changing release, payload SHA, or invoking-user identity causes fail-closed refusal;
+7. unknown partial objects without a valid install-attempt record are not adopted.
+
+### 13.7 CLI/Web fresh-host lifecycle acceptance
 
 After fresh install, use disposable Runner identities to prove:
 
@@ -522,7 +704,10 @@ Independent auditor should answer:
 9. Is the historical dispatcher runtime fallback removed?
 10. Are existing lifecycle/UNKNOWN semantics unchanged?
 11. Are fresh CLI and Web lifecycle acceptance requirements sufficient?
-12. Is a clean Debian live acceptance required before release?
+12. Does root invocation fail before every persistent mutation without using `SUDO_USER` as an escape hatch?
+13. Is same-release partial-install retry deterministic, identity-bound, stage-bound, and fail-closed on mismatch?
+14. Does the persisted LAN bind address remain fixed until explicit administrator reconfiguration?
+15. Is a clean Debian live acceptance required before release?
 
 Required verdict:
 

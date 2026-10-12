@@ -49,7 +49,7 @@ class FreshInstallContractTests(unittest.TestCase):
                 "web/v2_executor.py",
                 "hooks/archive-job-completed.sh",
             }
-            self.assertTrue(required.issubset(names))
+            self.assertTrue(required.issubset(names), required - names)
             self.assertFalse(any(
                 n == ".git" or n.startswith(".git/") or
                 n.startswith("tests/") or n.startswith("docs/") or
@@ -111,7 +111,7 @@ class FreshInstallContractTests(unittest.TestCase):
             "unknown_install_stage",
         ):
             self.assertIn(binding, source)
-        self.assertIn('"install-state.json"', source)
+        self.assertIn('INSTALL_STATE="$STATE_ROOT/install-state.json"', source)
         self.assertIn("GRT_TEST_FAULT_STAGE", source)
         self.assertIn("configured_lan_address_not_assigned", source)
 

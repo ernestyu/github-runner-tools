@@ -22,6 +22,8 @@ cleanup() {
 trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+CURRENT_CASE="fixture-bootstrap"
+trap 'rc=$?; echo "FIXTURE_FAILED case=$CURRENT_CASE line=$LINENO rc=$rc" >&2' ERR
 
 bash "$ROOT/scripts/build-release.sh" "$RELEASE" "$DIST" >/dev/null
 ARCHIVE="$DIST/github-runner-tools-$RELEASE.tar.gz"
@@ -106,6 +108,7 @@ assert_complete_install() {
 }
 
 # Identity boundary: root and sudo-root entrypoints fail before persistent mutation.
+CURRENT_CASE="root-boundary"
 name="grt-root-boundary-$$"
 new_container "$name"
 for mode in direct sudo pipe; do
@@ -139,6 +142,7 @@ docker rm -f "$name" >/dev/null
 containers=("${containers[@]/$name}")
 
 # Unknown partial installation without an attempt record is never adopted.
+CURRENT_CASE="unknown-partial"
 name="grt-unknown-partial-$$"
 new_container "$name"
 docker exec "$name" mkdir -p /usr/local/lib/github-runner-tools/unknown
@@ -162,6 +166,7 @@ stages=(
 
 representative=""
 for stage in "${stages[@]}"; do
+  CURRENT_CASE="$stage:inject"
   safe="${stage,,}"
   name="grt-${safe//_/-}-$$"
   new_container "$name"
@@ -174,6 +179,7 @@ for stage in "${stages[@]}"; do
   assert_no_runner_mutation "$name"
 
   # Every partial stage is release, payload and invoking-user bound.
+  CURRENT_CASE="$stage:identity-bindings"
   out="$(run_expect_failure "$name" runner "v9.9.6" "$SHA")"
   [[ "$out" == *partial_release_mismatch* ]] || fail "$stage release mismatch not rejected"
   out="$(run_expect_failure "$name" runner "$RELEASE" "$(printf '0%.0s' {1..64})")"
@@ -182,6 +188,7 @@ for stage in "${stages[@]}"; do
   [[ "$out" == *partial_runner_user_mismatch* ]] || fail "$stage user mismatch not rejected"
 
   # Clone the partial filesystem, corrupt one committed runtime object, and
+  CURRENT_CASE="$stage:corruption-clone"
   # prove retry refuses to overwrite it.
   corrupt_image="grt-fresh-corrupt-${safe}:$$"
   images+=("$corrupt_image")
@@ -198,6 +205,7 @@ for stage in "${stages[@]}"; do
   containers=("${containers[@]/$corrupt_name}")
 
   # Original exact partial state deterministically resumes to completion.
+  CURRENT_CASE="$stage:resume"
   run_installer "$name" runner "$RELEASE" "$SHA" >/dev/null
   assert_complete_install "$name"
 
@@ -210,6 +218,7 @@ for stage in "${stages[@]}"; do
 done
 
 # Real LAN HTTP check on one completed fixture.
+CURRENT_CASE="lan-http"
 bind="$(docker exec "$representative" sed -n 's/^WEB_BIND_ADDRESS=//p' /etc/github-runner-tools/web.conf)"
 [[ "$bind" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.) ]] || fail "installer did not persist RFC1918 bind"
 
@@ -221,6 +230,7 @@ cookie_line="$(printf '%s\n' "$headers" | tr -d '\r' | grep -i '^Set-Cookie:' | 
 [[ "$cookie_line" != *"Secure"* ]] || fail "HTTP cookie incorrectly contains Secure"
 
 # A new private address must not cause automatic rebinding.
+CURRENT_CASE="lan-restart-stable"
 docker exec "$representative" ip addr add 10.254.254.254/32 dev lo
 before="$(docker exec "$representative" sha256sum /etc/github-runner-tools/web.conf | awk '{print $1}')"
 docker exec "$representative" systemctl restart github-runner-tools-web.service
@@ -230,6 +240,7 @@ after="$(docker exec "$representative" sha256sum /etc/github-runner-tools/web.co
   fail "Web silently rebound after another private address appeared"
 
 # If the persisted address disappears, restart must fail clearly rather than
+CURRENT_CASE="lan-address-disappears"
 # selecting the newly-added private address.
 cidr="$(docker exec "$representative" ip -4 -o addr show | awk -v ip="$bind" '$4 ~ ("^" ip "/") {print $4; exit}')"
 iface="$(docker exec "$representative" ip -4 -o addr show | awk -v ip="$bind" '$4 ~ ("^" ip "/") {print $2; exit}')"

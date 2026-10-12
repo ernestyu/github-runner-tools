@@ -223,6 +223,30 @@ class FreshInstallContractTests(unittest.TestCase):
         self.assertIn("GRT_TEST_FAULT_STAGE", source)
         self.assertIn("configured_lan_address_not_assigned", source)
 
+    def test_administrator_secret_never_enters_argv_or_environment(self):
+        source = (ROOT / "scripts/fresh-install.sh").read_text()
+        self.assertNotIn('python3 - "$password"', source)
+        self.assertNotIn('sys.argv[1]', source)
+        self.assertIn('sys.stdin.buffer.read(4097)', source)
+        self.assertIn('printf \'%s\' "$password" |', source)
+        self.assertNotIn('export password', source)
+        self.assertNotIn('PASSWORD="$password"', source)
+        self.assertNotIn('echo "$password"', source)
+        self.assertIn('password= confirm=', source)
+
+    def test_strict_install_state_parser_is_packaged(self):
+        source = (ROOT / "scripts/install-state-validator.py").read_text()
+        self.assertIn("object_pairs_hook=unique", source)
+        self.assertIn("os.O_NOFOLLOW", source)
+        self.assertIn("set(obj) != set(KEYS)", source)
+        self.assertIn('type(obj["schema"]) is not int', source)
+        self.assertIn('type(obj[k]) is not int', source)
+        self.assertIn('st.st_nlink != 1', source)
+        self.assertIn("ipaddress.IPv4Address", source)
+        self.assertIn("uuid.UUID", source)
+        self.assertIn("STAGES", source)
+        self.assertIn("install-state-validator.py", (ROOT / "scripts/build-release.sh").read_text())
+
     def test_active_product_has_no_legacy_setup_or_dispatch_fallback(self):
         absent = (
             "scripts/setup-web-management.sh",

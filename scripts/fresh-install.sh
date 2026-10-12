@@ -24,7 +24,7 @@ WEB_PORT="8765"
 RELEASE="${GRT_RELEASE_VERSION:-}"
 PAYLOAD_SHA256="${GRT_PAYLOAD_SHA256:-}"
 
-die() { echo "INSTALL_FAILED stage=${CURRENT_STAGE:-PREFLIGHT} reason=$1" >&2; exit 1; }
+die() { echo "INSTALL_FAILED stage=${ACTIVE_STAGE:-PREFLIGHT} last_completed=${CURRENT_STAGE:-NONE} reason=$1" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing_command_$1"; }
 
 # Security boundary: never infer SUDO_USER from a root invocation.
@@ -47,6 +47,14 @@ RUNNER_HOME="$(getent passwd "$RUNNER_USER" | awk -F: 'NR==1 {print $6}')"
 [[ "$RUNNER_USER" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || die "unsupported_runner_username"
 [[ "$RUNNER_HOME" =~ ^/[A-Za-z0-9._/-]+$ && -d "$RUNNER_HOME" ]] || die "unsupported_runner_home"
 [[ "$(ps -p 1 -o comm= 2>/dev/null | xargs)" == systemd ]] || die "systemd_required"
+[[ -r /etc/os-release ]] || die "os_release_unavailable"
+# shellcheck disable=SC1091
+source /etc/os-release
+[[ "${ID:-}" == "debian" && "${VERSION_ID:-}" == "13" ]] || die "debian_13_required"
+case "$(uname -m)" in
+  x86_64|aarch64) ;;
+  *) die "unsupported_architecture" ;;
+esac
 
 sudo -v || die "sudo_required"
 
@@ -123,6 +131,7 @@ verify_file() {
 WEB_BIND_ADDRESS=""
 ATTEMPT_ID=""
 CURRENT_STAGE="PREFLIGHT"
+ACTIVE_STAGE="PREFLIGHT"
 
 if sudo test -e "$INSTALL_STATE" || sudo test -L "$INSTALL_STATE"; then
   [[ "$(sudo stat -c '%U:%G:%a:%F' "$INSTALL_STATE")" == "root:root:600:regular file" ]] ||
@@ -154,6 +163,7 @@ fi
 ip -4 -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -Fxq "$WEB_BIND_ADDRESS" ||
   die "configured_lan_address_not_assigned"
 
+ACTIVE_STAGE="RUNTIME_INSTALLED"
 if stage_at_least RUNTIME_INSTALLED; then
   for cmd in python3 jq rsync curl; do need "$cmd"; done
   for f in register-runner.sh remove-runner.sh status-runners.sh cli-operational-logger.py web-runner-cleanup.py web-service-record.py; do
@@ -174,8 +184,14 @@ else
   fault_after RUNTIME_INSTALLED
 fi
 
+ACTIVE_STAGE="AUTHORITY_STATE_INITIALIZED"
 if stage_at_least AUTHORITY_STATE_INITIALIZED; then
   getent passwd "$WEB_USER" >/dev/null || die "web_user_missing"
+  getent group "$WEB_USER" >/dev/null || die "web_group_missing"
+  IFS=: read -r _ _ web_uid web_gid _ web_home web_shell < <(getent passwd "$WEB_USER")
+  [[ "$web_uid" -gt 0 && "$web_gid" -gt 0 && "$web_home" == "/nonexistent" &&
+      "$web_shell" == "/usr/sbin/nologin" ]] || die "web_user_identity_mismatch"
+  [[ "$(getent group "$WEB_USER" | cut -d: -f3)" == "$web_gid" ]] || die "web_group_identity_mismatch"
   [[ "$(sudo stat -c '%U:%G:%a:%F' "$STATE_ROOT")" == "root:root:700:directory" ]] || die "state_root_mismatch"
   [[ "$(sudo stat -c '%U:%G:%a:%F' "$LOCK_ROOT")" == "root:root:755:directory" ]] || die "lock_root_mismatch"
   [[ "$(sudo stat -c '%u:%g:%a:%F' "$LOCK_FILE")" == "0:$RUNNER_GID:660:regular file" ]] || die "lock_file_mismatch"
@@ -184,7 +200,11 @@ else
   if ! getent passwd "$WEB_USER" >/dev/null; then
     sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$WEB_USER"
   fi
-  [[ "$(getent passwd "$WEB_USER" | cut -d: -f3)" -gt 0 ]] || die "invalid_web_user"
+  getent group "$WEB_USER" >/dev/null || die "web_group_missing"
+  IFS=: read -r _ _ web_uid web_gid _ web_home web_shell < <(getent passwd "$WEB_USER")
+  [[ "$web_uid" -gt 0 && "$web_gid" -gt 0 && "$web_home" == "/nonexistent" &&
+      "$web_shell" == "/usr/sbin/nologin" ]] || die "invalid_web_user"
+  [[ "$(getent group "$WEB_USER" | cut -d: -f3)" == "$web_gid" ]] || die "invalid_web_group"
   sudo install -d -o root -g root -m 0755 "$LOCK_ROOT"
   if ! sudo test -e "$LOCK_FILE"; then
     sudo install -o root -g "$RUNNER_GROUP" -m 0660 /dev/null "$LOCK_FILE"
@@ -200,6 +220,7 @@ else
   fault_after AUTHORITY_STATE_INITIALIZED
 fi
 
+ACTIVE_STAGE="ARCHIVE_PLATFORM_INITIALIZED"
 if stage_at_least ARCHIVE_PLATFORM_INITIALIZED; then
   sudo grep -Fqx '# managed-by=github-runner-tools' "$CONFIG_ROOT/archive.conf" || die "archive_config_mismatch"
   verify_file "$ROOT/hooks/archive-job-completed.sh" "$INSTALL_ROOT/hooks/archive-job-completed.sh" 755
@@ -278,6 +299,7 @@ verify_generated() {
   rm -f "$tmp"
 }
 
+ACTIVE_STAGE="EXECUTOR_INSTALLED"
 if stage_at_least EXECUTOR_INSTALLED; then
   verify_generated "$EXEC_UNIT" make_executor_unit
 else
@@ -301,6 +323,7 @@ MUTATION_TIMEOUT_SECONDS=900
 EOF
 }
 
+ACTIVE_STAGE="WEB_INSTALLED"
 if stage_at_least WEB_INSTALLED; then
   [[ "$(sudo stat -c '%U:%G:%a:%F' "$WEB_CONFIG")" == "root:$WEB_USER:640:regular file" ]] || die "web_config_mismatch"
   cfg_verify="$(mktemp)"; make_web_config >"$cfg_verify"
@@ -335,6 +358,7 @@ PY
   fault_after WEB_INSTALLED
 fi
 
+ACTIVE_STAGE="SERVICES_STARTED"
 if stage_at_least SERVICES_STARTED; then
   sudo systemctl is-active --quiet github-runner-tools-executor.service || die "executor_not_active"
   sudo systemctl is-active --quiet github-runner-tools-web.service || die "web_not_active"
@@ -348,6 +372,7 @@ else
   fault_after SERVICES_STARTED
 fi
 
+ACTIVE_STAGE="SMOKE_VERIFIED"
 if stage_at_least SMOKE_VERIFIED; then
   :
 else
@@ -366,6 +391,7 @@ else
   fault_after SMOKE_VERIFIED
 fi
 
+ACTIVE_STAGE="INSTALL_COMPLETE"
 write_state INSTALL_COMPLETE
 
 cat <<EOF

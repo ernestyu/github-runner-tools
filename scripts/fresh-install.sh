@@ -67,7 +67,14 @@ managed_object_exists_without_state() {
     if sudo test -e "$p" || sudo test -L "$p"; then return 0; fi
   done
   if sudo test -d "$STATE_ROOT"; then
-    # Empty state root is still an unexplained partial installation.
+    # The first committed installer object is install-state.json. If the
+    # process died between creating its parent and publishing that record,
+    # accept only the exact empty root-owned 0700 directory. Any content or
+    # metadata mismatch remains an unknown partial installation.
+    if [[ "$(sudo stat -c '%U:%G:%a:%F' "$STATE_ROOT")" == "root:root:700:directory" ]] &&
+       [[ -z "$(sudo find "$STATE_ROOT" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+      return 1
+    fi
     return 0
   fi
   return 1
@@ -372,21 +379,24 @@ else
   fault_after SERVICES_STARTED
 fi
 
-ACTIVE_STAGE="SMOKE_VERIFIED"
-if stage_at_least SMOKE_VERIFIED; then
-  :
-else
+verify_first_install_smoke() {
   sudo systemctl is-active --quiet github-runner-tools-executor.service || die "executor_smoke_failed"
   sudo systemctl is-active --quiet github-runner-tools-web.service || die "web_smoke_failed"
   sudo test -S /run/github-runner-tools/executor.sock || die "executor_socket_missing"
   web_gid="$(getent group "$WEB_USER" | cut -d: -f3)"
-  [[ "$(sudo stat -c '%u:%g:%a:%F' /run/github-runner-tools/executor.sock)" == "0:$web_gid:660:socket" ]] || die "executor_socket_mismatch"
+  [[ "$(sudo stat -c '%u:%g:%a:%F' /run/github-runner-tools/executor.sock)" == "0:$web_gid:660:socket" ]] ||
+    die "executor_socket_mismatch"
   "$CLI_ROOT/status-runners.sh" --json >/dev/null || die "cli_status_smoke_failed"
   sudo -u "$WEB_USER" /usr/bin/python3 -c "import sys; sys.path.insert(0,'$WEB_ROOT'); from v2_executor_client import web_list; r=web_list(); raise SystemExit(0 if r.get('ok') else 1)" ||
     die "executor_status_smoke_failed"
   tail_line="$(sudo tail -n 1 "$LOG_ROOT/operational.jsonl")"
   [[ "$tail_line" == *'"event":"operation_exit"'* && "$tail_line" == *'"op":"status"'* && "$tail_line" == *'"exit_code":0'* ]] ||
     die "operational_log_smoke_failed"
+}
+
+ACTIVE_STAGE="SMOKE_VERIFIED"
+verify_first_install_smoke
+if ! stage_at_least SMOKE_VERIFIED; then
   write_state SMOKE_VERIFIED
   fault_after SMOKE_VERIFIED
 fi

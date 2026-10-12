@@ -28,6 +28,7 @@ ARCHIVE="$DIST/github-runner-tools-$RELEASE.tar.gz"
 SHA="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
 mkdir -p "$PAYLOAD"
 tar -xzf "$ARCHIVE" -C "$PAYLOAD"
+chmod -R a+rX "$PAYLOAD"
 [[ ! -e "$PAYLOAD/.git" ]] || fail "release payload unexpectedly contains .git"
 
 docker build -q -t "$IMAGE" -f - "$ROOT" >/dev/null <<'DOCKERFILE'
@@ -37,7 +38,8 @@ RUN useradd -m -s /bin/bash runner && useradd -m -s /bin/bash other &&     print
 COPY tests/fixtures/fresh-install-systemctl.sh /usr/local/sbin/systemctl
 COPY tests/fixtures/fresh-install-ps.sh /usr/local/bin/ps
 COPY tests/fixtures/fresh-install-apt-get.sh /usr/local/sbin/apt-get
-RUN chmod 0755 /usr/local/sbin/systemctl /usr/local/bin/ps /usr/local/sbin/apt-get
+COPY tests/fixtures/run-fresh-install-tty.py /usr/local/bin/grt-run-fresh-install-tty
+RUN chmod 0755 /usr/local/sbin/systemctl /usr/local/bin/ps /usr/local/sbin/apt-get /usr/local/bin/grt-run-fresh-install-tty
 DOCKERFILE
 
 new_container() {
@@ -48,12 +50,19 @@ new_container() {
 
 run_installer() {
   local name="$1" user="$2" release="$3" sha="$4" fault="${5:-}"
-  local fault_env=""
+  local -a extra_env=()
   if [[ -n "$fault" ]]; then
-    fault_env="GRT_TEST_ALLOW_FAULTS=1 GRT_TEST_FAULT_STAGE=$fault"
+    extra_env+=(GRT_TEST_ALLOW_FAULTS=1 "GRT_TEST_FAULT_STAGE=$fault")
   fi
-  printf '%s\n%s\n' "$PASSWORD" "$PASSWORD" |
-    docker exec -i "$name" /usr/bin/script -q -e -c       "/usr/sbin/runuser -u $user -- env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin GRT_RELEASE_VERSION=$release GRT_PAYLOAD_SHA256=$sha $fault_env bash /opt/grt-payload/scripts/fresh-install.sh"       /dev/null
+  printf '%s\n' "$PASSWORD" |
+    docker exec -i -u "$user" "$name" env \
+      "HOME=/home/$user" \
+      PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+      "GRT_RELEASE_VERSION=$release" \
+      "GRT_PAYLOAD_SHA256=$sha" \
+      "${extra_env[@]}" \
+      /usr/local/bin/grt-run-fresh-install-tty \
+      bash /opt/grt-payload/scripts/fresh-install.sh
 }
 
 run_expect_failure() {

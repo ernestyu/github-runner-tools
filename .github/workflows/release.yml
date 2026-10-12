@@ -4,25 +4,35 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   package:
+    if: startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[release:v1.0.2]')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Set release tag
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "RELEASE_TAG=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_TAG=v1.0.2" >> "$GITHUB_ENV"
+          fi
       - name: Build verified fresh-install payload
-        run: bash scripts/build-release.sh "$GITHUB_REF_NAME"
+        run: bash scripts/build-release.sh "$RELEASE_TAG"
       - name: Verify release metadata consistency
         run: |
-          grep -F "VERSION=\"$GITHUB_REF_NAME\"" dist/install.sh
-          grep -F "github-runner-tools-$GITHUB_REF_NAME.tar.gz" dist/install.sh
+          grep -F "VERSION=\"${RELEASE_TAG}\"" dist/install.sh
+          grep -F "github-runner-tools-${RELEASE_TAG}.tar.gz" dist/install.sh
           sha256sum -c dist/SHA256SUMS
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||             gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
-          gh release upload "$GITHUB_REF_NAME"             dist/install.sh             "dist/github-runner-tools-$GITHUB_REF_NAME.tar.gz"             dist/SHA256SUMS             --clobber
+          gh release view "${RELEASE_TAG}" >/dev/null 2>&1 ||             gh release create "${RELEASE_TAG}" --target "$GITHUB_SHA" --title "${RELEASE_TAG}" --generate-notes
+          gh release upload "${RELEASE_TAG}"             dist/install.sh             "dist/github-runner-tools-${RELEASE_TAG}.tar.gz"             dist/SHA256SUMS             --clobber

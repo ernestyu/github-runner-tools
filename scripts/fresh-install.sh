@@ -127,6 +127,8 @@ CURRENT_STAGE="PREFLIGHT"
 if sudo test -e "$INSTALL_STATE" || sudo test -L "$INSTALL_STATE"; then
   [[ "$(sudo stat -c '%U:%G:%a:%F' "$INSTALL_STATE")" == "root:root:600:regular file" ]] ||
     die "unsafe_install_state"
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$STATE_ROOT")" == "root:root:700:directory" ]] ||
+    die "unsafe_state_root"
   [[ "$(state_number schema)" == 1 ]] || die "invalid_install_state_schema"
   [[ "$(state_value release)" == "$RELEASE" ]] || die "partial_release_mismatch"
   [[ "$(state_value payload_sha256)" == "$PAYLOAD_SHA256" ]] || die "partial_payload_mismatch"
@@ -153,6 +155,7 @@ ip -4 -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -Fxq "$WEB_BIND_ADDRE
   die "configured_lan_address_not_assigned"
 
 if stage_at_least RUNTIME_INSTALLED; then
+  for cmd in python3 jq rsync curl; do need "$cmd"; done
   for f in register-runner.sh remove-runner.sh status-runners.sh cli-operational-logger.py web-runner-cleanup.py web-service-record.py; do
     verify_file "$ROOT/scripts/$f" "$CLI_ROOT/$f" 755
   done
@@ -179,7 +182,7 @@ if stage_at_least AUTHORITY_STATE_INITIALIZED; then
   [[ "$(sudo stat -c '%U:%G:%a:%F' "$LOG_ROOT")" == "root:$RUNNER_GROUP:2770:directory" ]] || die "log_root_mismatch"
 else
   if ! getent passwd "$WEB_USER" >/dev/null; then
-    sudo useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$WEB_USER"
+    sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$WEB_USER"
   fi
   [[ "$(getent passwd "$WEB_USER" | cut -d: -f3)" -gt 0 ]] || die "invalid_web_user"
   sudo install -d -o root -g root -m 0755 "$LOCK_ROOT"
@@ -284,17 +287,8 @@ else
   fault_after EXECUTOR_INSTALLED
 fi
 
-if stage_at_least WEB_INSTALLED; then
-  [[ "$(sudo stat -c '%U:%G:%a:%F' "$WEB_CONFIG")" == "root:$WEB_USER:640:regular file" ]] || die "web_config_mismatch"
-  sudo grep -Fqx "WEB_BIND_ADDRESS=$WEB_BIND_ADDRESS" "$WEB_CONFIG" || die "web_bind_mismatch"
-  sudo grep -Fqx 'WEB_COOKIE_SECURE=0' "$WEB_CONFIG" || die "web_cookie_mode_mismatch"
-  [[ "$(sudo stat -c '%U:%G:%a:%F' "$WEB_AUTH")" == "root:$WEB_USER:640:regular file" ]] || die "web_auth_mismatch"
-  sudo grep -Eq '^PASSWORD_HASH=scrypt\$' "$WEB_AUTH" || die "web_auth_invalid"
-  verify_generated "$WEB_UNIT" make_web_unit
-else
-  sudo install -d -o root -g root -m 0755 "$CONFIG_ROOT"
-  cfg="$(mktemp)"
-  cat >"$cfg" <<EOF
+make_web_config() {
+  cat <<EOF
 RUNNER_USER=$RUNNER_USER
 RUNNER_GROUP=$RUNNER_GROUP
 RUNNER_HOME=$RUNNER_HOME
@@ -305,6 +299,20 @@ WEB_COOKIE_SECURE=0
 MUTATION_LOCK_FILE=$LOCK_FILE
 MUTATION_TIMEOUT_SECONDS=900
 EOF
+}
+
+if stage_at_least WEB_INSTALLED; then
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$WEB_CONFIG")" == "root:$WEB_USER:640:regular file" ]] || die "web_config_mismatch"
+  cfg_verify="$(mktemp)"; make_web_config >"$cfg_verify"
+  sudo cmp -s "$cfg_verify" "$WEB_CONFIG" || { rm -f "$cfg_verify"; die "web_config_content_mismatch"; }
+  rm -f "$cfg_verify"
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$WEB_AUTH")" == "root:$WEB_USER:640:regular file" ]] || die "web_auth_mismatch"
+  sudo grep -Eq '^PASSWORD_HASH=scrypt\$' "$WEB_AUTH" || die "web_auth_invalid"
+  verify_generated "$WEB_UNIT" make_web_unit
+else
+  sudo install -d -o root -g root -m 0755 "$CONFIG_ROOT"
+  cfg="$(mktemp)"
+  make_web_config >"$cfg"
   sudo install -o root -g "$WEB_USER" -m 0640 "$cfg" "$WEB_CONFIG"; rm -f "$cfg"
 
   [[ -r /dev/tty && -w /dev/tty ]] || die "administrator_password_requires_tty"
@@ -330,6 +338,8 @@ fi
 if stage_at_least SERVICES_STARTED; then
   sudo systemctl is-active --quiet github-runner-tools-executor.service || die "executor_not_active"
   sudo systemctl is-active --quiet github-runner-tools-web.service || die "web_not_active"
+  sudo systemctl is-enabled --quiet github-runner-tools-executor.service || die "executor_not_enabled"
+  sudo systemctl is-enabled --quiet github-runner-tools-web.service || die "web_not_enabled"
 else
   sudo systemctl daemon-reload
   sudo systemctl enable --now github-runner-tools-executor.service

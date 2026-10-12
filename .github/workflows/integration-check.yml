@@ -33,7 +33,7 @@ jobs:
           bash tests/test-web-v2-shared-remove.sh
           python3 tests/test-web-v2-cli-remove-authority.py
           python3 tests/test-web-v2-install-manifest.py
-          bash tests/test-web-v2-setup.sh
-          python3 tests/test-web-v2-cutover-faults.py
           sudo -n /usr/bin/python3 tests/test-web-v2-real-uid-drop.py
           sudo -n /usr/bin/python3 tests/test-fresh-runner-bootstrap-e2e.py
+          bash tests/test-install-lan.sh
+          python3 tests/test-fresh-install-contract.py

@@ -283,7 +283,7 @@ for mode in missing-record altered-hash symlink-hash modified-record wrong-attem
       symlink-hash) mv "$auth" "$auth.saved"; ln -s "$auth.saved" "$auth" ;;
       modified-record) printf "X" >> "$journal" ;;
       wrong-attempt)
-        python3 -c "import json,sys; p=sys.argv[1]; obj=json.load(open(p)); obj.update(attempt_id=\\"00000000-0000-4000-8000-000000000000\\"); open(p,\\"w\\").write(json.dumps(obj))" "$journal"
+        python3 -c "import json,sys; p=sys.argv[1]; obj=json.load(open(p)); obj.update(attempt_id=\"00000000-0000-4000-8000-000000000000\"); open(p,\"w\").write(json.dumps(obj))" "$journal"
         ;;
     esac
   ' _ "$mode"

@@ -26,6 +26,7 @@ mkdir -p "$stage/scripts/lib" "$stage/web" "$stage/hooks"
 
 runtime_scripts=(
   fresh-install.sh
+  install-state-validator.py
   install-lan.sh
   setup-local-archive.sh
   register-runner.sh

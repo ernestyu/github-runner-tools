@@ -332,14 +332,19 @@ if stage_at_least ARCHIVE_PLATFORM_INITIALIZED; then
   [[ "$(stat -c '%U:%G:%a:%F' "$ARCHIVE_ROOT")" == "$RUNNER_USER:$RUNNER_GROUP:750:directory" ]] ||
     die "archive_root_mismatch"
 else
-  if sudo test -e "$ARCHIVE_ROOT" || sudo test -L "$ARCHIVE_ROOT"; then
-    die "archive_root_conflict"
-  fi
-  RUNNER_ARCHIVE_ROOT="$ARCHIVE_ROOT" \
-  RUNNER_ARCHIVE_RETENTION_DAYS=90 \
-  RUNNER_ARCHIVE_MIN_FREE_PERCENT=15 \
-  RUNNER_ARCHIVE_COPY_TIMEOUT_SECONDS=3600 \
-    bash "$ROOT/scripts/setup-local-archive.sh" --apply
+  checked_directory "$ARCHIVE_ROOT" "$RUNNER_USER" "$RUNNER_GROUP" 750
+  fault_inside ARCHIVE_INIT_PARTIAL
+  checked_directory "$INSTALL_ROOT/hooks" root root 755
+  check_entries_subset "$INSTALL_ROOT" cli web hooks archive-common.sh
+  check_entries_subset "$INSTALL_ROOT/hooks" archive-job-completed.sh
+  checked_install "$ROOT/hooks/archive-job-completed.sh" "$INSTALL_ROOT/hooks/archive-job-completed.sh" root root 755
+  checked_install "$ROOT/scripts/lib/archive-common.sh" "$INSTALL_ROOT/archive-common.sh" root root 644
+  checked_directory "$CONFIG_ROOT" root root 755
+  check_entries_subset "$CONFIG_ROOT" archive.conf
+  archive_tmp="$(mktemp)"
+  make_archive_config >"$archive_tmp"
+  checked_install "$archive_tmp" "$CONFIG_ROOT/archive.conf" root root 644
+  rm -f "$archive_tmp"
   write_state ARCHIVE_PLATFORM_INITIALIZED
   fault_after ARCHIVE_PLATFORM_INITIALIZED
 fi
@@ -420,7 +425,8 @@ if stage_at_least EXECUTOR_INSTALLED; then
   verify_generated "$EXEC_UNIT" make_executor_unit
 else
   tmp="$(mktemp)"; make_executor_unit >"$tmp"
-  sudo install -o root -g root -m 0644 "$tmp" "$EXEC_UNIT"; rm -f "$tmp"
+  checked_install "$tmp" "$EXEC_UNIT" root root 644; rm -f "$tmp"
+  fault_inside EXECUTOR_UNIT_PARTIAL
   write_state EXECUTOR_INSTALLED
   fault_after EXECUTOR_INSTALLED
 fi
@@ -450,10 +456,15 @@ if stage_at_least WEB_INSTALLED; then
   sudo grep -Eq '^PASSWORD_HASH=scrypt\$' "$WEB_AUTH" || die "web_auth_invalid"
   verify_generated "$WEB_UNIT" make_web_unit
 else
-  sudo install -d -o root -g root -m 0755 "$CONFIG_ROOT"
+  checked_directory "$CONFIG_ROOT" root root 755
+  check_entries_subset "$CONFIG_ROOT" archive.conf web.conf web-auth.conf
   cfg="$(mktemp)"
   make_web_config >"$cfg"
-  sudo install -o root -g "$WEB_USER" -m 0640 "$cfg" "$WEB_CONFIG"; rm -f "$cfg"
+  checked_install "$cfg" "$WEB_CONFIG" root "$WEB_USER" 640; rm -f "$cfg"
+  fault_inside WEB_CONFIG_PARTIAL
+  if sudo test -e "$WEB_AUTH" || sudo test -L "$WEB_AUTH"; then
+    die "unproven_partial_administrator_secret"
+  fi
 
   [[ -r /dev/tty && -w /dev/tty ]] || die "administrator_password_requires_tty"
   printf 'Web administrator password: ' >/dev/tty
@@ -472,9 +483,12 @@ if not secret or len(secret) > 4096 or b"\\x00" in secret:
 print("PASSWORD_HASH=" + password_hash(secret.decode("utf-8", "strict")))
 ' >"$auth_tmp" || { password= confirm=; rm -f "$auth_tmp"; die "administrator_password_hash_failed"; }
   password= confirm=
-  sudo install -o root -g "$WEB_USER" -m 0640 "$auth_tmp" "$WEB_AUTH"; rm -f "$auth_tmp"
+  fault_inside ADMIN_PASSWORD_PARTIAL
+  checked_install "$auth_tmp" "$WEB_AUTH" root "$WEB_USER" 640; rm -f "$auth_tmp"
+  fault_inside ADMIN_HASH_PUBLISHED
   unit_tmp="$(mktemp)"; make_web_unit >"$unit_tmp"
-  sudo install -o root -g root -m 0644 "$unit_tmp" "$WEB_UNIT"; rm -f "$unit_tmp"
+  checked_install "$unit_tmp" "$WEB_UNIT" root root 644; rm -f "$unit_tmp"
+  fault_inside WEB_UNIT_PARTIAL
   write_state WEB_INSTALLED
   fault_after WEB_INSTALLED
 fi

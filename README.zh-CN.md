@@ -1,448 +1,126 @@
-[English](README.md)
-
 # github-runner-tools
 
-`github-runner-tools` 是一组用于在 Linux 主机上注册和管理 GitHub repository-level self-hosted runner 的轻量脚本。GitHub Actions 仍然负责任务触发、调度、状态和日志，真正的计算则放到你自己的服务器、NAS、mini PC、虚拟机或 VPS 上完成。
+在 Debian 上管理 GitHub Actions Self-hosted Runner。终端 CLI 与 Web UI 共用同一套生命周期权威状态、mutation lock、systemd Unit 规则和结构化运维日志。
 
-这个项目不会替代 GitHub Actions，也不会修改应用代码或自动部署应用。它解决的是一个更窄的问题：让多个仓库使用官方 GitHub Actions Runner 时，安装、注册和日常管理更简单，也更保守安全。
+## 全新 Debian 安装
 
-当前主要面向 Debian 12/13 和 systemd。x86_64 路径，包括本地 artifact 归档主链，已经在真实 Debian self-hosted runner 主机上验证通过。脚本已经包含 ARM64 的下载与识别逻辑，但在真实 ARM64 主机完成验证之前，仍不把它作为已经验证的平台。
-
-## 当前验证状态
-
-当前实现已经通过完整仓库测试，并在真实 Debian self-hosted runner 上完成实机验证。completed-job hook、本地归档、manifest/hash 发布、GitHub Step Summary、已有 runner migration，以及真实 workflow 执行都已经实际跑通。
-
-可选的 Web Management V1 也已经安装到真实 Debian 主机，并完成 Tailscale-only HTTPS 访问、登录认证、dispatcher 启动、权限下降和现有 runner 列表读取的实机验证。Web Management 目前仍放在 **Unreleased**，在 create/remove/recover 三条 Web 路径完成最终实机验收之前不会作为新的正式 tag 发布。
-
-目前主要剩余的平台级限制是 ARM64：代码路径已经实现，但还没有在真实 ARM64 runner 上验证。
-
-## 快速开始
-
-请使用最终应该拥有 runner 的普通 Linux 用户执行脚本，不要直接用 root。默认安装位置是这个用户真实的 home 目录。
-
-先安装基础工具：
+正式发布版本使用一条命令安装。必须以未来实际拥有 Runner 的**普通非 root 用户**执行：
 
 ```bash
-sudo apt update
-sudo apt install -y ca-certificates curl jq tar coreutils rsync util-linux
+curl -fsSL https://github.com/ernestyu/github-runner-tools/releases/latest/download/install.sh | bash
 ```
 
-然后进入目标 GitHub 仓库：
+不要使用 `sudo bash install.sh`，也不要使用 `curl ... | sudo bash`。安装程序会在需要修改系统文件时自己调用受限的 `sudo`。
+
+普通安装不需要 `git clone`。安装程序会校验固定 release payload 的 SHA-256，然后直接安装：
+
+- CLI；
+- 生命周期 Authority；
+- Executor；
+- Web UI；
+- 本地 archive platform；
+- systemd services；
+- lifecycle state、lock 和 operational log。
+
+首次安装会要求设置 Web 管理员密码。
+
+## 默认 Web：可信局域网 HTTP
+
+安装程序会选择一个具体的 RFC1918 私有 IPv4，并输出类似：
 
 ```text
-Settings
-→ Actions
-→ Runners
-→ New self-hosted runner
+http://192.168.66.3:8765/
 ```
 
-选择 Linux 和与主机相符的架构，从 GitHub 显示的 `config.sh` 命令里复制临时 registration token。
+不会默认监听 `0.0.0.0`，也不会自动选择公网地址。
 
-### 一次性的本地归档平台配置
+这个地址安装后固定保存。重启、DHCP 变化、VPN 出现时，Web 不会偷偷改绑到另一个地址。如果原地址已经不属于本机，Web 应明确启动失败，由管理员显式修改 `WEB_BIND_ADDRESS`。
 
-当前版本默认会把 self-hosted job 完成时的 workspace 归档到 Debian 本地。因此，在以后注册新 runner 之前，先在这台 runner 主机上做一次平台级配置。
+默认 HTTP 仅适合可信家庭网、实验室网或管理网。管理员密码和临时 GitHub token 在网络上没有 TLS 加密，因此不要直接暴露公网、公共 Wi-Fi 或不可信共享网络。
 
-这一步需要完整 clone 仓库：
+HTTP 模式仍然保留：
+
+- 管理员密码登录；
+- server-side session；
+- `HttpOnly; SameSite=Strict` Cookie；
+- 登录限速；
+- CSRF；
+- 一次性 confirmation nonce；
+- 请求大小限制；
+- Token 不落盘、不进入 operational log。
+
+Tailscale、反向代理和 HTTPS 都是可选增强，不是安装依赖。
+
+## CLI
+
+Create：
 
 ```bash
-cd ~
-git clone https://github.com/ernestyu/github-runner-tools.git
-cd github-runner-tools
-
-bash scripts/setup-local-archive.sh --dry-run
-bash scripts/setup-local-archive.sh --apply
+/usr/local/lib/github-runner-tools/cli/register-runner.sh OWNER/REPO
 ```
 
-默认是 dry-run。先检查脚本解析出的路径、用户和权限，再使用 `--apply` 真正写入 host-level 配置。
+Status：
 
-请使用实际拥有 runner 的普通 Linux 用户执行，不要写成 `sudo bash scripts/setup-local-archive.sh`。脚本只有在写入 `/srv`、`/etc` 和 `/usr/local/lib` 这些 host-level 位置时才会在内部调用 sudo。
+```bash
+/usr/local/lib/github-runner-tools/cli/status-runners.sh
+```
 
-默认归档位置是：
+Remove：
+
+```bash
+/usr/local/lib/github-runner-tools/cli/remove-runner.sh OWNER/REPO
+```
+
+## Web
+
+安装完成后直接打开安装程序输出的 LAN URL。
+
+Web 不自己实现 Runner 生命周期，而是：
 
 ```text
-/srv/github-actions-archive
+Web
+ ↓
+Executor
+ ↓
+已安装 CLI + lifecycle authority
 ```
 
-已有 runner 可以先检查，再一次性迁移：
+因此 CLI 和 Web 使用同一套 Create/Status/Remove 安全语义。
 
-```bash
-bash scripts/enable-local-archive.sh --dry-run
-bash scripts/enable-local-archive.sh --apply
-```
+## 状态与日志
 
-`--apply` 只会对经过 metadata 验证的 runner 配置统一的 `ACTIONS_RUNNER_HOOK_JOB_COMPLETED`，然后重启对应 service。如果原来已经有不同的 completed hook，脚本会停止，不会直接覆盖。
-
-### 一行注册 Runner
-
-完成上面这一次平台配置以后，以后新仓库仍然可以继续使用一条命令注册 runner。
-
-稳定使用时建议固定第一个正式版本：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/v1.0.1/scripts/register-runner.sh \
-  | bash -s -- OWNER/REPO
-```
-
-脚本会从 `/dev/tty` 读取 registration token，而不是从标准输入读取，所以 `curl | bash` 不会和 token 输入冲突。token 输入时不会显示，也不会被脚本保存。
-
-如果希望跟随 `main` 的当前开发版本：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/main/scripts/register-runner.sh \
-  | bash -s -- OWNER/REPO
-```
-
-如果希望先检查正式版本脚本再执行：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ernestyu/github-runner-tools/v1.0.1/scripts/register-runner.sh \
-  -o register-runner.sh
-
-less register-runner.sh
-bash register-runner.sh OWNER/REPO
-```
-
-### 完整管理方式
-
-如果还需要状态检查和删除工具，可以 clone 整个仓库：
-
-```bash
-cd ~
-git clone https://github.com/ernestyu/github-runner-tools.git
-cd github-runner-tools
-
-bash scripts/register-runner.sh OWNER/REPO
-bash scripts/status-runners.sh
-```
-
-clone 方式和一行 bootstrap 使用相同的默认规则。两种方式现在都要求这台主机已经完成一次本地归档平台配置。
-
-## 可选 Web 管理界面
-
-Web Management V1 是一个**显式 opt-in 的可选组件**。默认仍然是 CLI-only；不安装 Web UI 时，现有命令行工具可以完整、正常地使用。
-
-这个 Web 页面主要解决“人在外面只有手机，不方便 SSH 登录 Debian”的日常管理问题。当前界面提供：
-
-- 查看已有 repository runner；
-- 输入 `OWNER/REPO` 和 GitHub 临时 registration token 创建 runner；
-- 使用临时 removal token 正常删除 runner；
-- 对已经在 GitHub 端删除的 runner 执行本地 recovery cleanup。
-
-Web backend 不直接监听局域网，也不对公网开放，只绑定：
+生命周期状态：
 
 ```text
-127.0.0.1:8765
+/var/lib/github-runner-tools
 ```
 
-远程访问设计为通过 **Tailscale Serve**。不要对这个 Web 管理界面使用 Tailscale Funnel。
-
-### 前置条件与访问控制
-
-Web 安装脚本要求主机已安装 Tailscale CLI，且 `tailscaled` 服务正在运行；即使暂时不启用远程访问，也要先满足这一条件。先安装 Tailscale、让主机加入 tailnet，再检查：
-
-```bash
-tailscale status
-systemctl is-active tailscaled
-```
-
-远程访问设备必须处于同一 tailnet，或拥有经过明确授权的共享访问权限。Tailnet Access Controls 需要允许客户端访问 Web 主机的 TCP 443。对于已打 Tag 的主机，应按实际 **Tag 身份**授权，而非假定它仍使用普通用户身份。安装脚本不会自动修改 Tailnet 策略，也不应为了访问 Web 而保留全网 Allow All 规则。
-
-### Web 一次性安装
-
-先更新仓库，然后先看 dry-run：
-
-```bash
-cd ~/github-runner-tools
-git pull --ff-only
-
-bash scripts/setup-web-management.sh --dry-run
-bash scripts/setup-web-management.sh --apply
-```
-
-请使用正常的 runner owner 用户执行，不要把整个脚本写成 `sudo bash ...`。脚本只会在固定的 host-level 安装步骤内部调用 `sudo`。
-
-`--apply` 就是 Web Management 的显式启用点。它会安装 Web frontend、root dispatcher、固定 lifecycle worker、配置文件、systemd units 和 Web 管理密码配置。
-
-首次安装会交互式设置**单一 Web 管理员密码**。V1 不要求用户名，也不支持独立的多用户账户或基于角色的权限控制。此密码独立于 Linux、GitHub 和 Tailscale 账户密码。重复执行 `--apply` 时，只要现有认证文件的所有权和权限符合要求，就会保留原有 Web 密码。Tailscale 的访问控制是额外的网络安全边界，不能代替 Web 登录认证。
-
-脚本还会执行：
+结构化运维日志：
 
 ```text
-systemctl enable github-runner-tools-dispatch.service
-systemctl enable github-runner-tools-web.service
+/var/log/github-runner-tools/operational.jsonl
 ```
 
-并立即启动/重启这两个服务。因此成功执行一次 `--apply` 以后，Web backend 就成为常驻的 systemd 服务，Debian 重启后也会自动启动。以后使用 Web UI **不需要每次先 SSH 登录 Debian 再手动启动**。
-
-查看状态：
-
-```bash
-systemctl status github-runner-tools-dispatch.service
-systemctl status github-runner-tools-web.service
-```
-
-临时停止 Web UI：
-
-```bash
-sudo systemctl stop github-runner-tools-web.service
-sudo systemctl stop github-runner-tools-dispatch.service
-```
-
-如果希望重启 Debian 后也保持关闭：
-
-```bash
-sudo systemctl disable --now github-runner-tools-web.service
-sudo systemctl disable --now github-runner-tools-dispatch.service
-```
-
-以后重新启用：
-
-```bash
-sudo systemctl enable --now github-runner-tools-dispatch.service
-sudo systemctl enable --now github-runner-tools-web.service
-```
-
-### 是否通过 Tailscale 暴露，由用户单独决定
-
-Web setup **不会自动配置 Tailscale Serve**。本地 Web 服务安装成功以后，由管理员自己决定是否让它在 tailnet 内可访问：
-
-```bash
-sudo tailscale serve --bg http://127.0.0.1:8765
-```
-
-使用 `--bg` 后，Serve 在退出 SSH/终端以后仍然保持工作，并且设备重启或 Tailscale 重启后会自动恢复。查看或关闭：
-
-```bash
-tailscale serve status
-sudo tailscale serve off
-```
-
-因此现在的控制关系是：
+共享 mutation lock：
 
 ```text
-默认 CLI-only
-    → 没有 Web 组件
-
-setup-web-management.sh --apply
-    → 安装 + enable + 启动本地 Web 服务
-
-tailscale serve --bg ...
-    → 用户显式决定是否让 UI 在自己的 tailnet 内可访问
+/run/lock/github-runner-tools/mutation.lock
 ```
 
-即使启用 Serve，Web backend 本身仍然只监听 loopback。准确的私有 HTTPS 地址应从 `tailscale serve status` 读取（通常为 `https://HOST.TAILNET.ts.net/`），不要重复添加 `.ts.net`。只有获得 Tailnet 授权的客户端才应能够连接。
-
-### 安装后验收与故障排查
-
-在 Runner 主机上执行：
-
-```bash
-systemctl is-active github-runner-tools-dispatch.service
-systemctl is-active github-runner-tools-web.service
-curl -i --max-time 5 http://127.0.0.1:8765/
-tailscale serve status
-```
-
-未登录时，本地 HTTP 请求可能被重定向到 `/login`。随后在另一台已获 Tailnet 授权的设备上访问 Serve 输出的 HTTPS 地址，以 Web 管理员密码登录（不需要用户名），确认能看到本机 Runner 列表。该列表显示的是**当前主机上的本地 Runner**，不是 GitHub 上全部已注册 Runner。
-
-如果页面显示 `Runner status is unavailable`，**不能据此判断 Runner 已停止运行**。先检查 Dispatcher、Web 日志与 CLI 状态，再考虑更改 Runner：
-
-```bash
-bash scripts/status-runners.sh --json
-sudo journalctl -u github-runner-tools-dispatch.service -n 60 --no-pager
-sudo journalctl -u github-runner-tools-web.service -n 60 --no-pager
-```
-
-### 生命周期操作与验收范围
-
-**Create** 需要 `OWNER/REPO` 和 GitHub 临时 registration token。**Remove** 需要临时 removal token，执行远端注销与经过验证的本地清理。**Recover local** 仅用于 GitHub 端已删除后、满足严格验证条件的本地残留；具体 fail-closed 限制见下文“Workflow 与日常管理”。这些操作会实际改变或删除 Runner，测试时应使用 disposable repository。
-
-目前 Debian 实机验收已覆盖 Web 登录及现有 Runner 列表读取；Web Create / Remove / Recover 虽有自动化测试，**但尚未完成 disposable-runner 实机验收**。不能把 CI PASS 等同于这三条生产 mutation 路径已经验证。
-
-### Web 安全边界
-
-Web Management 不重新实现 runner lifecycle，而是复用现有的身份验证、删除和 recovery 规则。frontend 使用独立的 `grt-web` 用户；root dispatcher 只有固定且受限的 privileged surface；真正执行 runner lifecycle 之前，固定 worker 会下降到 runner owner 用户。
-
-临时 registration/removal token 是 request-scoped，不应进入 argv、环境变量、持久文件、URL、session 或日志。
-
-Tailscale Grants 只控制 Tailnet 网络连接，不会自动隔离普通局域网或公网路径。必要时仍应独立隔离 CI 主机与敏感网络。
-
-runner owner 用户属于临时 token 的 trust boundary。因此，如果同一个 runner owner 会执行 public/untrusted workflow，则不属于 Web Management V1 的安全支持模型。
-
-## 本地 Artifact 归档
-
-通过当前工具注册的 runner 会自动配置统一的 completed-job hook。普通 workflow steps 结束以后，hook 会把最终 workspace 保存到：
+安装事务状态：
 
 ```text
-/srv/github-actions-archive/OWNER/REPO/RUN_ID/attempt_N/JOB_KEY/
+/var/lib/github-runner-tools/install-state.json
 ```
 
-每个成功归档包含 `workspace/`、`manifest.json` 和 `manifest.sha256`。默认会排除 `.git/`、`node_modules/`、虚拟环境、Python bytecode cache 和 pytest cache 这类可重新生成的内容，但不会默认排除 `data/`、`results/`、`reports/`、`artifacts/`、`output/`、`checkpoints/` 等研究结果目录。
+同一 release 的已证明 partial install 可以重新执行同一条安装命令继续；版本、SHA、用户身份或已安装对象不匹配时会 fail closed。
 
-归档采用 fail-closed：如果本地归档失败，hook 会输出稳定的 `LOCAL_ARTIFACT_*` 错误并返回非零。默认 disk guard 是剩余空间低于 15% 时拒绝开始新的归档，默认 copy timeout 是 3600 秒。
+## 开发
 
-completed hook 会在归档完成后写 GitHub Step Summary。这条“零仓库额外配置”的 Summary 路径已经在真实 Debian self-hosted runner 上完成实机验证，因此现在作为默认路径使用。项目仍然保留 reusable fallback action：
+Git checkout 只用于开发、测试和贡献，不是普通安装方式。
 
-```text
-.github/actions/local-artifact-summary
-```
-
-Retention 清理由独立脚本完成，不放进 job completion hook：
+发布包构建：
 
 ```bash
-bash scripts/cleanup-local-artifacts.sh --dry-run
-bash scripts/cleanup-local-artifacts.sh --apply
+bash scripts/build-release.sh vX.Y.Z
 ```
-
-默认 retention 是 90 天。某个 Run 根目录存在 `.keep` 时，自动 cleanup 永远跳过这个 Run。
-
-已有 GitHub Actions artifact 可以下载并迁移到本地：
-
-```bash
-bash scripts/migrate-github-artifacts.sh OWNER/REPO
-```
-
-默认只做 download + verify，不删除 GitHub 远端 artifact。只有显式使用 `--delete-after-verified`，而且本地验证已经 PASS，才会执行远端删除。
-
-## 脚本会创建什么
-
-对于 `example/project-a`，默认本地身份同时包含 owner 和 repo：
-
-```text
-example--project-a
-```
-
-runner 默认安装在当前用户 home 下：
-
-```text
-~/actions-runner-example--project-a
-```
-
-默认 runner name 和自定义 labels 是：
-
-```text
-runner name: local-ci-example--project-a
-labels:      local-ci,project-a
-```
-
-本地身份包含 owner，是为了避免 `example/project-a` 与 `another/project-a` 这样的同名仓库发生目录冲突。本地身份最多 64 个字符；超长时会确定性截断，并附加 8 位 SHA-256 后缀。
-
-正式下载之前，脚本会检查当前用户、sudo、systemd、必要命令、安装目录、TTY 和 CPU 架构。随后从官方 `actions/runner` release 下载匹配架构的 runner，在 GitHub 提供 digest 时校验 SHA-256，运行官方依赖安装脚本，完成注册、systemd service 安装和启动，并输出最终状态。
-
-脚本默认**不会**传入 `--replace`。如果 GitHub 远端已经存在同名 runner，注册应该失败，而不是静默替换已有 runner。
-
-## 固定 GitHub Runner 版本
-
-默认会安装最新官方 GitHub Actions Runner。如果希望固定 runner binary 版本，可以使用：
-
-```bash
-RUNNER_VERSION=2.328.0 \
-  bash scripts/register-runner.sh OWNER/REPO
-```
-
-或者：
-
-```bash
-bash scripts/register-runner.sh --runner-version v2.328.0 OWNER/REPO
-```
-
-`2.328.0` 和 `v2.328.0` 两种写法都可以，脚本会统一处理。
-
-需要区分两种版本：固定 `github-runner-tools` 的 URL，只是固定 bootstrap 脚本逻辑；只有同时指定 `RUNNER_VERSION` 或 `--runner-version`，才会固定实际安装的 GitHub Actions Runner binary。
-
-## Workflow 与日常管理
-
-注册成功后，可以在目标仓库 workflow 中使用 repository-specific label：
-
-```yaml
-runs-on: [self-hosted, Linux, X64, project-a]
-```
-
-ARM64 对应的系统架构 label 是 `ARM64`。
-
-检查当前用户 home 下的 runner：
-
-```bash
-bash scripts/status-runners.sh
-```
-
-GitHub 端 runner 仍然存在时，使用正常删除：
-
-```bash
-bash scripts/remove-runner.sh OWNER/REPO
-```
-
-正常删除会要求输入 GitHub 临时 removal token，注销 runner，安全卸载 systemd service，然后删除经过验证的本地 runner 目录。
-
-如果 runner 已经先在 GitHub 页面删除，而且 Runner.Listener 已经自动清掉本地 `.runner` / `.credentials`，使用显式的本地恢复模式：
-
-```bash
-bash scripts/remove-runner.sh --recover-local OWNER/REPO
-```
-
-Recovery 模式不会要求 GitHub removal token，也不会调用 `config.sh remove`。它的范围刻意很窄：`.runner` 必须完全不存在，目录必须精确对应 owner+repo identity，而且必须能从未截断的 `.service` 名称中完整验证规范化后的 repository scope。Legacy repo-only 目录、任何仍存在或异常的 `.runner`、unknown systemd state，以及 truncated / mismatch 的 service identity 都会 fail closed。
-
-本地 recovery 只清理经过验证的 runner service 残留和 runner 目录，**不会删除** `/srv/github-actions-archive` 下已经保存的 CI 归档。
-
-正常删除仍兼容旧版 repo-only 目录，但旧目录不能只靠目录名判断身份，必须由 `.runner` 元数据确认 OWNER/REPO。缺少 `.runner` 的 legacy 目录不支持自动 recovery。
-
-systemd service 卸载失败时，本地 runner 目录不会继续被删除，除非 post-check 已明确证明 unit 不存在。旧版 runner 不会被自动改名或迁移。
-
-## 自定义设置
-
-可以覆盖安装目录、runner name、labels 和 runner binary 版本：
-
-```bash
-RUNNER_BASE_DIR=/srv/github-runners \
-RUNNER_NAME=my-runner \
-RUNNER_LABELS=local-ci,project-a,docker \
-RUNNER_VERSION=2.328.0 \
-  bash scripts/register-runner.sh OWNER/REPO
-```
-
-自定义 `RUNNER_BASE_DIR` 必须已经存在，而且当前用户需要有进入、读取和写入权限。bootstrap 不会自动对任意目录执行 `sudo mkdir` 或 `sudo chown`。
-
-v1 不支持跨用户安装。执行 `config.sh` 的用户、runner 文件所有者和 systemd service 用户必须是同一个普通 Linux 用户。
-
-如果上一次失败注册留下了非空但尚未配置的目标目录，默认会停止。确认该目录确实只是失败残留后，可以显式清理：
-
-```bash
-bash scripts/register-runner.sh --clean-incomplete OWNER/REPO
-```
-
-如果目录中已经存在 `.runner`，这个选项不会删除它。
-
-## 测试
-
-目前包含原有 runner 管理测试，以及本地 artifact 的 unit / integration / failure-path 测试：
-
-```bash
-bash tests/run-all.sh
-```
-
-归档测试覆盖路径校验、hook 配置、workspace 归档、默认 exclusion、symlink 安全、JOB_KEY 碰撞、failure manifest、disk guard、timeout、retention cleanup、已有 runner migration 和 GitHub artifact migration。
-
-完整自动测试已经在真实 Debian CI 主机上通过，本地 artifact 主链也已经用实际 self-hosted runner 跑通。实机验证覆盖 runner hook 安装、job 完成后的 workspace 归档、manifest/hash 发布、GitHub Step Summary、已有 runner 的迁移与 systemd 重启，以及真实 workflow 执行。
-
-ARM64 路径已经实现，但仍未在真实 ARM64 主机上验证。
-
-## 贡献与安全报告
-
-欢迎提交贡献。涉及 runner 身份、systemd service、本地归档发布、cleanup、删除逻辑或凭据处理的修改，请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
-
-安全问题不要在公开 Issue 中直接贴漏洞细节、token 或敏感日志，请按 [SECURITY.md](SECURITY.md) 的方式私下报告。
-
-仓库已经提供结构化的 Bug / Feature Issue 表单，以及带测试、实机验证和安全影响检查项的 Pull Request 模板。
-
-## 安全与限制
-
-Self-hosted runner 会执行 repository workflow 中的命令，因此应该把 runner 主机看成真正的代码执行环境。条件允许时，应与生产环境隔离。
-
-不要提交 registration/removal token、PAT、SSH private key、生产 API key、数据库密码或其他长期 secrets。也不要为了方便，把宿主机 Docker socket 或无关的生产数据直接暴露给 CI。
-
-当前项目只处理 systemd Linux 上的 repository-level runner。Organization runner group、自动扩缩容、Kubernetes、Windows、macOS、跨用户安装、自动生成 token、自动修改 workflow 和生产部署都不属于 v1 范围。
-
-
-## License
-
-本项目使用 [MIT License](LICENSE)。

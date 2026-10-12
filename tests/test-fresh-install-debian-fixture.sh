@@ -244,7 +244,7 @@ done
 # Stage-internal fault injection and exact-object resume.
 for scenario in RUNTIME_COPY_PARTIAL ARCHIVE_INIT_PARTIAL EXECUTOR_UNIT_PARTIAL WEB_CONFIG_PARTIAL ADMIN_PASSWORD_PARTIAL ADMIN_HASH_PUBLISHED WEB_UNIT_PARTIAL; do
   CURRENT_CASE="internal:$scenario"
-  name="grt-internal-${scenario,,}-$"
+  name="grt-internal-${scenario,,}-${BASHPID}"
   new_container "$name"
   out="$(run_expect_failure "$name" runner "$RELEASE" "$SHA" "inside:$scenario")"
   [[ "$out" == *injected_inside_fault* ]] || fail "$scenario did not reach internal injection"
@@ -266,7 +266,7 @@ done
 
 # Reject malformed, duplicate, unknown, wrongly typed, and altered persisted state.
 CURRENT_CASE="strict-state"
-name="grt-strict-state-$"
+name="grt-strict-state-${BASHPID}"
 new_container "$name"
 out="$(run_expect_failure "$name" runner "$RELEASE" "$SHA" ATTEMPT_STARTED)"
 [[ "$out" == *injected_fault* ]] || fail "cannot seed state validation fixture"

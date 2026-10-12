@@ -70,9 +70,12 @@ class SessionAndBrowserTests(unittest.TestCase):
 
     def test_cookie_and_cache_security_are_present(self):
         source = (WEB / "app.py").read_text(encoding="utf-8")
-        self.assertIn("Secure; HttpOnly; SameSite=Strict", source)
+        self.assertIn("HttpOnly; SameSite=Strict", source)
+        self.assertIn('WEB_COOKIE_SECURE', source)
         self.assertIn('Cache-Control", "no-store"', source)
-        self.assertIn('bind != "127.0.0.1"', source)
+        self.assertIn("RFC1918", source)
+        self.assertNotIn("V2_EXECUTOR_MODE", source)
+        self.assertNotIn("web-dispatch.sock", source)
 
 
 class TokenAdapterTests(unittest.TestCase):
@@ -436,9 +439,9 @@ class WebHTTPContractTests(unittest.TestCase):
         config = base / "web.conf"
         auth = base / "web-auth.conf"
         config.write_text(
-            "WEB_BIND_ADDRESS=127.0.0.1\n"
+            "WEB_BIND_ADDRESS=192.168.1.10\n"
             "WEB_PORT=0\n"
-            "DISPATCH_SOCKET=/nonexistent/web-dispatch.sock\n"
+            "WEB_COOKIE_SECURE=0\n"
             "MUTATION_TIMEOUT_SECONDS=1\n",
             encoding="utf-8",
         )
@@ -525,6 +528,9 @@ class WebHTTPContractTests(unittest.TestCase):
             "runners": [
                 {
                     "repository": "owner/repo",
+                    "runner_name": "local-ci-owner--repo",
+                    "runner_id": 123,
+                    "instance": "0123456789abcdef0123456789abcdef",
                     "can_remove": True,
                     "can_recover_local": True,
                 }
@@ -576,7 +582,7 @@ class WebHTTPContractTests(unittest.TestCase):
         )
         self.assertEqual(status, 403)
 
-        with mock.patch("app.dispatch", return_value={"ok": True}):
+        with mock.patch("app.dispatch", side_effect=[eligible, {"ok": True}]):
             status, _headers, _body = self.request(
                 "POST",
                 "/remove/confirm",
@@ -598,7 +604,9 @@ class WebHTTPContractTests(unittest.TestCase):
         eligible = {
             "ok": True,
             "runners": [
-                {"repository": "owner/repo", "can_remove": True, "can_recover_local": False}
+                {"repository": "owner/repo", "runner_name": "local-ci-owner--repo",
+                 "runner_id": 123, "instance": "0123456789abcdef0123456789abcdef",
+                 "can_remove": True, "can_recover_local": False}
             ],
         }
         with mock.patch("app.dispatch", return_value=eligible):
@@ -696,19 +704,30 @@ class WebHTTPContractTests(unittest.TestCase):
         self.assertNotIn(token, json.dumps(sess))
 
 
-    def test_valid_login_establishes_opaque_secure_cookie(self):
+    def test_valid_login_establishes_opaque_http_cookie(self):
         status, headers, _body = self.request(
             "POST", "/login", {"password": "correct-password"}
         )
         self.assertEqual(status, 303)
         cookie = headers.get("Set-Cookie", "")
         self.assertIn(f"{web_app.COOKIE_NAME}=", cookie)
-        self.assertIn("Secure", cookie)
+        self.assertNotIn("Secure", cookie)
         self.assertIn("HttpOnly", cookie)
         self.assertIn("SameSite=Strict", cookie)
         sid = cookie.split(";", 1)[0].split("=", 1)[1]
         self.assertIn(sid, web_app.SESSIONS)
         self.assertNotIn("authenticated", sid)
+
+    def test_https_cookie_mode_can_explicitly_add_secure(self):
+        self.app.config["WEB_COOKIE_SECURE"] = "1"
+        status, headers, _body = self.request(
+            "POST", "/login", {"password": "correct-password"}
+        )
+        self.assertEqual(status, 303)
+        cookie = headers.get("Set-Cookie", "")
+        self.assertIn("; Secure;", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
 
     def test_create_validation_and_typed_dispatch(self):
         cookie, sess = self.new_cookie_session()

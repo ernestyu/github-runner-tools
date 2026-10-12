@@ -29,7 +29,7 @@ jobs:
         run: |
           grep -F "VERSION=\"${RELEASE_TAG}\"" dist/install.sh
           grep -F "github-runner-tools-${RELEASE_TAG}.tar.gz" dist/install.sh
-          sha256sum -c dist/SHA256SUMS
+          (cd dist && sha256sum -c SHA256SUMS)
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}

@@ -13,9 +13,24 @@ import sys
 from pathlib import Path
 
 from grt_web_common import canonical_service_name, make_local_id, validate_repository
+from v2_unit_installer import UnitInstallError, install_canonical_unit
+
+EXIT_BY_REASON = {
+    "runner_service_entrypoint_missing": 64,
+    "runner_service_entrypoint_invalid": 65,
+    "unit_target_exists": 66,
+    "unit_stage_create_failed": 67,
+    "unit_publish_failed": 68,
+    "unit_daemon_reload_failed": 69,
+    "unit_enable_failed": 70,
+    "authority_state_rejected": 71,
+    "authority_identity_rejected": 72,
+    "authority_install_failed": 73,
+}
+
 from runner_lifecycle_authority import (
     AuthorityError, create_attestation, create_stage, create_unit_attestation, normalize_new_registration,
-    _safe_directory, _current, _cycle_record, CREATE_STATES,
+    _safe_directory, _current, _cycle_record, CREATE_STATES, verify_service_install_provenance,
 )
 
 INSTALL = "/usr/local/lib/github-runner-tools/web/cli_create_authority.py"
@@ -36,6 +51,12 @@ def validate_official_unit(lines: list[str], user: str, directory: str) -> None:
             "TimeoutStopSec": "5min"},
         "[Install]": {"WantedBy": "multi-user.target"},
     }
+    # Retain validation of existing official Units, but also recognize the
+    # new shared root-created canonical 0644 template for CLI/V2 parity.
+    if "Type=simple" in lines:
+        expected["[Unit]"] = {"After": "network-online.target",
+                              "Wants": "network-online.target"}
+        expected["[Service]"]["Type"] = "simple"
     parsed: dict[str, dict[str, str]] = {}
     section = None
     for line in lines:
@@ -75,7 +96,7 @@ def main(argv: list[str]) -> None:
     if user == "root":
         raise AuthorityError("non-root Runner owner required")
     account = pwd.getpwnam(user)
-    if len(argv) != 6 or argv[0] not in ("stage", "attest", "unit", "normalize"):
+    if len(argv) != 6 or argv[0] not in ("stage", "attest", "unit", "normalize", "install"):
         raise AuthorityError("invalid operation")
     op, repo, runner_name, directory, action, version = argv
     repo = validate_repository(repo)
@@ -105,6 +126,14 @@ def main(argv: list[str]) -> None:
         if action != "-" or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
             raise AuthorityError("invalid attestation request")
         create_attestation(repo, runner_name, directory, user, version)
+    elif op == "install":
+        if action != "-" or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+            raise AuthorityError("invalid Unit installation request")
+        provenance = verify_service_install_provenance(
+            repo, runner_name, directory, user, version)
+        install_canonical_unit(
+            repo, runner_name, directory, user,
+            provenance["service_wrapper"])
     else:
         if action != "-" or version != "-":
             raise AuthorityError("invalid Unit verification")
@@ -162,9 +191,28 @@ def main(argv: list[str]) -> None:
         create_unit_attestation(repo, runner_name, directory, service, str(unit))
 
 
+def _safe_reason(exc: BaseException) -> str:
+    if isinstance(exc, UnitInstallError):
+        return exc.reason if exc.reason in EXIT_BY_REASON else "authority_install_failed"
+    text = str(exc)
+    identity_markers = (
+        "identity", "runner name", "repository", "noncanonical", "directory",
+        "owner", "target", "user",
+    )
+    state_markers = (
+        "stage", "cycle", "attestation", "state", "ledger", "create",
+    )
+    if any(marker in text.lower() for marker in identity_markers):
+        return "authority_identity_rejected"
+    if any(marker in text.lower() for marker in state_markers):
+        return "authority_state_rejected"
+    return "authority_install_failed"
+
+
 if __name__ == "__main__":
     try:
         main(sys.argv[1:])
-    except Exception:
+    except Exception as exc:
+        reason = _safe_reason(exc)
         print("CLI lifecycle authority refused; registration may be incomplete", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_BY_REASON[reason])

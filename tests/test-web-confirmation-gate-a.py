@@ -45,7 +45,8 @@ class BaselineHTTPGateA(unittest.TestCase):
             if request["op"] == "list":
                 return {"ok": True, "runners": [
                     {"repository": REPO, "runner_name": "test-runner", "service_state": "active",
-                     "management_state": "configured", "can_remove": True, "can_recover_local": False}
+                     "management_state": "configured", "can_remove": True, "can_recover_local": False,
+                     "runner_id": 12345, "instance": "0123456789abcdef0123456789abcdef"}
                 ]}
             return {"ok": True}
 
@@ -91,8 +92,9 @@ class BaselineHTTPGateA(unittest.TestCase):
         self.assertEqual(status, 303)
         self.assertEqual(headers["Location"], "/")
         policy = headers["Set-Cookie"]
-        for attr in ("Path=/", "Secure", "HttpOnly", "SameSite=Strict"):
+        for attr in ("Path=/", "HttpOnly", "SameSite=Strict"):
             self.assertIn(attr, policy)
+        self.assertNotIn("Secure", policy)
         return policy.split(";", 1)[0]
 
     def prepare(self, cookie):
@@ -115,7 +117,7 @@ class BaselineHTTPGateA(unittest.TestCase):
             {"csrf": csrf, "nonce": nonce, "token": TOKEN}, cookie=cookie)
         self.assertEqual(status, 303)
         self.assertEqual(headers["Location"], "/")
-        self.assertEqual([r["op"] for r in self.calls], ["list", "list", "remove"])
+        self.assertEqual([r["op"] for r in self.calls], ["list", "list", "list", "list", "remove"])
         self.assertEqual(self.calls[-1]["repository"], REPO)
 
     def test_immediate_invalid_token_consumes_confirmation_baseline_observation(self):
@@ -343,7 +345,7 @@ class BaselineHTTPGateA(unittest.TestCase):
         self.assertEqual(observed[0], observed[1])
         self.assertEqual(observed[0], observed[2])
         self.assertEqual(observed[0][0], 303)
-        self.assertEqual([x["op"] for x in observed[0][3]], ["remove"])
+        self.assertEqual([x["op"] for x in observed[0][3]], ["list", "remove"])
 
 
 if __name__ == "__main__":

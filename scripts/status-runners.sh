@@ -1,6 +1,49 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# CLI-native operational events; no Web/Executor business log parsing.
+GRT_LOGGER="/usr/local/lib/github-runner-tools/cli/cli-operational-logger.py"
+GRT_LOG_RUN_ID="$(/usr/bin/python3 -c 'import secrets; print(secrets.token_hex(16))')"
+GRT_LOG_SEQ=0
+GRT_LOG_READY=0
+GRT_LOG_SIDE_EFFECT=0
+GRT_LOG_WARNED=0
+GRT_LOG_REPO="none"
+GRT_LOG_RUNNER="none"
+GRT_LOG_STAGE="none"
+grt_log() {
+  local event="$1" result="$2" reason="${3:-none}" rc="${4:--1}"
+  local -a grt_log_args=()
+  if [[ "${GITHUB_ACTIONS:-}" == "true" && "${BASH_SOURCE[0]}" != /usr/local/lib/github-runner-tools/cli/* ]]; then
+    GRT_LOGGER="${BASH_SOURCE[0]%/*}/cli-operational-logger.py"
+    grt_log_args=(--test-root "${RUNNER_TEMP:-/tmp}/grt-native-logging-$(id -u)")
+  fi
+  GRT_LOG_SEQ=$((GRT_LOG_SEQ + 1))
+  if /usr/bin/python3 "$GRT_LOGGER" "${grt_log_args[@]}" --run-id "$GRT_LOG_RUN_ID" --seq "$GRT_LOG_SEQ" --op status \
+       --event "$event" --stage "$GRT_LOG_STAGE" --result "$result" --reason "$reason" \
+       --exit-code "$rc" --repository "$GRT_LOG_REPO" --runner "$GRT_LOG_RUNNER"; then
+    return 0
+  fi
+  if [[ "$GRT_LOG_SIDE_EFFECT" == "0" && "status" != "status" ]]; then
+    printf 'ERROR: CLI logging unavailable before side effects.\n' >&2
+    exit 1
+  fi
+  if [[ "$GRT_LOG_WARNED" == "0" ]]; then
+    printf 'WARNING: CLI operational logging unavailable; lifecycle authority remains decisive.\n' >&2
+    GRT_LOG_WARNED=1
+  fi
+  return 0
+}
+grt_log_finish() {
+  local rc="$1"
+  if [[ "$GRT_LOG_READY" == "1" ]]; then
+    grt_log operation_exit "$([[ "$rc" == 0 ]] && echo ok || echo failed)" "$([[ "$rc" == 0 ]] && echo none || echo unexpected_cli_failure)" "$rc" || :
+  fi
+}
+
+trap 'rc=$?; grt_log_finish "$rc"' EXIT
+GRT_LOG_READY=1
+grt_log operation begin
 MAX_LOCAL_ID_LENGTH=64
 HASH_LENGTH=8
 
@@ -108,6 +151,7 @@ repo_from_new_dir_residue() {
 JSON_MODE=0
 if [[ "${1:-}" == "--json" ]]; then JSON_MODE=1; shift; fi
 [[ $# -eq 0 ]] || die "Usage: status-runners.sh [--json]"
+grt_log inventory begin
 if [[ "$JSON_MODE" == "1" ]]; then
   command -v jq >/dev/null 2>&1 || die "jq is required for --json"
   command -v systemctl >/dev/null 2>&1 || die "systemctl is required for --json"
@@ -125,7 +169,7 @@ shopt -u nullglob
 
 if [[ "$JSON_MODE" == "1" ]]; then
   TMP="$(mktemp)"
-  trap 'rm -f -- "$TMP"' EXIT
+  trap 'rc=$?; grt_log_finish "$rc"; rm -f -- "$TMP"' EXIT
   for dir in "${RUNNER_DIRS[@]}"; do
     repository=""
     runner_name=""
@@ -181,6 +225,7 @@ if [[ "$JSON_MODE" == "1" ]]; then
       }' >> "$TMP"
   done
   jq -s '.' "$TMP"
+  grt_log inventory ok
   exit 0
 fi
 
@@ -223,6 +268,7 @@ else
 fi
 echo
 
+grt_log inventory ok
 if [[ ${#RUNNER_DIRS[@]} -eq 0 ]]; then echo "No actions-runner-* directories found."; exit 0; fi
 
 for dir in "${RUNNER_DIRS[@]}"; do

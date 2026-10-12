@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import pwd
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "web"))
 import runner_lifecycle_authority as auth
 import cli_create_authority as cli
+import v2_unit_installer as installer
 
 REPO = "example/repo"
 RUNNER = "fixture"
@@ -39,6 +41,9 @@ class AuthorityTests(unittest.TestCase):
         (self.runner / ".runner").write_text(json.dumps({
             "agentName": RUNNER, "agentId": 101, "gitHubUrl": "https://github.com/example/repo"}))
         (self.runner / ".credentials").write_text("SYNTHETIC_NOT_SECRET")
+        (self.runner / "bin").mkdir()
+        (self.runner / "bin" / "runsvc.sh").write_text("#!/bin/bash\necho fixture-wrapper\n")
+        (self.runner / "bin" / "runsvc.sh").chmod(0o755)
         for name in (".runner", ".credentials"):
             (self.runner / name).chmod(0o600)
 
@@ -70,12 +75,12 @@ class AuthorityTests(unittest.TestCase):
     def test_cli_create_orchestration_guards_official_unit_before_start(self):
         source = (ROOT / "scripts/register-runner.sh").read_text()
         registration = source.index("REGISTRATION_COMPLETE=1")
-        cli_permission = source.index("cli_create_authority stage REGISTERED_PERMISSION_INCOMPLETE -")
+        cli_permission = source.index("create_lifecycle_stage REGISTERED_PERMISSION_INCOMPLETE", source.index("cli_create_authority normalize - -") - 150)
         cli_normalize = source.index("cli_create_authority normalize - -")
         cli_attest = source.index("cli_create_authority attest -")
         cli_unit = source.index("cli_create_authority unit - -")
         cli_start = source.index("  sudo ./svc.sh start ||")
-        cli_done = source.index("cli_create_authority stage CREATE_COMPLETE -")
+        cli_done = source.index("create_lifecycle_stage CREATE_COMPLETE", source.index("  sudo ./svc.sh start ||"))
         self.assertLess(registration, cli_permission)
         self.assertLess(cli_permission, cli_normalize)
         self.assertLess(cli_normalize, cli_attest)
@@ -367,6 +372,10 @@ class AuthorityTests(unittest.TestCase):
         (self.runner / ".runner").write_text(json.dumps({
             "agentName": RUNNER, "agentId": 202, "gitHubUrl": "https://github.com/example/repo"}))
         (self.runner / ".credentials").write_text("SECOND_CYCLE_SYNTHETIC")
+        (self.runner / "bin").mkdir()
+        (self.runner / "bin" / "runsvc.sh").write_text(
+            "#!/bin/bash\necho second-cycle-wrapper\n")
+        (self.runner / "bin" / "runsvc.sh").chmod(0o755)
         for name in (".runner", ".credentials"):
             (self.runner / name).chmod(0o600)
         auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
@@ -390,6 +399,151 @@ class AuthorityTests(unittest.TestCase):
         auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_PERMISSION_INCOMPLETE")
         with self.assertRaises(auth.AuthorityError):
             auth.create_attestation("foreign/repo", RUNNER, self.repo, "root", "2.328.0")
+
+
+
+    def make_incomplete_create(self):
+        auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_PERMISSION_INCOMPLETE")
+        auth.create_attestation(REPO, RUNNER, self.repo, "root", "2.338.0")
+        auth.create_stage(REPO, RUNNER, self.repo, "REGISTERED_UNIT_INCOMPLETE")
+
+    def test_service_install_provenance_requires_same_cycle_stage_version_and_wrapper(self):
+        self.make_incomplete_create()
+        proof = auth.verify_service_install_provenance(
+            REPO, RUNNER, self.repo, "root", "2.338.0")
+        self.assertEqual(proof["runner_version"], "2.338.0")
+        with self.assertRaises(auth.AuthorityError):
+            auth.verify_service_install_provenance(
+                REPO, RUNNER, self.repo, "root", "2.328.0")
+        wrapper = self.runner / "bin" / "runsvc.sh"
+        wrapper.write_text("#!/bin/bash\necho changed-wrapper\n")
+        wrapper.chmod(0o755)
+        with self.assertRaises(auth.AuthorityError):
+            auth.verify_service_install_provenance(
+                REPO, RUNNER, self.repo, "root", "2.338.0")
+
+    def test_fresh_post_config_trusted_authority_runs_production_bootstrap(self):
+        self.make_incomplete_create()
+        self.assertFalse((self.runner / "runsvc.sh").exists())
+        fake_systemd = self.base / "systemd"
+        fake_systemd.mkdir()
+        fake_account = SimpleNamespace(
+            pw_uid=0, pw_gid=0, pw_dir=str(self.base))
+        with mock.patch.dict(os.environ, {"SUDO_USER": "fixture"}), \
+             mock.patch("pwd.getpwnam", return_value=fake_account), \
+             mock.patch.object(installer, "UNIT_DIR", str(fake_systemd)), \
+             mock.patch.object(installer.subprocess, "run",
+                               return_value=SimpleNamespace(returncode=0)):
+            cli.main(["install", REPO, RUNNER, self.repo, "-", "2.338.0"])
+        self.assertTrue((self.runner / "runsvc.sh").is_file())
+        self.assertEqual(
+            (self.runner / "runsvc.sh").read_bytes(),
+            (self.runner / "bin" / "runsvc.sh").read_bytes())
+        service = "actions.runner.example-repo.fixture.service"
+        unit = fake_systemd / service
+        self.assertTrue(unit.is_file())
+        self.assertEqual(unit.stat().st_mode & 0o777, 0o644)
+
+    def test_ordinary_remove_still_rejects_incomplete_create(self):
+        self.make_incomplete_create()
+        with self.assertRaises(auth.AuthorityError):
+            auth.remove_stage(REPO, RUNNER, self.repo, "root", "BEGIN")
+        active = auth._current(REPO, RUNNER, self.repo)
+        self.assertIsNone(auth._cycle_record(
+            auth.REMOVE_STATES, REPO, RUNNER, self.repo, active["instance"]))
+
+    def test_bounded_incomplete_create_reconciliation_closes_cycle_without_forging_success(self):
+        self.make_incomplete_create()
+        active = auth._current(REPO, RUNNER, self.repo)
+        instance = active["instance"]
+        begin = auth.reconcile_incomplete_create_stage(
+            REPO, RUNNER, self.repo, "root", "BEGIN")
+        self.assertEqual(begin["github_runner_id"], 101)
+        removed = auth._cycle_record(
+            auth.REMOVE_STATES, REPO, RUNNER, self.repo, instance)
+        self.assertEqual(removed["stage"], "REMOTE_REMOVE_OUTCOME_UNKNOWN")
+        self.assertEqual(removed["origin"], "incomplete-create-reconciliation")
+        self.assertEqual(removed["create_stage_at_begin"], "REGISTERED_UNIT_INCOMPLETE")
+
+        proof = auth.reconcile_incomplete_create_stage(
+            REPO, RUNNER, self.repo, "root", "CONFIRM_REMOTE_REMOVED")
+        self.assertEqual(proof["inode"], self.runner.stat().st_ino)
+        cleaner = ROOT / "scripts" / "web-runner-cleanup.py"
+        cleaned = subprocess.run(
+            [sys.executable, str(cleaner), str(self.base), self.repo, REPO,
+             str(proof["device"]), str(proof["inode"])],
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(cleaned.returncode, 0, cleaned.stderr)
+        self.assertFalse(self.runner.exists())
+        auth.reconcile_incomplete_create_stage(
+            REPO, RUNNER, self.repo, "root", "COMPLETE")
+
+        created = auth._cycle_record(
+            auth.CREATE_STATES, REPO, RUNNER, self.repo, instance)
+        removed = auth._cycle_record(
+            auth.REMOVE_STATES, REPO, RUNNER, self.repo, instance)
+        self.assertEqual(created["stage"], "CREATE_ABORTED_RECONCILED")
+        self.assertEqual(created["reconciled_from_stage"], "REGISTERED_UNIT_INCOMPLETE")
+        self.assertNotEqual(created["stage"], "CREATE_COMPLETE")
+        self.assertEqual(removed["stage"], "REMOVE_COMPLETE")
+
+        self.runner.mkdir()
+        self.repo = str(self.runner)
+        auth.create_stage(REPO, RUNNER, self.repo, "PRE_REGISTRATION")
+        self.assertNotEqual(auth._current(REPO, RUNNER, self.repo)["instance"], instance)
+
+    def test_reconciliation_cleanup_proof_rejects_replaced_top_level_directory(self):
+        self.make_incomplete_create()
+        proof_begin = auth.reconcile_incomplete_create_stage(
+            REPO, RUNNER, self.repo, "root", "BEGIN")
+        self.assertEqual(proof_begin["inode"], self.runner.stat().st_ino)
+        proof = auth.reconcile_incomplete_create_stage(
+            REPO, RUNNER, self.repo, "root", "CONFIRM_REMOTE_REMOVED")
+        original = self.base / "attested-runner-moved"
+        self.runner.rename(original)
+        self.runner.mkdir()
+        (self.runner / "replacement").write_text("DO-NOT-DELETE")
+        cleaner = ROOT / "scripts" / "web-runner-cleanup.py"
+        cleaned = subprocess.run(
+            [sys.executable, str(cleaner), str(self.base), self.repo, REPO,
+             str(proof["device"]), str(proof["inode"])],
+            capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(cleaned.returncode, 0)
+        self.assertEqual((self.runner / "replacement").read_text(), "DO-NOT-DELETE")
+        self.assertTrue((original / ".runner").exists())
+        with self.assertRaises(auth.AuthorityError):
+            auth.reconcile_incomplete_create_stage(
+                REPO, RUNNER, self.repo, "root", "COMPLETE")
+
+    def test_incomplete_reconciliation_revalidates_no_service_before_confirmation(self):
+        self.make_incomplete_create()
+        active = auth._current(REPO, RUNNER, self.repo)
+        instance = active["instance"]
+        auth.reconcile_incomplete_create_stage(
+            REPO, RUNNER, self.repo, "root", "BEGIN")
+        service = self.runner / ".service"
+        service.write_text("unexpected\n")
+        with self.assertRaises(auth.AuthorityError):
+            auth.reconcile_incomplete_create_stage(
+                REPO, RUNNER, self.repo, "root", "CONFIRM_REMOTE_REMOVED")
+        removed = auth._cycle_record(
+            auth.REMOVE_STATES, REPO, RUNNER, self.repo, instance)
+        self.assertEqual(removed["stage"], "REMOTE_REMOVE_OUTCOME_UNKNOWN")
+        self.assertTrue(self.runner.exists())
+
+    def test_incomplete_reconciliation_rejects_changed_attested_registration(self):
+        self.make_incomplete_create()
+        (self.runner / ".runner").write_text(json.dumps({
+            "agentName": RUNNER, "agentId": 202,
+            "gitHubUrl": "https://github.com/example/repo"}))
+        (self.runner / ".runner").chmod(0o600)
+        with self.assertRaises(auth.AuthorityError):
+            auth.reconcile_incomplete_create_stage(
+                REPO, RUNNER, self.repo, "root", "BEGIN")
+        active = auth._current(REPO, RUNNER, self.repo)
+        self.assertIsNone(auth._cycle_record(
+            auth.REMOVE_STATES, REPO, RUNNER, self.repo, active["instance"]))
 
 
 if __name__ == "__main__":

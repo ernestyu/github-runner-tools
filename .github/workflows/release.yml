@@ -1,0 +1,28 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build verified fresh-install payload
+        run: bash scripts/build-release.sh "$GITHUB_REF_NAME"
+      - name: Verify release metadata consistency
+        run: |
+          grep -F "VERSION=\"$GITHUB_REF_NAME\"" dist/install.sh
+          grep -F "github-runner-tools-$GITHUB_REF_NAME.tar.gz" dist/install.sh
+          sha256sum -c dist/SHA256SUMS
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||             gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME"             dist/install.sh             "dist/github-runner-tools-$GITHUB_REF_NAME.tar.gz"             dist/SHA256SUMS             --clobber

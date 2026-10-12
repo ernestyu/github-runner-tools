@@ -1,6 +1,55 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# CLI-native operational events; no Web/Executor business log parsing.
+GRT_LOGGER="/usr/local/lib/github-runner-tools/cli/cli-operational-logger.py"
+GRT_LOG_RUN_ID="$(/usr/bin/python3 -c 'import secrets; print(secrets.token_hex(16))')"
+GRT_LOG_SEQ=0
+GRT_LOG_READY=0
+GRT_LOG_SIDE_EFFECT=0
+GRT_LOG_WARNED=0
+GRT_LOG_REPO="none"
+GRT_LOG_RUNNER="none"
+GRT_LOG_STAGE="none"
+GRT_LOG_EVENT="preflight"
+GRT_LOG_LAST_REASON="none"
+grt_log() {
+  local event="$1" result="$2" reason="${3:-none}" rc="${4:--1}"
+  # An isolated CI source-tree CLI uses the same logger, with a test-only
+  # directory. Installed CLI never accepts caller-controlled log locations.
+  local -a grt_log_args=()
+  if [[ "${GITHUB_ACTIONS:-}" == "true" && "${BASH_SOURCE[0]}" != /usr/local/lib/github-runner-tools/cli/* ]]; then
+    GRT_LOGGER="${BASH_SOURCE[0]%/*}/cli-operational-logger.py"
+    grt_log_args=(--test-root "${RUNNER_TEMP:-/tmp}/grt-native-logging-$(id -u)")
+  fi
+  [[ "$result" == "begin" && "$event" != "operation" ]] && GRT_LOG_EVENT="$event"
+  GRT_LOG_SEQ=$((GRT_LOG_SEQ + 1))
+  if /usr/bin/python3 "$GRT_LOGGER" "${grt_log_args[@]}" --run-id "$GRT_LOG_RUN_ID" --seq "$GRT_LOG_SEQ" --op create \
+       --event "$event" --stage "$GRT_LOG_STAGE" --result "$result" --reason "$reason" \
+       --exit-code "$rc" --repository "$GRT_LOG_REPO" --runner "$GRT_LOG_RUNNER"; then
+    return 0
+  fi
+  if [[ "$GRT_LOG_SIDE_EFFECT" == "0" && "create" != "status" ]]; then
+    printf 'ERROR: CLI logging unavailable before side effects.\n' >&2
+    exit 1
+  fi
+  if [[ "$GRT_LOG_WARNED" == "0" ]]; then
+    printf 'WARNING: CLI operational logging unavailable; lifecycle authority remains decisive.\n' >&2
+    GRT_LOG_WARNED=1
+  fi
+  return 0
+}
+grt_log_finish() {
+  local rc="$1" reason="none"
+  if [[ "$GRT_LOG_READY" == "1" ]]; then
+    if [[ "$rc" != 0 ]]; then
+      reason="$GRT_LOG_LAST_REASON"
+      [[ "$reason" != "none" ]] || reason="$(grt_reason_for_event)"
+    fi
+    grt_log operation_exit "$([[ "$rc" == 0 ]] && echo ok || echo failed)" "$reason" "$rc" || :
+  fi
+}
+
 MAX_LOCAL_ID_LENGTH=64
 HASH_LENGTH=8
 CREATED_RUNNER_DIR=0
@@ -42,7 +91,47 @@ Cross-user provisioning is intentionally unsupported in v1.
 USAGE
 }
 
-die() { echo "ERROR: $*" >&2; exit 1; }
+grt_reason_for_event() {
+  # Fixed enum only; never persist any argument or subprocess output.
+  case "$GRT_LOG_EVENT" in
+    archive_check) echo archive_unavailable ;;
+    release_lookup) echo release_metadata_failed ;;
+    runner_download) echo download_failed ;;
+    digest_check|runner_extract) echo integrity_failed ;;
+    dependency_check) echo dependency_failed ;;
+    lifecycle_checkpoint) echo checkpoint_failed ;;
+    registration_permissions) echo permissions_failed ;;
+    registration_attestation) echo attestation_failed ;;
+    service_install) echo service_install_failed ;;
+    service_start) echo service_start_failed ;;
+    service_health) echo service_health_failed ;;
+    service_stop) echo service_stop_failed ;;
+    service_uninstall) echo service_uninstall_failed ;;
+    local_cleanup) echo local_cleanup_failed ;;
+    inventory) echo inventory_failed ;;
+    remote_registration|remote_removal) echo remote_result_uncertain ;;
+    *) echo unexpected_cli_failure ;;
+  esac
+}
+die() {
+  local safe_reason
+  safe_reason="$GRT_LOG_LAST_REASON"
+  [[ "$safe_reason" != "none" ]] || safe_reason="$(grt_reason_for_event)"
+  if [[ "$GRT_LOG_READY" == 1 ]]; then
+    # A remote outcome may be unknown despite CLI exit 1. Never imply retry.
+    if [[ "$GRT_LOG_EVENT" == "remote_registration" || "$GRT_LOG_EVENT" == "remote_removal" ]]; then
+      grt_log "$GRT_LOG_EVENT" unknown remote_result_uncertain || :
+    else
+    case "$GRT_LOG_STAGE" in
+      REGISTRATION_OUTCOME_UNKNOWN|REMOTE_REMOVE_OUTCOME_UNKNOWN)
+        grt_log "$GRT_LOG_EVENT" unknown remote_result_uncertain || : ;;
+      *) GRT_LOG_LAST_REASON="$safe_reason"; grt_log "$GRT_LOG_EVENT" failed "$safe_reason" || : ;;
+    esac
+    fi
+  fi
+  echo "ERROR: $*" >&2
+  exit 1
+}
 require_command() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
 
 cleanup() {
@@ -124,8 +213,8 @@ read_secret_from_fd() {
 web_priv_request() {
   local payload="$1" response
   [[ "$WEB_MODE" == "1" && "$PRIVILEGED_FD" =~ ^[0-9]+$ ]] || die "Invalid Web privileged context."
-  printf '%s\n' "$payload" >&"$PRIVILEGED_FD" || die "Privileged dispatcher channel write failed."
-  IFS= read -r response <&"$PRIVILEGED_FD" || die "Privileged dispatcher channel closed."
+  printf '%s\n' "$payload" >&"$PRIVILEGED_FD" || die "Privileged Executor channel write failed."
+  IFS= read -r response <&"$PRIVILEGED_FD" || die "Privileged Executor channel closed."
   WEB_PRIV_RESPONSE="$response"
   jq -e '.ok == true' <<<"$response" >/dev/null 2>&1
 }
@@ -138,8 +227,26 @@ cli_create_authority() {
     die "Trusted installed CLI lifecycle authority missing; install the approved tooling before Create."
   [[ "$(stat -c '%U:%G:%a' "$authority")" == "root:root:755" ]] ||
     die "CLI lifecycle authority ownership/mode invalid."
-  sudo /usr/bin/python3 "$authority" "$verb" "$REPO" "$RUNNER_NAME" "$RUNNER_DIR" "$action" "$version" ||
-    die "CLI lifecycle integrity checkpoint failed; keep registered resources for admin review."
+  local rc=0
+  if sudo /usr/bin/python3 "$authority" "$verb" "$REPO" "$RUNNER_NAME" "$RUNNER_DIR" "$action" "$version"; then
+    return 0
+  else
+    rc=$?
+  fi
+  case "$rc" in
+    64) GRT_LOG_LAST_REASON="runner_service_entrypoint_missing" ;;
+    65) GRT_LOG_LAST_REASON="runner_service_entrypoint_invalid" ;;
+    66) GRT_LOG_LAST_REASON="unit_target_exists" ;;
+    67) GRT_LOG_LAST_REASON="unit_stage_create_failed" ;;
+    68) GRT_LOG_LAST_REASON="unit_publish_failed" ;;
+    69) GRT_LOG_LAST_REASON="unit_daemon_reload_failed" ;;
+    70) GRT_LOG_LAST_REASON="unit_enable_failed" ;;
+    71) GRT_LOG_LAST_REASON="authority_state_rejected" ;;
+    72) GRT_LOG_LAST_REASON="authority_identity_rejected" ;;
+    73) GRT_LOG_LAST_REASON="authority_install_failed" ;;
+    *)  GRT_LOG_LAST_REASON="authority_install_failed" ;;
+  esac
+  die "CLI lifecycle integrity checkpoint failed; keep registered resources for admin review."
 }
 
 web_create_stage() {
@@ -151,9 +258,23 @@ web_create_stage() {
   web_priv_request "$request" || die "Durable Create state transition failed."
 }
 
+# Both interactive and Executor calls follow one durable lifecycle stage
+# sequence; only the narrow root authority transport differs.
+create_lifecycle_stage() {
+  local stage="$1"
+  GRT_LOG_STAGE="$stage"
+  grt_log lifecycle_checkpoint begin
+  if [[ "$WEB_MODE" == "1" ]]; then
+    web_create_stage "$stage" || return $?
+  else
+    cli_create_authority stage "$stage" - || return $?
+  fi
+  grt_log lifecycle_checkpoint ok
+}
+
 web_context_check() {
   [[ "$PRIVILEGED_FD" =~ ^[0-9]+$ ]] || die "Invalid Web privileged context."
-  python3 - "$PRIVILEGED_FD" <<'PY' || die "Web lifecycle privileged channel is not owned by the root dispatcher."
+  python3 - "$PRIVILEGED_FD" <<'PY' || die "Web lifecycle privileged channel is not owned by the root Executor."
 import os
 import socket
 import struct
@@ -169,7 +290,6 @@ finally:
 if uid != 0:
     raise SystemExit(1)
 PY
-  web_priv_request '{"op":"context_check"}' || die "Web lifecycle context is not authorized by dispatcher."
 }
 
 ensure_mutation_lock() {
@@ -212,7 +332,7 @@ ensure_mutation_lock() {
 
 acquire_mutation_lock() {
   if [[ "$WEB_MODE" == "1" ]]; then
-    [[ "$LOCK_ALREADY_HELD" == "1" ]] || die "Web lifecycle requires dispatcher-held mutation lock."
+    [[ "$LOCK_ALREADY_HELD" == "1" ]] || die "Web lifecycle requires Executor-held mutation lock."
     web_context_check
     return 0
   fi
@@ -275,7 +395,7 @@ while [[ $# -gt 0 ]]; do
     --labels) [[ $# -ge 2 ]] || die "--labels requires a value"; CLI_LABELS="$2"; shift 2 ;;
     --runner-version) [[ $# -ge 2 ]] || die "--runner-version requires a value"; CLI_RUNNER_VERSION="$2"; shift 2 ;;
     --clean-incomplete) die "--clean-incomplete is disabled: unverified historical Runner directories must be preserved for independent administrator review." ;;
-    --web-worker) WEB_MODE=1; shift ;;
+    --executor-mode) WEB_MODE=1; shift ;;
     --token-fd) [[ $# -ge 2 ]] || die "--token-fd requires a value"; TOKEN_FD="$2"; shift 2 ;;
     --privileged-fd) [[ $# -ge 2 ]] || die "--privileged-fd requires a value"; PRIVILEGED_FD="$2"; shift 2 ;;
     --lock-already-held) LOCK_ALREADY_HELD=1; shift ;;
@@ -289,16 +409,26 @@ set -- "${POSITIONAL[@]}"
 [[ $# -eq 1 ]] || { usage; exit 1; }
 
 if [[ "$WEB_MODE" == "1" ]]; then
-  [[ "${GRT_WEB_CONTEXT:-0}" == "1" ]] || die "Internal Web mode requires dispatcher context."
+  [[ "${GRT_EXECUTOR_CONTEXT:-0}" == "1" ]] ||
+    die "Internal Executor mode requires trusted context."
   [[ "$TOKEN_FD" =~ ^[0-9]+$ && "$PRIVILEGED_FD" =~ ^[0-9]+$ && "$LOCK_ALREADY_HELD" == "1" ]] ||
-    die "Incomplete internal Web lifecycle context."
+    die "Incomplete internal Executor lifecycle context."
 elif [[ -n "$TOKEN_FD" || -n "$PRIVILEGED_FD" || "$LOCK_ALREADY_HELD" == "1" ]]; then
-  die "Internal Web options are not available in normal CLI mode."
+  die "Internal Executor options are not available in normal CLI mode."
 fi
 
 REPO="$1"
-[[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "Repository must be in OWNER/REPO form."
+if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ${#REPO} -gt 201 ]]; then
+  GRT_LOG_READY=1
+  GRT_LOG_REPO="none"
+  grt_log operation failed invalid_input
+  echo "ERROR: Repository must be in OWNER/REPO form." >&2
+  exit 1
+fi
 OWNER="${REPO%%/*}"; REPO_NAME="${REPO##*/}"
+GRT_LOG_REPO="$REPO"
+GRT_LOG_READY=1
+grt_log operation begin
 SAFE_REPO="$(sanitize_component "$REPO_NAME")" || die "Could not derive a safe repository label from: $REPO"
 LOCAL_ID="$(make_local_id "$OWNER" "$REPO_NAME")" || die "Could not derive a safe local identity from: $REPO"
 (( ${#LOCAL_ID} <= MAX_LOCAL_ID_LENGTH )) || die "Internal error: local identity exceeds ${MAX_LOCAL_ID_LENGTH} characters"
@@ -308,7 +438,7 @@ if [[ "$WEB_MODE" != "1" ]]; then require_command sudo; fi
 
 REQUESTED_RUNNER_USER="${RUNNER_USER:-}"
 RUNNER_USER="$(id -un)"
-if [[ -n "$REQUESTED_RUNNER_USER" && "$REQUESTED_RUNNER_USER" != "$RUNNER_USER" ]]; then die "RUNNER_USER must match the user executing this script; cross-user provisioning is not supported in v1."; fi
+if [[ -n "$REQUESTED_RUNNER_USER" && "$REQUESTED_RUNNER_USER" != "$RUNNER_USER" ]]; then die "RUNNER_USER must match the user executing this script; cross-user provisioning is not supported."; fi
 USER_HOME="$(resolve_home "$RUNNER_USER")" || die "Could not resolve a valid home directory for user: $RUNNER_USER"
 [[ -d "$USER_HOME" && -x "$USER_HOME" && -r "$USER_HOME" && -w "$USER_HOME" ]] || die "Runner user's home directory is not accessible and writable: $USER_HOME"
 
@@ -328,11 +458,14 @@ if [[ "$WEB_MODE" != "1" ]]; then
   [[ -r /dev/tty && -w /dev/tty ]] || die "Interactive token input requires a TTY."
 fi
 
+grt_log archive_check begin
 validate_local_archive_platform
+grt_log archive_check ok
 acquire_mutation_lock
 
 RUNNER_BASE_DIR="${CLI_BASE_DIR:-${RUNNER_BASE_DIR:-$USER_HOME}}"
 RUNNER_NAME="${CLI_RUNNER_NAME:-${RUNNER_NAME:-local-ci-$LOCAL_ID}}"
+GRT_LOG_RUNNER="$RUNNER_NAME"
 RUNNER_LABELS="${CLI_LABELS:-${RUNNER_LABELS:-local-ci,$SAFE_REPO}}"
 REQUESTED_RUNNER_VERSION="${CLI_RUNNER_VERSION:-${RUNNER_VERSION:-}}"
 
@@ -363,6 +496,7 @@ CONFIG
 
 # No CLI flag or normal Create phase is authorized to delete an old tree.
 create_target_preflight "$RUNNER_DIR"
+GRT_LOG_SIDE_EFFECT=1
 if [[ ! -d "$RUNNER_DIR" ]]; then mkdir -- "$RUNNER_DIR"; CREATED_RUNNER_DIR=1; fi
 cd "$RUNNER_DIR"
 
@@ -371,6 +505,7 @@ if [[ "$WEB_MODE" != "1" ]]; then
   [[ -n "$TOKEN" ]] || die "Registration token cannot be empty."
 fi
 
+grt_log release_lookup begin
 RELEASE_JSON="$(mktemp)"
 if [[ -n "$TAG" ]]; then API_URL="https://api.github.com/repos/actions/runner/releases/tags/$TAG"; echo "==> Fetching official GitHub Actions Runner release $TAG..."; else API_URL="https://api.github.com/repos/actions/runner/releases/latest"; echo "==> Fetching latest official GitHub Actions Runner release..."; fi
 curl -fsSL --retry 3 --retry-delay 2 "$API_URL" -o "$RELEASE_JSON" || die "Could not fetch GitHub Actions Runner release metadata."
@@ -385,21 +520,31 @@ fi
 ARCHIVE="actions-runner-linux-${RUNNER_ARCH}-${VERSION}.tar.gz"
 DOWNLOAD_URL="$(jq -er --arg NAME "$ARCHIVE" '.assets[] | select(.name == $NAME) | .browser_download_url' "$RELEASE_JSON")" || die "Could not find $ARCHIVE in official release $TAG"
 DIGEST="$(jq -r --arg NAME "$ARCHIVE" '.assets[] | select(.name == $NAME) | (.digest // empty)' "$RELEASE_JSON")"
+grt_log release_lookup ok
 ARCHIVE_PATH="$RUNNER_DIR/$ARCHIVE"
 
 echo "==> Runner release: $TAG"
+grt_log runner_download begin
 echo "==> Downloading $ARCHIVE..."
 curl -fL --retry 3 --retry-delay 2 -o "$ARCHIVE_PATH" "$DOWNLOAD_URL" || die "Runner download failed."
+grt_log runner_download ok
 if [[ "$DIGEST" == sha256:* ]]; then
+  grt_log digest_check begin
   EXPECTED_SHA256="${DIGEST#sha256:}"; ACTUAL_SHA256="$(sha256sum "$ARCHIVE_PATH" | awk '{print $1}')"
   [[ "$EXPECTED_SHA256" == "$ACTUAL_SHA256" ]] || die "SHA-256 verification failed for $ARCHIVE"
+  grt_log digest_check ok
   echo "==> SHA-256 verification: OK"
 else
-  echo "WARNING: GitHub release metadata did not provide a SHA-256 digest for this asset." >&2
+  grt_log digest_check begin
+  GRT_LOG_LAST_REASON="integrity_failed"
+  die "GitHub release metadata did not provide a SHA-256 digest; refusing unverified service bootstrap."
 fi
 
+grt_log runner_extract begin
 echo "==> Extracting runner..."
 tar xzf "$ARCHIVE_PATH"; rm -f -- "$ARCHIVE_PATH"; ARCHIVE_PATH=""
+grt_log runner_extract ok
+grt_log dependency_check begin
 echo "==> Checking/installing official runner dependencies..."
 if [[ "$WEB_MODE" == "1" ]]; then
   if command -v ldd >/dev/null 2>&1 && ldd ./bin/Runner.Listener 2>/dev/null | grep -q 'not found'; then
@@ -409,24 +554,38 @@ else
   sudo ./bin/installdependencies.sh
 fi
 
+grt_log dependency_check ok
 if [[ "$WEB_MODE" == "1" ]]; then
-  web_create_stage PRE_REGISTRATION
+  create_lifecycle_stage PRE_REGISTRATION
 else
-  cli_create_authority stage PRE_REGISTRATION -
+  create_lifecycle_stage PRE_REGISTRATION
 fi
 
 CREATE_REQUEST_STARTED=1
+grt_log remote_registration begin
 echo "==> Registering runner for https://github.com/$REPO ..."
 if [[ "$WEB_MODE" == "1" ]]; then
   PTY_ADAPTER="${GRT_PTY_ADAPTER:-/usr/local/lib/github-runner-tools/web/pty_token_adapter.py}"
   [[ -x "$PTY_ADAPTER" ]] || die "Web PTY token adapter is unavailable."
-  python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode create -- \
-    ./config.sh \
-      --url "https://github.com/$REPO" \
-      --name "$RUNNER_NAME" \
-      --labels "$RUNNER_LABELS" \
-      --work "_work" ||
-    { web_create_stage REGISTRATION_OUTCOME_UNKNOWN || true; die "Runner registration outcome is uncertain; preserve local registration state and reconcile with GitHub before retry."; }
+  if (
+    # The untrusted external config.sh and PTY adapter must never inherit
+    # Executor's FD4 root privileged socket. Retain FD4 only in the parent
+    # CLI shell, for exact root operation requests.
+    exec 4>&-
+    python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode create -- \
+      ./config.sh \
+        --url "https://github.com/$REPO" \
+        --name "$RUNNER_NAME" \
+        --labels "$RUNNER_LABELS" \
+        --work "_work"
+  ); then
+    exec {TOKEN_FD}<&-
+  else
+    exec {TOKEN_FD}<&-
+    GRT_LOG_STAGE="REGISTRATION_OUTCOME_UNKNOWN"; grt_log remote_registration unknown remote_result_uncertain
+    create_lifecycle_stage REGISTRATION_OUTCOME_UNKNOWN || true
+    die "Runner registration outcome is uncertain; preserve local registration state and reconcile with GitHub before retry."
+  fi
 else
   ./config.sh \
     --url "https://github.com/$REPO" \
@@ -435,15 +594,18 @@ else
     --labels "$RUNNER_LABELS" \
     --work "_work" \
     --unattended || {
-      cli_create_authority stage REGISTRATION_OUTCOME_UNKNOWN - || true
+      GRT_LOG_STAGE="REGISTRATION_OUTCOME_UNKNOWN"; grt_log remote_registration unknown remote_result_uncertain
+      create_lifecycle_stage REGISTRATION_OUTCOME_UNKNOWN || true
       die "Runner registration outcome is uncertain; preserve local directory and investigate before retry."
     }
   unset TOKEN
 fi
 REGISTRATION_COMPLETE=1
+grt_log remote_registration ok
 
 if [[ "$WEB_MODE" == "1" ]]; then
-  web_create_stage REGISTERED_PERMISSION_INCOMPLETE
+  create_lifecycle_stage REGISTERED_PERMISSION_INCOMPLETE
+  grt_log registration_permissions begin
   NORMALIZE_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" \
     --arg runner_name "$RUNNER_NAME" \
     '{op:"registration_permission_normalize",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name}')"
@@ -452,61 +614,81 @@ if [[ "$WEB_MODE" == "1" ]]; then
   python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" registration_check \
     "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$CANONICAL_SERVICE" ||
     die "New Runner registration metadata is not safely restricted to owner-only permissions."
+  grt_log registration_permissions ok
+  grt_log registration_attestation begin
   ATTEST_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" \
     --arg runner_name "$RUNNER_NAME" --arg version "$VERSION" \
     '{op:"registration_attestation_create",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,version:$version}')"
   web_priv_request "$ATTEST_REQ" || die "Root-controlled registration attestation failed."
-  web_create_stage REGISTERED_UNIT_INCOMPLETE
+  grt_log registration_attestation ok
+  create_lifecycle_stage REGISTERED_UNIT_INCOMPLETE
 else
-  cli_create_authority stage REGISTERED_PERMISSION_INCOMPLETE -
+  create_lifecycle_stage REGISTERED_PERMISSION_INCOMPLETE
+  grt_log registration_permissions begin
   cli_create_authority normalize - -
   CANONICAL_SERVICE="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
   python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" registration_check \
     "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$CANONICAL_SERVICE" ||
     die "CLI registration metadata is not owner-only; remote registration retained."
+  grt_log registration_permissions ok
+  grt_log registration_attestation begin
   cli_create_authority attest - "$VERSION"
-  cli_create_authority stage REGISTERED_UNIT_INCOMPLETE -
+  grt_log registration_attestation ok
+  create_lifecycle_stage REGISTERED_UNIT_INCOMPLETE
 fi
 
 echo "==> Configuring local artifact completed hook..."
 configure_runner_archive_hook "$RUNNER_DIR/.env"
 
 if [[ "$WEB_MODE" == "1" ]]; then
-  INSTALL_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" --arg runner_name "$RUNNER_NAME" \
-    '{op:"service_install",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name}')"
+  INSTALL_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" --arg runner_name "$RUNNER_NAME" --arg version "$VERSION" \
+    '{op:"service_install",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,version:$version}')"
+  grt_log service_install begin
   web_priv_request "$INSTALL_REQ" || die "Privileged canonical service installation failed."
+  grt_log service_install ok
   SERVICE_NAME="$(jq -er '.service' <<<"$WEB_PRIV_RESPONSE")" || die "Privileged service installer returned invalid identity."
   printf '%s\n' "$SERVICE_NAME" > "$RUNNER_DIR/.service"
 
-  web_create_stage REGISTERED_START_INCOMPLETE
+  create_lifecycle_stage REGISTERED_START_INCOMPLETE
 
   START_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" --arg runner_name "$RUNNER_NAME" --arg service "$SERVICE_NAME" \
     '{op:"service_start",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,service:$service}')"
+  grt_log service_start begin
   web_priv_request "$START_REQ" || die "Privileged runner service start failed."
-  web_create_stage REGISTERED_HEALTH_UNKNOWN
+  grt_log service_start ok
+  create_lifecycle_stage REGISTERED_HEALTH_UNKNOWN
   CHECK_REQ="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" --arg runner_name "$RUNNER_NAME" --arg service "$SERVICE_NAME" \
     '{op:"service_state",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,service:$service}')"
+  grt_log service_health begin
   web_priv_request "$CHECK_REQ" || die "Post-start service health verification failed."
   [[ "$(jq -r '.state // empty' <<<"$WEB_PRIV_RESPONSE")" == "active" ]] ||
     die "Registered Runner service has not reached a confirmed active state."
-  web_create_stage CREATE_COMPLETE
+  grt_log service_health ok
+  create_lifecycle_stage CREATE_COMPLETE
 else
-  echo "==> Installing systemd service for user $RUNNER_USER ..."
-  sudo ./svc.sh install "$RUNNER_USER" ||
-    die "CLI Unit installation incomplete; remote registration preserved."
-  # The official v2.328.0 installer may create a group-writable 0664 Unit.
-  # No unsafe post-hoc chmod, no service start and no false Create success.
+  echo "==> Installing canonical root-owned 0644 systemd Unit for $RUNNER_USER ..."
+  # Use the exact same trusted installer as executor-mode Create. Do not
+  # delegate unit creation to official svc.sh install (can produce 0664).
+  grt_log service_install begin
+  cli_create_authority install - "$VERSION"
+  grt_log service_install ok
+  SERVICE_NAME="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
+  printf '%s\n' "$SERVICE_NAME" > "$RUNNER_DIR/.service"
   cli_create_authority unit - -
-  cli_create_authority stage REGISTERED_START_INCOMPLETE -
+  create_lifecycle_stage REGISTERED_START_INCOMPLETE
+  grt_log service_start begin
   echo "==> Starting runner service..."
   sudo ./svc.sh start ||
     die "CLI service start incomplete; remote registration preserved."
-  cli_create_authority stage REGISTERED_HEALTH_UNKNOWN -
+  grt_log service_start ok
+  create_lifecycle_stage REGISTERED_HEALTH_UNKNOWN
+  grt_log service_health begin
   echo
   echo "==> Runner status"
   sudo ./svc.sh status ||
     die "CLI service health unknown; remote registration preserved."
-  cli_create_authority stage CREATE_COMPLETE -
+  grt_log service_health ok
+  create_lifecycle_stage CREATE_COMPLETE
 fi
 
 echo
@@ -534,6 +716,6 @@ DONE
 }
 
 if [[ "${RUNNER_TOOLS_LIB_ONLY:-0}" != "1" ]]; then
-  trap cleanup EXIT
+  trap 'rc=$?; grt_log_finish "$rc"; cleanup' EXIT
   main "$@"
 fi

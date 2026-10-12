@@ -107,7 +107,7 @@ class CleanIncompleteBlockerTests(unittest.TestCase):
         self.assertNotIn('rm -rf -- "$RUNNER_DIR"', code[code.index("main() {"):])
         self.assertIn('create_target_preflight "$RUNNER_DIR"', code)
         self.assertLess(code.index('create_target_preflight "$RUNNER_DIR"'),
-                        code.index("cli_create_authority stage PRE_REGISTRATION -"))
+                        code.index("create_lifecycle_stage PRE_REGISTRATION", code.index("main() {")))
 
 
 if __name__ == "__main__":

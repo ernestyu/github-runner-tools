@@ -18,9 +18,7 @@ chmod +x "$tmp/ip"
 export PATH="$tmp:$PATH"
 source "$ROOT/scripts/install-lan.sh"
 
-fail() { echo "FAIL: $*" >&2; exit 1; }
-
-FAKE_ROUTE='default via 192.168.1.1 dev eth0
+fail() { echo "FAIL: $*" >&2; exit 1; }\n\nexport FAKE_ROUTE FAKE_ADDRS\n\nFAKE_ROUTE='default via 192.168.1.1 dev eth0
 '
 FAKE_ADDRS='2: eth0    inet 192.168.1.20/24 brd 192.168.1.255 scope global eth0
 '

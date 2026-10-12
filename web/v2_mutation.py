@@ -18,7 +18,7 @@ import stat
 import time
 from pathlib import Path
 
-from dispatcher import Runtime
+from executor_runtime import Runtime
 from v2_cli_spawn import spawn_cli, SpawnError
 from v2_executor_contract import Request
 from v2_privileged import execute_privileged, PrivilegedProtocolError
@@ -33,7 +33,7 @@ class MutationError(RuntimeError):
 
 
 def lock_transaction(runtime: Runtime):
-    """Reuse V1/CLI common root-owned lock file, never create a second lock."""
+    """Reuse the shared CLI/Executor root-owned lock file, never create a second lock."""
     runtime.ensure_lock_infrastructure()
     path = runtime.lock_file
     flags = os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW

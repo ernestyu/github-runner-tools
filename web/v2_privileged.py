@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """V2 root-operation firewall over the existing trusted lifecycle authority.
 
-This module delegates to the existing V1 root validation and state library:
+This module delegates to the existing root validation and state library:
 no second lifecycle state machine, no arbitrary shell command interface.
 It is an internal CLI-to-Executor channel ONLY and must never be exposed
 through the public Web request socket.
@@ -13,7 +13,7 @@ from typing import Any
 
 # Preserve existing authoritative implementations of systemd validation,
 # registration attestation, durable create/remove checkpoints and Unit modes.
-from dispatcher import Runtime
+from executor_runtime import Runtime
 
 _ALLOWED = {
     "create_state": frozenset({"op", "repository", "runner_dir", "runner_name", "stage"}),

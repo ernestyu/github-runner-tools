@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 
-from dispatcher import Runtime
+from executor_runtime import Runtime
 from grt_web_common import make_local_id
 from runner_lifecycle_authority import (_key, _safe_directory, ROOT, ACTIVE_INSTANCES,
                                          CREATE_STATES, REMOVE_STATES, ATTESTATIONS,

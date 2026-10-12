@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "web"))
 
 import cli_create_authority as cli
-import dispatcher
+import executor_runtime
 from grt_web_common import canonical_service_name, make_local_id
 import runner_lifecycle_authority as auth
 import v2_unit_installer as installer
@@ -366,7 +366,7 @@ class FreshRunnerBootstrapE2E(unittest.TestCase):
                 repository, runner_name, runner_dir, service, fixture = (
                     self._fresh_post_config(version, "web"))
 
-                runtime = object.__new__(dispatcher.Runtime)
+                runtime = object.__new__(executor_runtime.Runtime)
                 runtime.runner_user = self.user
                 runtime.runner_group = self.group
                 runtime.runner_home = str(self.home)

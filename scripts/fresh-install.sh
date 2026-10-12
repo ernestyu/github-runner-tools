@@ -48,10 +48,12 @@ RUNNER_HOME="$(getent passwd "$RUNNER_USER" | awk -F: 'NR==1 {print $6}')"
 [[ "$RUNNER_USER" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || die "unsupported_runner_username"
 [[ "$RUNNER_HOME" =~ ^/[A-Za-z0-9._/-]+$ && -d "$RUNNER_HOME" ]] || die "unsupported_runner_home"
 [[ "$(ps -p 1 -o comm= 2>/dev/null | xargs)" == systemd ]] || die "systemd_required"
-[[ -r /etc/os-release ]] || die "os_release_unavailable"
-# shellcheck disable=SC1091
-source /etc/os-release
-[[ "${ID:-}" == "debian" && "${VERSION_ID:-}" == "13" ]] || die "debian_13_required"
+# Admit Linux hosts by the capabilities actually used, not distribution labels.
+# Package bootstrap currently requires an APT-compatible host; unsupported
+# package managers fail before installing or altering any managed objects.
+[[ "$(uname -s)" == Linux ]] || die "linux_required"
+for cmd in apt-get dpkg-query systemctl useradd find cmp; do need "$cmd"; done
+[[ -d /etc/systemd/system ]] || die "systemd_unit_directory_required"
 case "$(uname -m)" in
   x86_64|aarch64) ;;
   *) die "unsupported_architecture" ;;

@@ -399,7 +399,6 @@ while [[ $# -gt 0 ]]; do
     --labels) [[ $# -ge 2 ]] || die "--labels requires a value"; CLI_LABELS="$2"; shift 2 ;;
     --runner-version) [[ $# -ge 2 ]] || die "--runner-version requires a value"; CLI_RUNNER_VERSION="$2"; shift 2 ;;
     --clean-incomplete) die "--clean-incomplete is disabled: unverified historical Runner directories must be preserved for independent administrator review." ;;
-    --web-worker) WEB_MODE=1; shift ;;
     --executor-mode) WEB_MODE=1; EXECUTOR_MODE=1; shift ;;
     --token-fd) [[ $# -ge 2 ]] || die "--token-fd requires a value"; TOKEN_FD="$2"; shift 2 ;;
     --privileged-fd) [[ $# -ge 2 ]] || die "--privileged-fd requires a value"; PRIVILEGED_FD="$2"; shift 2 ;;
@@ -414,16 +413,13 @@ set -- "${POSITIONAL[@]}"
 [[ $# -eq 1 ]] || { usage; exit 1; }
 
 if [[ "$WEB_MODE" == "1" ]]; then
-  if [[ "$EXECUTOR_MODE" == "1" ]]; then
-    [[ "${GRT_EXECUTOR_CONTEXT:-0}" == "1" ]] || die "Internal Executor mode requires trusted context."
-    [[ "${GRT_WEB_CONTEXT:-0}" != "1" ]] || die "Mixed Web/Executor modes forbidden."
-  else
-    [[ "${GRT_WEB_CONTEXT:-0}" == "1" ]] || die "Internal Web mode requires Executor context."
-  fi
+  [[ "$EXECUTOR_MODE" == "1" && "${GRT_EXECUTOR_CONTEXT:-0}" == "1" ]] ||
+    die "Internal Executor mode requires trusted context."
+  [[ "${GRT_WEB_CONTEXT:-0}" != "1" ]] || die "Historical Web worker context is forbidden."
   [[ "$TOKEN_FD" =~ ^[0-9]+$ && "$PRIVILEGED_FD" =~ ^[0-9]+$ && "$LOCK_ALREADY_HELD" == "1" ]] ||
-    die "Incomplete internal Web lifecycle context."
+    die "Incomplete internal Executor lifecycle context."
 elif [[ -n "$TOKEN_FD" || -n "$PRIVILEGED_FD" || "$LOCK_ALREADY_HELD" == "1" ]]; then
-  die "Internal Web options are not available in normal CLI mode."
+  die "Internal Executor options are not available in normal CLI mode."
 fi
 
 REPO="$1"
@@ -447,7 +443,7 @@ if [[ "$WEB_MODE" != "1" ]]; then require_command sudo; fi
 
 REQUESTED_RUNNER_USER="${RUNNER_USER:-}"
 RUNNER_USER="$(id -un)"
-if [[ -n "$REQUESTED_RUNNER_USER" && "$REQUESTED_RUNNER_USER" != "$RUNNER_USER" ]]; then die "RUNNER_USER must match the user executing this script; cross-user provisioning is not supported in v1."; fi
+if [[ -n "$REQUESTED_RUNNER_USER" && "$REQUESTED_RUNNER_USER" != "$RUNNER_USER" ]]; then die "RUNNER_USER must match the user executing this script; cross-user provisioning is not supported."; fi
 USER_HOME="$(resolve_home "$RUNNER_USER")" || die "Could not resolve a valid home directory for user: $RUNNER_USER"
 [[ -d "$USER_HOME" && -x "$USER_HOME" && -r "$USER_HOME" && -w "$USER_HOME" ]] || die "Runner user's home directory is not accessible and writable: $USER_HOME"
 

@@ -44,7 +44,7 @@ DOCKERFILE
 
 new_container() {
   local name="$1" image="${2:-$IMAGE}"
-  docker run -d --name "$name" --hostname grt-fixture     -v "$PAYLOAD:/opt/grt-payload:ro"     "$image" /bin/bash -lc 'while :; do sleep 3600; done' >/dev/null
+  docker run -d --cap-add NET_ADMIN --name "$name" --hostname grt-fixture     -v "$PAYLOAD:/opt/grt-payload:ro"     "$image" /bin/bash -lc 'while :; do sleep 3600; done' >/dev/null
   containers+=("$name")
 }
 

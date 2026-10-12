@@ -268,7 +268,7 @@ class App:
 
     def cookie_suffix(self) -> str:
         secure = "; Secure" if self.config.get("WEB_COOKIE_SECURE", "0") == "1" else ""
-        return f"; Path=/${secure}; HttpOnly; SameSite=Strict"
+        return f"; Path=/{secure}; HttpOnly; SameSite=Strict"
 
     def new_session(self) -> tuple[str, dict[str, Any]]:
         sid = secure_random_token(32)

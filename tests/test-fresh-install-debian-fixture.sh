@@ -90,6 +90,7 @@ run_expect_success() {
     printf '%s\n' "$output" >&2
     docker exec "$1" bash -c 'cat /run/grt-fake-systemctl/github-runner-tools-executor.service.log 2>/dev/null || true' >&2 || true
     docker exec "$1" bash -c 'sudo -u grt-web /usr/bin/python3 -c "import sys; sys.path.insert(0, \"/usr/local/lib/github-runner-tools/web\"); from v2_executor_client import web_list; print(web_list())" 2>&1' >&2 || true
+    docker exec "$1" /usr/bin/python3 -c 'import sys; sys.path.insert(0, "/usr/local/lib/github-runner-tools/web"); from v2_status import status_as_runner; print(status_as_runner())' >&2 || true
     fail "installer retry unexpectedly failed"
   fi
   printf '%s' "$output"

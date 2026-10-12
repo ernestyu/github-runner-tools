@@ -10,8 +10,9 @@ PAYLOAD_URL="@GRT_ARCHIVE_URL@"
 die() { echo "INSTALL_BOOTSTRAP_FAILED: $*" >&2; exit 1; }
 
 [[ "${EUID}" -ne 0 ]] || die "run as the intended non-root Runner owner; do not use sudo bash"
-[[ "$VERSION" != @GRT_VERSION@ && "$PAYLOAD_SHA256" != @GRT_SHA256@ && "$PAYLOAD_URL" != @GRT_ARCHIVE_URL@ ]] ||
-  die "this bootstrap template is not a published release asset"
+case "$VERSION|$PAYLOAD_SHA256|$PAYLOAD_URL" in
+  *'@GRT_'*) die "this bootstrap template is not a published release asset" ;;
+esac
 [[ "$PAYLOAD_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "invalid embedded payload digest"
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"

@@ -45,7 +45,8 @@ class BaselineHTTPGateA(unittest.TestCase):
             if request["op"] == "list":
                 return {"ok": True, "runners": [
                     {"repository": REPO, "runner_name": "test-runner", "service_state": "active",
-                     "management_state": "configured", "can_remove": True, "can_recover_local": False}
+                     "management_state": "configured", "can_remove": True, "can_recover_local": False,
+                     "runner_id": 12345, "instance": "0123456789abcdef0123456789abcdef"}
                 ]}
             return {"ok": True}
 

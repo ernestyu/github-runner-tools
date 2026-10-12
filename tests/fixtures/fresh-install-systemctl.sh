@@ -47,7 +47,9 @@ start_service() {
       ;;
     github-runner-tools-web.service)
       bind="$(sed -n 's/^WEB_BIND_ADDRESS=//p' /etc/github-runner-tools/web.conf)"
-      nohup /usr/sbin/runuser -u grt-web --         /usr/bin/python3 /usr/local/lib/github-runner-tools/web/app.py         --config /etc/github-runner-tools/web.conf         --auth-config /etc/github-runner-tools/web-auth.conf         </dev/null >"$log" 2>&1 &
+      web_uid="$(id -u grt-web)"
+      web_gid="$(id -g grt-web)"
+      nohup /usr/bin/setpriv --reuid="$web_uid" --regid="$web_gid" --clear-groups /usr/bin/python3 /usr/local/lib/github-runner-tools/web/app.py --config /etc/github-runner-tools/web.conf --auth-config /etc/github-runner-tools/web-auth.conf </dev/null >"$log" 2>&1 &
       echo $! >"$(pidfile "$svc")"
       for _ in $(seq 1 100); do
         if /usr/bin/curl --noproxy '*' -fsS "http://$bind:8765/login" >/dev/null 2>&1; then

@@ -248,17 +248,54 @@ for scenario in RUNTIME_COPY_PARTIAL ARCHIVE_INIT_PARTIAL EXECUTOR_UNIT_PARTIAL 
   new_container "$name"
   out="$(run_expect_failure "$name" runner "$RELEASE" "$SHA" "inside:$scenario")"
   [[ "$out" == *injected_inside_fault* ]] || fail "$scenario did not reach internal injection"
-  case "$scenario" in
-    ADMIN_HASH_PUBLISHED|WEB_UNIT_PARTIAL)
-      out="$(run_expect_failure "$name" runner "$RELEASE" "$SHA")"
-      [[ "$out" == *unproven_partial_administrator_secret* ]] ||
-        fail "$scenario incorrectly adopted unproven administrator hash"
-      ;;
-    *)
-      run_expect_success "$name" runner "$RELEASE" "$SHA" >/dev/null
-      assert_complete_install "$name"
-      ;;
-  esac
+  run_expect_success "$name" runner "$RELEASE" "$SHA" >/dev/null
+  assert_complete_install "$name"
+  assert_no_runner_mutation "$name"
+  docker rm -f "$name" >/dev/null
+  containers=("${containers[@]/$name}")
+done
+
+# A missing, altered or replaced recovery journal must never allow credential adoption.
+# Derive each candidate from the same authentic post-publication snapshot.
+CURRENT_CASE="web-auth-adversarial"
+name="grt-auth-source-${BASHPID}"
+new_container "$name"
+out="$(run_expect_failure "$name" runner "$RELEASE" "$SHA" "inside:ADMIN_HASH_PUBLISHED")"
+[[ "$out" == *injected_inside_fault* ]] || fail "cannot seed Web auth provenance snapshot"
+image="grt-auth-source:${BASHPID}"
+images+=("$image")
+docker commit "$name" "$image" >/dev/null
+docker rm -f "$name" >/dev/null
+containers=("${containers[@]/$name}")
+for mode in missing-record altered-hash symlink-hash modified-record wrong-attempt; do
+  CURRENT_CASE="web-auth-adversarial:$mode"
+  name="grt-auth-${mode}-${BASHPID}"
+  new_container "$name" "$image"
+  recorded_bind="$(docker exec "$name" jq -r .web_bind_address /var/lib/github-runner-tools/install-state.json)"
+  docker exec "$name" ip addr add "$recorded_bind/32" dev lo
+  docker exec "$name" bash -ceu '
+    mode="$1"
+    journal=/var/lib/github-runner-tools/web-auth-recovery.json
+    auth=/etc/github-runner-tools/web-auth.conf
+    case "$mode" in
+      missing-record) rm -f "$journal" ;;
+      altered-hash) printf "X" >> "$auth" ;;
+      symlink-hash) mv "$auth" "$auth.saved"; ln -s "$auth.saved" "$auth" ;;
+      modified-record) printf "X" >> "$journal" ;;
+      wrong-attempt)
+        python3 - "$journal" <<'PY'
+import json,sys
+p=sys.argv[1]
+obj=json.load(open(p))
+obj["attempt_id"]="00000000-0000-4000-8000-000000000000"
+open(p,"w").write(json.dumps(obj))
+PY
+        ;;
+    esac
+  ' _ "$mode"
+  out="$(run_expect_failure "$name" runner "$RELEASE" "$SHA")"
+  [[ "$out" == *unproven_partial_administrator_secret* || "$out" == *unknown_managed_object* ]] ||
+    fail "$mode credential mutation was not rejected"
   assert_no_runner_mutation "$name"
   docker rm -f "$name" >/dev/null
   containers=("${containers[@]/$name}")

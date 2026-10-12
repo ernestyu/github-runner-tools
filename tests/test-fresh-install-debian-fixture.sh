@@ -5,7 +5,7 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 command -v docker >/dev/null 2>&1 || { echo "FAIL: docker is required" >&2; exit 1; }
 
 TMP="$(mktemp -d)"
-IMAGE="grt-fresh-apt-fixture:$"
+IMAGE="grt-fresh-apt-fixture:${BASHPID}"
 BASE_IMAGE="${GRT_FIXTURE_BASE_IMAGE:-debian:13}"
 PAYLOAD="$TMP/payload"
 DIST="$TMP/dist"

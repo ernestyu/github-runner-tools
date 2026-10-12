@@ -5,7 +5,8 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 command -v docker >/dev/null 2>&1 || { echo "FAIL: docker is required" >&2; exit 1; }
 
 TMP="$(mktemp -d)"
-IMAGE="grt-fresh-debian13-fixture:$$"
+IMAGE="grt-fresh-apt-fixture:$"
+BASE_IMAGE="${GRT_FIXTURE_BASE_IMAGE:-debian:13}"
 PAYLOAD="$TMP/payload"
 DIST="$TMP/dist"
 RELEASE="v9.9.7"
@@ -34,8 +35,9 @@ tar -xzf "$ARCHIVE" -C "$PAYLOAD"
 chmod -R a+rX "$PAYLOAD"
 [[ ! -e "$PAYLOAD/.git" ]] || fail "release payload unexpectedly contains .git"
 
-docker build -q -t "$IMAGE" -f - "$ROOT" >/dev/null <<'DOCKERFILE'
-FROM debian:13
+docker build -q -t "$IMAGE" --build-arg "GRT_FIXTURE_BASE_IMAGE=$BASE_IMAGE" -f - "$ROOT" >/dev/null <<'DOCKERFILE'
+ARG GRT_FIXTURE_BASE_IMAGE=debian:13
+FROM ${GRT_FIXTURE_BASE_IMAGE}
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends       sudo python3 jq rsync curl ca-certificates iproute2 procps util-linux passwd       findutils coreutils grep sed mawk tar gzip &&     rm -rf /var/lib/apt/lists/*
 RUN useradd -m -s /bin/bash runner && useradd -m -s /bin/bash other &&     printf 'runner ALL=(ALL) NOPASSWD:ALL\nother ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/grt-fixture &&     chmod 0440 /etc/sudoers.d/grt-fixture
 COPY tests/fixtures/fresh-install-systemctl.sh /usr/bin/systemctl
@@ -369,4 +371,4 @@ log="$(docker exec "$representative" cat /run/grt-fake-systemctl/github-runner-t
   fail "missing clear persisted-address startup failure"
 }
 
-echo "PASS: Debian 13 root-isolated fresh install, retry, and LAN HTTP acceptance"
+echo "PASS: $BASE_IMAGE root-isolated fresh install, retry, and LAN HTTP acceptance"

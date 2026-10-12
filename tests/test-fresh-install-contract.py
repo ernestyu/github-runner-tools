@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -63,6 +64,113 @@ class FreshInstallContractTests(unittest.TestCase):
                 hashlib.sha256(tampered).hexdigest(),
                 digest,
             )
+
+    def _build_release(self, td: str, version: str = "v9.9.9"):
+        out = Path(td) / "dist"
+        proc = subprocess.run(
+            ["bash", str(ROOT / "scripts/build-release.sh"), version, str(out)],
+            cwd=ROOT, capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return out
+
+    def _fake_curl_path(self, td: str) -> Path:
+        bindir = Path(td) / "fake-bin"
+        bindir.mkdir(exist_ok=True)
+        curl = bindir / "curl"
+        curl.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            "out=''\n"
+            "while [[ $# -gt 0 ]]; do\n"
+            "  if [[ $1 == -o ]]; then out=$2; shift 2; else shift; fi\n"
+            "done\n"
+            "[[ -n $out ]] || exit 2\n"
+            "[[ -f ${FAKE_CURL_SOURCE:-} ]] || { echo fake-curl-missing >&2; exit 22; }\n"
+            "cp -- \"$FAKE_CURL_SOURCE\" \"$out\"\n",
+            encoding="utf-8",
+        )
+        curl.chmod(0o755)
+        return bindir
+
+    def _run_generated_bootstrap(self, bootstrap: Path, source: Path, work: Path):
+        env = os.environ.copy()
+        env["FAKE_CURL_SOURCE"] = str(source)
+        env["PATH"] = str(self._fake_curl_path(str(work))) + os.pathsep + env["PATH"]
+        return subprocess.run(
+            ["bash", str(bootstrap)],
+            cwd=work,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_generated_bootstrap_verifies_extracts_and_runs_outside_git(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            out = self._build_release(td)
+            work = root / "not-a-checkout"
+            work.mkdir()
+            self.assertFalse((work / ".git").exists())
+            result = self._run_generated_bootstrap(
+                out / "install.sh",
+                out / "github-runner-tools-v9.9.9.tar.gz",
+                work,
+            )
+            # Hosted Development Check is Ubuntu, so the verified payload
+            # reaches the production installer and then rejects the platform.
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("debian_13_required", result.stderr)
+            self.assertNotIn("SHA-256 mismatch", result.stderr)
+            self.assertNotIn("missing fresh installer", result.stderr)
+
+    def test_generated_bootstrap_rejects_tampered_or_missing_payload_before_execution(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            out = self._build_release(td)
+            archive = out / "github-runner-tools-v9.9.9.tar.gz"
+            tampered = root / "tampered.tar.gz"
+            raw = bytearray(archive.read_bytes())
+            raw[len(raw) // 2] ^= 1
+            tampered.write_bytes(raw)
+            work = root / "tampered-work"
+            work.mkdir()
+            result = self._run_generated_bootstrap(out / "install.sh", tampered, work)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("release payload SHA-256 mismatch", result.stderr)
+            self.assertNotIn("debian_13_required", result.stderr)
+
+            missing = root / "does-not-exist.tar.gz"
+            result = self._run_generated_bootstrap(out / "install.sh", missing, work)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("fake-curl-missing", result.stderr)
+            self.assertNotIn("debian_13_required", result.stderr)
+
+    def test_generated_bootstrap_rejects_verified_archive_without_fixed_entrypoint(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            out = self._build_release(td)
+            malformed = root / "missing-entry.tar.gz"
+            with tarfile.open(malformed, "w:gz") as handle:
+                data = b"not an installer\n"
+                info = tarfile.TarInfo("README")
+                info.size = len(data)
+                handle.addfile(info, io.BytesIO(data))
+            digest = hashlib.sha256(malformed.read_bytes()).hexdigest()
+            bootstrap = root / "install-missing-entry.sh"
+            text = (out / "install.sh").read_text(encoding="utf-8")
+            text = text.replace(
+                next(line for line in text.splitlines() if line.startswith("PAYLOAD_SHA256=")),
+                f'PAYLOAD_SHA256="{digest}"',
+            )
+            bootstrap.write_text(text, encoding="utf-8")
+            bootstrap.chmod(0o755)
+            work = root / "missing-entry-work"
+            work.mkdir()
+            result = self._run_generated_bootstrap(bootstrap, malformed, work)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("verified payload missing fresh installer", result.stderr)
+            self.assertNotIn("debian_13_required", result.stderr)
 
     def test_root_invocation_rejected_before_persistent_mutation(self):
         if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode:

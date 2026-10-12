@@ -50,55 +50,8 @@ RUNNER_HOME="$(getent passwd "$RUNNER_USER" | awk -F: 'NR==1 {print $6}')"
 
 sudo -v || die "sudo_required"
 
-select_lan_address() {
-  local default_if candidates count choice
-  default_if="$(ip -4 route show default 2>/dev/null | awk 'NR==1 {for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')"
-  mapfile -t candidates < <(
-    ip -4 -o addr show scope global |
-      awk '{print $2, $4}' |
-      while read -r iface cidr; do
-        ipaddr="${cidr%%/*}"
-        case "$ipaddr" in
-          10.*) printf '%s %s\n' "$iface" "$ipaddr" ;;
-          192.168.*) printf '%s %s\n' "$iface" "$ipaddr" ;;
-          172.*)
-            second="${ipaddr#172.}"; second="${second%%.*}"
-            if [[ "$second" =~ ^[0-9]+$ ]] && (( second >= 16 && second <= 31 )); then
-              printf '%s %s\n' "$iface" "$ipaddr"
-            fi ;;
-        esac
-      done
-  )
-  count="${#candidates[@]}"
-  (( count > 0 )) || die "no_private_lan_ipv4"
+source "$ROOT/scripts/install-lan.sh"
 
-  local preferred=()
-  if [[ -n "$default_if" ]]; then
-    for choice in "${candidates[@]}"; do
-      [[ "${choice%% *}" == "$default_if" ]] && preferred+=("$choice")
-    done
-  fi
-  if (( ${#preferred[@]} == 1 )); then
-    printf '%s\n' "${preferred[0]#* }"
-    return
-  fi
-  if (( count == 1 )); then
-    printf '%s\n' "${candidates[0]#* }"
-    return
-  fi
-  [[ -r /dev/tty && -w /dev/tty ]] || die "ambiguous_lan_ipv4_requires_tty"
-  echo "Multiple private LAN addresses are available:" >/dev/tty
-  local n=1
-  for choice in "${candidates[@]}"; do
-    printf '  %d) %s\n' "$n" "$choice" >/dev/tty
-    ((n++))
-  done
-  printf 'Select LAN address number: ' >/dev/tty
-  read -r selection </dev/tty
-  [[ "$selection" =~ ^[0-9]+$ ]] || die "invalid_lan_selection"
-  (( selection >= 1 && selection <= count )) || die "invalid_lan_selection"
-  printf '%s\n' "${candidates[selection-1]#* }"
-}
 
 managed_object_exists_without_state() {
   local p
@@ -189,7 +142,7 @@ if sudo test -e "$INSTALL_STATE" || sudo test -L "$INSTALL_STATE"; then
   [[ "$CURRENT_STAGE" != INSTALL_COMPLETE ]] || die "installation_already_complete"
 else
   managed_object_exists_without_state && die "untracked_partial_installation"
-  WEB_BIND_ADDRESS="$(select_lan_address)"
+  WEB_BIND_ADDRESS="$(grt_select_lan_address)" || die "lan_address_selection_failed"
   ATTEMPT_ID="$(cat /proc/sys/kernel/random/uuid)"
   sudo install -d -o root -g root -m 0700 "$STATE_ROOT"
   write_state ATTEMPT_STARTED

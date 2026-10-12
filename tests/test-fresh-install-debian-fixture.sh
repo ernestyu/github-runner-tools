@@ -23,7 +23,8 @@ trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 CURRENT_CASE="fixture-bootstrap"
-trap 'rc=$?; echo "FIXTURE_FAILED case=$CURRENT_CASE line=$LINENO rc=$rc" >&2' ERR
+EXPECT_FAILURE=0
+trap 'rc=$?; if [[ "${EXPECT_FAILURE:-0}" != "1" ]]; then echo "FIXTURE_FAILED case=$CURRENT_CASE line=$LINENO rc=$rc" >&2; fi' ERR
 
 bash "$ROOT/scripts/build-release.sh" "$RELEASE" "$DIST" >/dev/null
 ARCHIVE="$DIST/github-runner-tools-$RELEASE.tar.gz"
@@ -69,11 +70,26 @@ run_installer() {
 
 run_expect_failure() {
   local output rc
+  EXPECT_FAILURE=1
   set +e
   output="$(run_installer "$@" 2>&1)"
   rc=$?
   set -e
+  EXPECT_FAILURE=0
   [[ "$rc" -ne 0 ]] || { printf '%s\n' "$output" >&2; fail "installer unexpectedly succeeded"; }
+  printf '%s' "$output"
+}
+
+run_expect_success() {
+  local output rc
+  set +e
+  output="$(run_installer "$@" 2>&1)"
+  rc=$?
+  set -e
+  if [[ "$rc" -ne 0 ]]; then
+    printf '%s\n' "$output" >&2
+    fail "installer retry unexpectedly failed"
+  fi
   printf '%s' "$output"
 }
 
@@ -206,7 +222,7 @@ for stage in "${stages[@]}"; do
 
   # Original exact partial state deterministically resumes to completion.
   CURRENT_CASE="$stage:resume"
-  run_installer "$name" runner "$RELEASE" "$SHA" >/dev/null
+  run_expect_success "$name" runner "$RELEASE" "$SHA" >/dev/null
   assert_complete_install "$name"
 
   if [[ -z "$representative" ]]; then

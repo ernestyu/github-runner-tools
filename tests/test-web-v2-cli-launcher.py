@@ -37,6 +37,13 @@ class LauncherTests(unittest.TestCase):
             with self.subTest(op=op, repo=repo), self.assertRaises(launcher.LaunchError):
                 launcher.resolve_action(op, repo)
 
+    def test_configured_runner_user_is_not_hardcoded(self):
+        with patch.object(
+            launcher, "load_key_value",
+            return_value={"RUNNER_USER": "runner-owner"},
+        ):
+            self.assertEqual(launcher.configured_runner_user(), "runner-owner")
+
     def test_launch_refuses_nonroot_before_exec(self):
         with patch.object(launcher.os, "geteuid", return_value=1000):
             with self.assertRaisesRegex(launcher.LaunchError, "root launcher required"):

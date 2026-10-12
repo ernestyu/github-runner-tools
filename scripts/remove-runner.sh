@@ -56,7 +56,6 @@ TOKEN=""
 MUTATION_LOCK_DIR="/run/lock/github-runner-tools"
 MUTATION_LOCK_FILE="$MUTATION_LOCK_DIR/mutation.lock"
 WEB_MODE=0
-EXECUTOR_MODE=0
 TOKEN_FD=""
 PRIVILEGED_FD=""
 CLI_REMOVE_PROOF=""
@@ -66,40 +65,6 @@ REMOVE_EXIT="unknown"
 # The transport is UTF-8 JSON text followed by one LF. Validate its exact
 # bytes before Bash can discard NUL, normalize newlines, or alter encoding.
 # Never print invalid bytes. This helper receives the FD number, not a token.
-web_token_from_fd() {
-  local value status=0
-  [[ "$TOKEN_FD" =~ ^[0-9]+$ ]] || return 1
-  value="$(python3 - "$TOKEN_FD" <<'PY'
-import os
-import sys
-fd = int(sys.argv[1])
-raw = bytearray()
-while len(raw) <= 4096:
-    chunk = os.read(fd, 4097 - len(raw))
-    if not chunk:
-        break
-    raw.extend(chunk)
-    if b"\n" in chunk:
-        break
-if not raw.endswith(b"\n") or raw.count(b"\n") != 1:
-    raise SystemExit(1)
-payload = bytes(raw[:-1])
-try:
-    value = payload.decode("utf-8", "strict")
-except UnicodeError:
-    raise SystemExit(1)
-if (not value or len(value) > 1024 or
-        any(char in value for char in ("\x00", "\r", "\n"))):
-    raise SystemExit(1)
-sys.stdout.buffer.write(payload)
-PY
-)" || status=$?
-  # Close the original inherited descriptor in the parent immediately,
-  # including validation failure, before any service-related subprocess.
-  exec {TOKEN_FD}<&-
-  [[ "$status" == "0" ]] || return 1
-  TOKEN="$value"
-}
 
 LOCK_ALREADY_HELD=0
 
@@ -350,9 +315,6 @@ finally:
 if uid != 0:
     raise SystemExit(1)
 PY
-  if [[ "$EXECUTOR_MODE" != "1" ]]; then
-    web_priv_request '{"op":"context_check"}' || die "Web lifecycle context is not authorized by Executor."
-  fi
 }
 
 ensure_mutation_lock() {
@@ -537,7 +499,7 @@ while [[ $# -gt 0 ]]; do
     --base-dir) [[ $# -ge 2 ]] || die "--base-dir requires a value"; CLI_BASE_DIR="$2"; shift 2 ;;
     --recover-local) RECOVER_LOCAL=1; shift ;;
     --reconcile-incomplete-create) RECONCILE_INCOMPLETE=1; shift ;;
-    --executor-mode) WEB_MODE=1; EXECUTOR_MODE=1; shift ;;
+    --executor-mode) WEB_MODE=1; shift ;;
     --token-fd) [[ $# -ge 2 ]] || die "--token-fd requires a value"; TOKEN_FD="$2"; shift 2 ;;
     --privileged-fd) [[ $# -ge 2 ]] || die "--privileged-fd requires a value"; PRIVILEGED_FD="$2"; shift 2 ;;
     --lock-already-held) LOCK_ALREADY_HELD=1; shift ;;
@@ -551,9 +513,8 @@ set -- "${POSITIONAL[@]}"
 [[ $# -eq 1 ]] || { usage; exit 1; }
 
 if [[ "$WEB_MODE" == "1" ]]; then
-  [[ "$EXECUTOR_MODE" == "1" && "${GRT_EXECUTOR_CONTEXT:-0}" == "1" ]] ||
+  [[ "${GRT_EXECUTOR_CONTEXT:-0}" == "1" ]] ||
     die "Internal Executor mode requires trusted context."
-  [[ "${GRT_WEB_CONTEXT:-0}" != "1" ]] || die "Historical Web worker context is forbidden."
   [[ "$PRIVILEGED_FD" =~ ^[0-9]+$ && "$LOCK_ALREADY_HELD" == "1" ]] ||
     die "Incomplete internal Executor lifecycle context."
   if [[ "$RECOVER_LOCAL" != "1" && "$RECONCILE_INCOMPLETE" != "1" ]]; then
@@ -815,9 +776,6 @@ fi
 
 cd "$RUNNER_DIR"
 if [[ "$WEB_MODE" == "1" ]]; then
-  if [[ "$EXECUTOR_MODE" != "1" ]]; then
-    web_token_from_fd || die "Invalid Web removal token input."
-  fi
   RUNNER_NAME="$(jq -er '.agentName' "$RUNNER_DIR/.runner")" || die "Configured runner name is unavailable."
   SERVICE_NAME="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
   [[ "${#SERVICE_NAME}" -le 150 ]] || die "Unsupported service identity."

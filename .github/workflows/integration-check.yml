@@ -37,3 +37,4 @@ jobs:
           sudo -n /usr/bin/python3 tests/test-fresh-runner-bootstrap-e2e.py
           bash tests/test-install-lan.sh
           python3 tests/test-fresh-install-contract.py
+          bash tests/test-fresh-install-debian-fixture.sh

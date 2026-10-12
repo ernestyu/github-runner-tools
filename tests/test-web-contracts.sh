@@ -158,7 +158,7 @@ python3 - "$ROOT" <<'PY' || fail "current identity-drop helper contract mismatch
 from pathlib import Path
 import sys
 text = (Path(sys.argv[1]) / "web" / "identity_drop.py").read_text()
-for required in ("PR_CAP_AMBIENT_CLEAR_ALL", "PR_SET_KEEPCAPS", "CapInh", "CapAmb"):
+for required in ("_PR_CAP_AMBIENT_CLEAR_ALL", "_PR_SET_KEEPCAPS", "capget", "capset", "entry.inheritable = 0"):
     if required not in text:
         raise SystemExit(required)
 PY

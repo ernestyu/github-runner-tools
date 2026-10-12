@@ -312,7 +312,7 @@ def runner_status_view(item: dict[str, Any]) -> tuple[str, str]:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "github-runner-tools-web/1"
+    server_version = "github-runner-tools-web"
     app: App
 
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -685,10 +685,10 @@ def main() -> int:
         address = ipaddress.ip_address(bind)
     except ValueError as exc:
         raise SystemExit("WEB_BIND_ADDRESS must be a concrete private IPv4 address") from exc
-    if (address.version != 4 or not address.is_private or address.is_loopback
-            or address.is_link_local or address.is_multicast
-            or address.is_unspecified):
-        raise SystemExit("WEB_BIND_ADDRESS must be a concrete RFC1918/private IPv4 address")
+    rfc1918 = tuple(ipaddress.ip_network(net) for net in (
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+    if address.version != 4 or not any(address in net for net in rfc1918):
+        raise SystemExit("WEB_BIND_ADDRESS must be a concrete RFC1918 IPv4 address")
     if app.config.get("WEB_COOKIE_SECURE", "0") not in ("0", "1"):
         raise SystemExit("WEB_COOKIE_SECURE must be 0 or 1")
     Handler.app = app

@@ -17,7 +17,6 @@ MAX_TOKEN_LEN = 1024
 MAX_REQUEST_BYTES = 8192
 MAX_PROTOCOL_BYTES = 16384
 
-DEFAULT_DISPATCH_SOCKET = "/run/github-runner-tools/web-dispatch.sock"
 DEFAULT_LOCK_FILE = "/run/lock/github-runner-tools/mutation.lock"
 DEFAULT_CONFIG = "/etc/github-runner-tools/web.conf"
 DEFAULT_AUTH_CONFIG = "/etc/github-runner-tools/web-auth.conf"

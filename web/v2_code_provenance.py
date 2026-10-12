@@ -13,7 +13,7 @@ from v2_executor_contract import CLI_ARGV
 PINNED_ROOT = "/usr/local/lib/github-runner-tools"
 TRUSTED_FILES = {
     "/usr/local/lib/github-runner-tools/web/v2_cli_launcher.py",
-    "/usr/local/lib/github-runner-tools/web/lifecycle_worker.py",
+    "/usr/local/lib/github-runner-tools/web/identity_drop.py",
     "/usr/local/lib/github-runner-tools/web/pty_token_adapter.py",
     "/usr/local/lib/github-runner-tools/cli/register-runner.sh",
     "/usr/local/lib/github-runner-tools/cli/remove-runner.sh",
@@ -50,4 +50,4 @@ def verify_launch(op: str) -> None:
     if op in ("create", "remove"):
         verify_fixed_file("/usr/local/lib/github-runner-tools/web/v2_cli_launcher.py")
         verify_fixed_file("/usr/local/lib/github-runner-tools/web/pty_token_adapter.py")
-        verify_fixed_file("/usr/local/lib/github-runner-tools/web/lifecycle_worker.py")
+        verify_fixed_file("/usr/local/lib/github-runner-tools/web/identity_drop.py")

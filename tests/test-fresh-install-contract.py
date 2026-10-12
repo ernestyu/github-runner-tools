@@ -90,6 +90,11 @@ class FreshInstallContractTests(unittest.TestCase):
             encoding="utf-8",
         )
         curl.chmod(0o755)
+        # Verified bootstrap is exercised without any chance of privileged
+        # host mutation, independently of the CI runner's sudo permissions.
+        sudo = bindir / "sudo"
+        sudo.write_text("#!/bin/sh\nexit 73\n", encoding="utf-8")
+        sudo.chmod(0o755)
         return bindir
 
     def _run_generated_bootstrap(self, bootstrap: Path, source: Path, work: Path):
@@ -117,10 +122,15 @@ class FreshInstallContractTests(unittest.TestCase):
                 out / "github-runner-tools-v9.9.9.tar.gz",
                 work,
             )
-            # Hosted Development Check is Ubuntu, so the verified payload
-            # reaches the production installer and then rejects the platform.
+            # CI host is not a disposable fresh-install machine. The
+            # verified entrypoint must reach preflight but never mutate host.
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("debian_13_required", result.stderr)
+            self.assertTrue(
+                "systemd_required" in result.stderr or
+                "sudo_required" in result.stderr,
+                result.stderr,
+            )
+            self.assertNotIn("debian_13_required", result.stderr)
             self.assertNotIn("SHA-256 mismatch", result.stderr)
             self.assertNotIn("missing fresh installer", result.stderr)
 

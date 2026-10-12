@@ -134,7 +134,10 @@ name="grt-unknown-partial-$$"
 new_container "$name"
 docker exec "$name" mkdir -p /usr/local/lib/github-runner-tools/unknown
 out="$(run_expect_failure "$name" runner "$RELEASE" "$SHA")"
-[[ "$out" == *untracked_partial_installation* ]] || fail "unknown partial state was not rejected"
+[[ "$out" == *untracked_partial_installation* ]] || {
+  printf '%s\n' "$out" >&2
+  fail "unknown partial state was not rejected"
+}
 docker rm -f "$name" >/dev/null
 containers=("${containers[@]/$name}")
 

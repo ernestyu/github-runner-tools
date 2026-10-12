@@ -38,11 +38,11 @@ docker build -q -t "$IMAGE" -f - "$ROOT" >/dev/null <<'DOCKERFILE'
 FROM debian:13
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends       sudo python3 jq rsync curl ca-certificates iproute2 procps util-linux passwd       findutils coreutils grep sed mawk tar gzip &&     rm -rf /var/lib/apt/lists/*
 RUN useradd -m -s /bin/bash runner && useradd -m -s /bin/bash other &&     printf 'runner ALL=(ALL) NOPASSWD:ALL\nother ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/grt-fixture &&     chmod 0440 /etc/sudoers.d/grt-fixture
-COPY tests/fixtures/fresh-install-systemctl.sh /usr/local/sbin/systemctl
+COPY tests/fixtures/fresh-install-systemctl.sh /usr/bin/systemctl
 COPY tests/fixtures/fresh-install-ps.sh /usr/local/bin/ps
 COPY tests/fixtures/fresh-install-apt-get.sh /usr/local/sbin/apt-get
 COPY tests/fixtures/run-fresh-install-tty.py /usr/local/bin/grt-run-fresh-install-tty
-RUN chmod 0755 /usr/local/sbin/systemctl /usr/local/bin/ps /usr/local/sbin/apt-get /usr/local/bin/grt-run-fresh-install-tty
+RUN chmod 0755 /usr/bin/systemctl /usr/local/bin/ps /usr/local/sbin/apt-get /usr/local/bin/grt-run-fresh-install-tty
 DOCKERFILE
 
 new_container() {

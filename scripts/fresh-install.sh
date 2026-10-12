@@ -135,6 +135,29 @@ verify_file() {
   sudo cmp -s "$src" "$dst" || die "managed_file_content_mismatch"
 }
 
+verify_directory() {
+  local path="$1" owner="$2" group="$3" mode="$4"
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$path")" == "$owner:$group:$mode:directory" ]] ||
+    die "managed_directory_metadata_mismatch"
+}
+
+verify_exact_entries() {
+  local path="$1"; shift
+  local expected actual
+  expected="$(printf '%s\n' "$@" | LC_ALL=C sort)"
+  actual="$(sudo find "$path" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)"
+  [[ "$actual" == "$expected" ]] || die "unknown_managed_object"
+}
+
+verify_no_runner_lifecycle_state() {
+  local name
+  for name in active-instances create-state remove-state runner-attestations unit-attestations; do
+    if sudo test -e "$STATE_ROOT/$name" || sudo test -L "$STATE_ROOT/$name"; then
+      die "runner_lifecycle_state_present_during_install"
+    fi
+  done
+}
+
 WEB_BIND_ADDRESS=""
 ATTEMPT_ID=""
 CURRENT_STAGE="PREFLIGHT"
@@ -158,6 +181,8 @@ if sudo test -e "$INSTALL_STATE" || sudo test -L "$INSTALL_STATE"; then
   [[ "$ATTEMPT_ID" =~ ^[0-9a-fA-F-]{16,64}$ ]] || die "invalid_attempt_identity"
   stage_rank "$CURRENT_STAGE" >/dev/null || die "unknown_install_stage"
   [[ "$CURRENT_STAGE" != INSTALL_COMPLETE ]] || die "installation_already_complete"
+  verify_exact_entries "$STATE_ROOT" install-state.json
+  verify_no_runner_lifecycle_state
 else
   managed_object_exists_without_state && die "untracked_partial_installation"
   WEB_BIND_ADDRESS="$(grt_select_lan_address)" || die "lan_address_selection_failed"
@@ -173,10 +198,23 @@ ip -4 -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -Fxq "$WEB_BIND_ADDRE
 ACTIVE_STAGE="RUNTIME_INSTALLED"
 if stage_at_least RUNTIME_INSTALLED; then
   for cmd in python3 jq rsync curl; do need "$cmd"; done
-  for f in register-runner.sh remove-runner.sh status-runners.sh cli-operational-logger.py web-runner-cleanup.py web-service-record.py; do
+  verify_directory "$INSTALL_ROOT" root root 755
+  verify_directory "$CLI_ROOT" root root 755
+  verify_directory "$WEB_ROOT" root root 755
+  cli_expected=(register-runner.sh remove-runner.sh status-runners.sh cli-operational-logger.py web-runner-cleanup.py web-service-record.py)
+  verify_exact_entries "$CLI_ROOT" "${cli_expected[@]}"
+  web_expected=()
+  for src in "$ROOT"/web/*.py; do web_expected+=("${src##*/}"); done
+  verify_exact_entries "$WEB_ROOT" "${web_expected[@]}"
+  for f in "${cli_expected[@]}"; do
     verify_file "$ROOT/scripts/$f" "$CLI_ROOT/$f" 755
   done
   for src in "$ROOT"/web/*.py; do verify_file "$src" "$WEB_ROOT/${src##*/}" 755; done
+  if stage_at_least ARCHIVE_PLATFORM_INITIALIZED; then
+    verify_exact_entries "$INSTALL_ROOT" archive-common.sh cli hooks web
+  else
+    verify_exact_entries "$INSTALL_ROOT" cli web
+  fi
 else
   sudo apt-get update
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3 jq rsync curl ca-certificates
@@ -203,6 +241,14 @@ if stage_at_least AUTHORITY_STATE_INITIALIZED; then
   [[ "$(sudo stat -c '%U:%G:%a:%F' "$LOCK_ROOT")" == "root:root:755:directory" ]] || die "lock_root_mismatch"
   [[ "$(sudo stat -c '%u:%g:%a:%F' "$LOCK_FILE")" == "0:$RUNNER_GID:660:regular file" ]] || die "lock_file_mismatch"
   [[ "$(sudo stat -c '%U:%G:%a:%F' "$LOG_ROOT")" == "root:$RUNNER_GROUP:2770:directory" ]] || die "log_root_mismatch"
+  verify_exact_entries "$LOCK_ROOT" mutation.lock
+  verify_exact_entries "$LOG_ROOT" operational.jsonl operational.lock
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$LOG_ROOT/operational.lock")" == "$RUNNER_USER:$RUNNER_GROUP:600:regular empty file" ||
+     "$(sudo stat -c '%U:%G:%a:%F' "$LOG_ROOT/operational.lock")" == "$RUNNER_USER:$RUNNER_GROUP:600:regular file" ]] ||
+    die "operational_lock_mismatch"
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$LOG_ROOT/operational.jsonl")" == "$RUNNER_USER:$RUNNER_GROUP:600:regular empty file" ||
+     "$(sudo stat -c '%U:%G:%a:%F' "$LOG_ROOT/operational.jsonl")" == "$RUNNER_USER:$RUNNER_GROUP:600:regular file" ]] ||
+    die "operational_log_mismatch"
 else
   if ! getent passwd "$WEB_USER" >/dev/null; then
     sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$WEB_USER"
@@ -227,12 +273,39 @@ else
   fault_after AUTHORITY_STATE_INITIALIZED
 fi
 
+ARCHIVE_ROOT="/srv/github-actions-archive"
+make_archive_config() {
+  cat <<EOF
+# managed-by=github-runner-tools
+ARCHIVE_ROOT=$ARCHIVE_ROOT
+RETENTION_DAYS=90
+MIN_FREE_PERCENT=15
+COPY_TIMEOUT_SECONDS=3600
+EOF
+}
+
 ACTIVE_STAGE="ARCHIVE_PLATFORM_INITIALIZED"
 if stage_at_least ARCHIVE_PLATFORM_INITIALIZED; then
-  sudo grep -Fqx '# managed-by=github-runner-tools' "$CONFIG_ROOT/archive.conf" || die "archive_config_mismatch"
+  verify_directory "$INSTALL_ROOT/hooks" root root 755
+  verify_exact_entries "$INSTALL_ROOT/hooks" archive-job-completed.sh
   verify_file "$ROOT/hooks/archive-job-completed.sh" "$INSTALL_ROOT/hooks/archive-job-completed.sh" 755
+  verify_file "$ROOT/scripts/lib/archive-common.sh" "$INSTALL_ROOT/archive-common.sh" 644
+  [[ "$(sudo stat -c '%U:%G:%a:%F' "$CONFIG_ROOT/archive.conf")" == "root:root:644:regular file" ]] ||
+    die "archive_config_metadata_mismatch"
+  archive_cfg="$(mktemp)"; make_archive_config >"$archive_cfg"
+  sudo cmp -s "$archive_cfg" "$CONFIG_ROOT/archive.conf" || { rm -f "$archive_cfg"; die "archive_config_mismatch"; }
+  rm -f "$archive_cfg"
+  [[ "$(stat -c '%U:%G:%a:%F' "$ARCHIVE_ROOT")" == "$RUNNER_USER:$RUNNER_GROUP:750:directory" ]] ||
+    die "archive_root_mismatch"
 else
-  RUNNER_ARCHIVE_ROOT="${RUNNER_ARCHIVE_ROOT:-/srv/github-actions-archive}"     bash "$ROOT/scripts/setup-local-archive.sh" --apply
+  if sudo test -e "$ARCHIVE_ROOT" || sudo test -L "$ARCHIVE_ROOT"; then
+    die "archive_root_conflict"
+  fi
+  RUNNER_ARCHIVE_ROOT="$ARCHIVE_ROOT" \
+  RUNNER_ARCHIVE_RETENTION_DAYS=90 \
+  RUNNER_ARCHIVE_MIN_FREE_PERCENT=15 \
+  RUNNER_ARCHIVE_COPY_TIMEOUT_SECONDS=3600 \
+    bash "$ROOT/scripts/setup-local-archive.sh" --apply
   write_state ARCHIVE_PLATFORM_INITIALIZED
   fault_after ARCHIVE_PLATFORM_INITIALIZED
 fi
@@ -332,6 +405,7 @@ EOF
 
 ACTIVE_STAGE="WEB_INSTALLED"
 if stage_at_least WEB_INSTALLED; then
+  verify_exact_entries "$CONFIG_ROOT" archive.conf web-auth.conf web.conf
   [[ "$(sudo stat -c '%U:%G:%a:%F' "$WEB_CONFIG")" == "root:$WEB_USER:640:regular file" ]] || die "web_config_mismatch"
   cfg_verify="$(mktemp)"; make_web_config >"$cfg_verify"
   sudo cmp -s "$cfg_verify" "$WEB_CONFIG" || { rm -f "$cfg_verify"; die "web_config_content_mismatch"; }

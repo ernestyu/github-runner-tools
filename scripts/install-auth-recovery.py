@@ -12,7 +12,7 @@ import sys
 
 NAME = "web-auth-recovery.json"
 FIELDS = {"schema", "attempt_id", "release", "payload_sha256", "auth"}
-AUTH_RE = re.compile(r"PASSWORD_HASH=scrypt\\$32768\\$8\\$1\\$[A-Za-z0-9_-]{22}==\\$[A-Za-z0-9_-]{43}=\\n")
+AUTH_RE = re.compile(r"PASSWORD_HASH=scrypt\$32768\$8\$1\$[A-Za-z0-9_-]{22}==\$[A-Za-z0-9_-]{43}=\n")
 
 def fail():
     raise ValueError("invalid_web_auth_provenance")

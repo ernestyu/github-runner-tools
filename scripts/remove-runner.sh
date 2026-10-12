@@ -336,8 +336,8 @@ validate_recovery_identity() {
 web_priv_request() {
   local payload="$1" response
   [[ "$WEB_MODE" == "1" && "$PRIVILEGED_FD" =~ ^[0-9]+$ ]] || die "Invalid Web privileged context."
-  printf '%s\n' "$payload" >&"$PRIVILEGED_FD" || die "Privileged dispatcher channel write failed."
-  IFS= read -r response <&"$PRIVILEGED_FD" || die "Privileged dispatcher channel closed."
+  printf '%s\n' "$payload" >&"$PRIVILEGED_FD" || die "Privileged Executor channel write failed."
+  IFS= read -r response <&"$PRIVILEGED_FD" || die "Privileged Executor channel closed."
   WEB_PRIV_RESPONSE="$response"
   jq -e '.ok == true' <<<"$response" >/dev/null 2>&1
 }
@@ -385,7 +385,7 @@ web_remove_state() {
 
 web_context_check() {
   [[ "$PRIVILEGED_FD" =~ ^[0-9]+$ ]] || die "Invalid Web privileged context."
-  python3 - "$PRIVILEGED_FD" <<'PY' || die "Web lifecycle privileged channel is not owned by the root dispatcher."
+  python3 - "$PRIVILEGED_FD" <<'PY' || die "Web lifecycle privileged channel is not owned by the root Executor."
 import os
 import socket
 import struct
@@ -402,7 +402,7 @@ if uid != 0:
     raise SystemExit(1)
 PY
   if [[ "$EXECUTOR_MODE" != "1" ]]; then
-    web_priv_request '{"op":"context_check"}' || die "Web lifecycle context is not authorized by dispatcher."
+    web_priv_request '{"op":"context_check"}' || die "Web lifecycle context is not authorized by Executor."
   fi
 }
 
@@ -446,7 +446,7 @@ ensure_mutation_lock() {
 
 acquire_mutation_lock() {
   if [[ "$WEB_MODE" == "1" ]]; then
-    [[ "$LOCK_ALREADY_HELD" == "1" ]] || die "Web lifecycle requires dispatcher-held mutation lock."
+    [[ "$LOCK_ALREADY_HELD" == "1" ]] || die "Web lifecycle requires Executor-held mutation lock."
     web_context_check
     return 0
   fi
@@ -608,7 +608,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
     [[ "${GRT_EXECUTOR_CONTEXT:-0}" == "1" ]] || die "Internal Executor mode requires trusted context."
     [[ "${GRT_WEB_CONTEXT:-0}" != "1" ]] || die "Mixed Web/Executor modes forbidden."
   else
-    [[ "${GRT_WEB_CONTEXT:-0}" == "1" ]] || die "Internal Web mode requires dispatcher context."
+    [[ "${GRT_WEB_CONTEXT:-0}" == "1" ]] || die "Internal Web mode requires Executor context."
   fi
   [[ "$PRIVILEGED_FD" =~ ^[0-9]+$ && "$LOCK_ALREADY_HELD" == "1" ]] || die "Incomplete internal Web lifecycle context."
   if [[ "$RECOVER_LOCAL" != "1" && "$RECONCILE_INCOMPLETE" != "1" ]]; then

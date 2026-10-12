@@ -14,6 +14,7 @@ WEB_ROOT="$INSTALL_ROOT/web"
 CONFIG_ROOT="/etc/github-runner-tools"
 WEB_CONFIG="$CONFIG_ROOT/web.conf"
 WEB_AUTH="$CONFIG_ROOT/web-auth.conf"
+AUTH_RECOVERY="$STATE_ROOT/web-auth-recovery.json"
 EXEC_UNIT="/etc/systemd/system/github-runner-tools-executor.service"
 WEB_UNIT="/etc/systemd/system/github-runner-tools-web.service"
 LOG_ROOT="/var/log/github-runner-tools"
@@ -210,7 +211,10 @@ if sudo test -e "$INSTALL_STATE" || sudo test -L "$INSTALL_STATE"; then
   WEB_BIND_ADDRESS="${INSTALL_FIELDS[8]}"
   CURRENT_STAGE="${INSTALL_FIELDS[9]}"
   [[ "$CURRENT_STAGE" != INSTALL_COMPLETE ]] || die "installation_already_complete"
-  verify_exact_entries "$STATE_ROOT" install-state.json
+  check_entries_subset "$STATE_ROOT" install-state.json web-auth-recovery.json
+  if ! stage_at_least EXECUTOR_INSTALLED && ( sudo test -e "$AUTH_RECOVERY" || sudo test -L "$AUTH_RECOVERY" ); then
+    die "unexpected_admin_provenance_stage"
+  fi
   verify_no_runner_lifecycle_state
 else
   managed_object_exists_without_state && die "untracked_partial_installation"
@@ -446,8 +450,16 @@ MUTATION_TIMEOUT_SECONDS=900
 EOF
 }
 
+auth_recovery() {
+  local mode="$1" web_gid
+  web_gid="$(getent group "$WEB_USER" | cut -d: -f3)"
+  sudo /usr/bin/python3 "$ROOT/scripts/install-auth-recovery.py" "$mode" "$STATE_ROOT" "$WEB_AUTH" "$ATTEMPT_ID" "$RELEASE" "$PAYLOAD_SHA256" 0 "$web_gid" ||
+    die "unproven_partial_administrator_secret"
+}
 ACTIVE_STAGE="WEB_INSTALLED"
 if stage_at_least WEB_INSTALLED; then
+  verify_exact_entries "$STATE_ROOT" install-state.json web-auth-recovery.json
+  auth_recovery verify
   verify_exact_entries "$CONFIG_ROOT" archive.conf web-auth.conf web.conf
   [[ "$(sudo stat -c '%U:%G:%a:%F' "$WEB_CONFIG")" == "root:$WEB_USER:640:regular file" ]] || die "web_config_mismatch"
   cfg_verify="$(mktemp)"; make_web_config >"$cfg_verify"
@@ -463,10 +475,14 @@ else
   make_web_config >"$cfg"
   checked_install "$cfg" "$WEB_CONFIG" root "$WEB_USER" 640; rm -f "$cfg"
   fault_inside WEB_CONFIG_PARTIAL
-  if sudo test -e "$WEB_AUTH" || sudo test -L "$WEB_AUTH"; then
-    die "unproven_partial_administrator_secret"
-  fi
-
+  if sudo test -e "$AUTH_RECOVERY" || sudo test -L "$AUTH_RECOVERY"; then
+    # The root-owned attempt-bound journal must match the current release.
+    # A published credential must match it byte-for-byte.
+    auth_recovery publish
+  else
+    if sudo test -e "$WEB_AUTH" || sudo test -L "$WEB_AUTH"; then
+      die "unproven_partial_administrator_secret"
+    fi
   [[ -r /dev/tty && -w /dev/tty ]] || die "administrator_password_requires_tty"
   printf 'Web administrator password: ' >/dev/tty
   IFS= read -r -s password </dev/tty; printf '\n' >/dev/tty
@@ -485,7 +501,12 @@ print("PASSWORD_HASH=" + password_hash(secret.decode("utf-8", "strict")))
 ' >"$auth_tmp" || { password= confirm=; rm -f "$auth_tmp"; die "administrator_password_hash_failed"; }
   password= confirm=
   fault_inside ADMIN_PASSWORD_PARTIAL
-  checked_install "$auth_tmp" "$WEB_AUTH" root "$WEB_USER" 640; rm -f "$auth_tmp"
+    # Journal first, credential second. A crash after either publication
+    # can replay only the exact recorded bytes on a matching attempt.
+    auth_recovery prepare <"$auth_tmp"
+    rm -f "$auth_tmp"
+    auth_recovery publish
+  fi
   fault_inside ADMIN_HASH_PUBLISHED
   unit_tmp="$(mktemp)"; make_web_unit >"$unit_tmp"
   checked_install "$unit_tmp" "$WEB_UNIT" root root 644; rm -f "$unit_tmp"

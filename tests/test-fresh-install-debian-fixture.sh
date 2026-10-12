@@ -274,8 +274,8 @@ for mode in malformed duplicate unknown type corrupt; do
   CURRENT_CASE="strict-state:$mode"
   file=/var/lib/github-runner-tools/install-state.json
   docker exec "$name" cp "$file" "$file.save"
-  docker exec "$name" python3 - "$mode" "$file" <<'PY'
-import json, sys
+  docker exec -i "$name" python3 - "$mode" "$file" <<'PY'
+import json, sys, re
 from pathlib import Path
 mode, filename = sys.argv[1:]
 p = Path(filename)
@@ -287,7 +287,7 @@ elif mode == "duplicate":
 elif mode == "unknown":
     p.write_text(raw.replace('"schema":1', '"schema":1,"unknown":true'))
 elif mode == "type":
-    p.write_text(raw.replace('"runner_uid":', '"runner_uid":false,"old_uid":'))
+    p.write_text(re.sub(r'"runner_uid":[0-9]+', '"runner_uid":false', raw))
 elif mode == "corrupt":
     p.write_bytes(b'\\xff\\x00truncated')
 PY

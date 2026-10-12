@@ -121,6 +121,39 @@ stage_at_least() {
   want="$(stage_rank "$1")" || die "invalid_internal_stage"
   (( have >= want ))
 }
+fault_inside() {
+  if [[ "${GRT_TEST_ALLOW_FAULTS:-0}" == 1 && "${GRT_TEST_FAULT_INSIDE:-}" == "$1" ]]; then
+    die "injected_inside_fault"
+  fi
+}
+checked_install() {
+  local src="$1" dst="$2" owner="$3" group="$4" mode="$5"
+  if sudo test -e "$dst" || sudo test -L "$dst"; then
+    sudo test -f "$dst" && ! sudo test -L "$dst" || die "partial_file_type_mismatch"
+    [[ "$(sudo stat -c '%U:%G:%a:%h' "$dst")" == "$owner:$group:$mode:1" ]] || die "partial_file_metadata_mismatch"
+    sudo cmp -s "$src" "$dst" || die "partial_file_content_mismatch"
+  else
+    sudo install -o "$owner" -g "$group" -m "$mode" "$src" "$dst"
+  fi
+}
+checked_directory() {
+  local dst="$1" owner="$2" group="$3" mode="$4"
+  if sudo test -e "$dst" || sudo test -L "$dst"; then
+    verify_directory "$dst" "$owner" "$group" "$mode"
+  else
+    sudo install -d -o "$owner" -g "$group" -m "$mode" "$dst"
+  fi
+}
+check_entries_subset() {
+  local dst="$1" entry expected allowed
+  shift
+  sudo test -d "$dst" || return 0
+  while IFS= read -r entry; do
+    allowed=0
+    for expected in "$@"; do [[ "$entry" == "$expected" ]] && allowed=1; done
+    [[ "$allowed" == 1 ]] || die "unknown_managed_object"
+  done < <(sudo find "$dst" -mindepth 1 -maxdepth 1 -printf '%f\\n')
+}
 fault_after() {
   # Test-only failure injection can only stop progress; it cannot bypass checks.
   if [[ "${GRT_TEST_ALLOW_FAULTS:-0}" == 1 && "${GRT_TEST_FAULT_STAGE:-}" == "$1" ]]; then
@@ -214,12 +247,20 @@ if stage_at_least RUNTIME_INSTALLED; then
 else
   sudo apt-get update
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3 jq rsync curl ca-certificates
-  sudo install -d -o root -g root -m 0755 "$CLI_ROOT" "$WEB_ROOT"
+  checked_directory "$INSTALL_ROOT" root root 755
+  checked_directory "$CLI_ROOT" root root 755
+  checked_directory "$WEB_ROOT" root root 755
+  check_entries_subset "$INSTALL_ROOT" cli web
+  check_entries_subset "$CLI_ROOT" register-runner.sh remove-runner.sh status-runners.sh cli-operational-logger.py web-runner-cleanup.py web-service-record.py
+  web_partial_expected=()
+  for src in "$ROOT"/web/*.py; do web_partial_expected+=("${src##*/}"); done
+  check_entries_subset "$WEB_ROOT" "${web_partial_expected[@]}"
   for f in register-runner.sh remove-runner.sh status-runners.sh cli-operational-logger.py web-runner-cleanup.py web-service-record.py; do
-    sudo install -o root -g root -m 0755 "$ROOT/scripts/$f" "$CLI_ROOT/$f"
+    checked_install "$ROOT/scripts/$f" "$CLI_ROOT/$f" root root 755
+    fault_inside RUNTIME_COPY_PARTIAL
   done
   for src in "$ROOT"/web/*.py; do
-    sudo install -o root -g root -m 0755 "$src" "$WEB_ROOT/${src##*/}"
+    checked_install "$src" "$WEB_ROOT/${src##*/}" root root 755
   done
   write_state RUNTIME_INSTALLED
   fault_after RUNTIME_INSTALLED
@@ -255,17 +296,13 @@ else
   [[ "$web_uid" -gt 0 && "$web_gid" -gt 0 && "$web_home" == "/nonexistent" &&
       "$web_shell" == "/usr/sbin/nologin" ]] || die "invalid_web_user"
   [[ "$(getent group "$WEB_USER" | cut -d: -f3)" == "$web_gid" ]] || die "invalid_web_group"
-  sudo install -d -o root -g root -m 0755 "$LOCK_ROOT"
-  if ! sudo test -e "$LOCK_FILE"; then
-    sudo install -o root -g "$RUNNER_GROUP" -m 0660 /dev/null "$LOCK_FILE"
-  fi
-  sudo install -d -o root -g "$RUNNER_GROUP" -m 2770 "$LOG_ROOT"
-  if ! sudo test -e "$LOG_ROOT/operational.lock"; then
-    sudo install -o "$RUNNER_USER" -g "$RUNNER_GROUP" -m 0600 /dev/null "$LOG_ROOT/operational.lock"
-  fi
-  if ! sudo test -e "$LOG_ROOT/operational.jsonl"; then
-    sudo install -o "$RUNNER_USER" -g "$RUNNER_GROUP" -m 0600 /dev/null "$LOG_ROOT/operational.jsonl"
-  fi
+  checked_directory "$LOCK_ROOT" root root 755
+  check_entries_subset "$LOCK_ROOT" mutation.lock
+  checked_install /dev/null "$LOCK_FILE" root "$RUNNER_GROUP" 660
+  checked_directory "$LOG_ROOT" root "$RUNNER_GROUP" 2770
+  check_entries_subset "$LOG_ROOT" operational.lock operational.jsonl
+  checked_install /dev/null "$LOG_ROOT/operational.lock" "$RUNNER_USER" "$RUNNER_GROUP" 600
+  checked_install /dev/null "$LOG_ROOT/operational.jsonl" "$RUNNER_USER" "$RUNNER_GROUP" 600
   write_state AUTHORITY_STATE_INITIALIZED
   fault_after AUTHORITY_STATE_INITIALIZED
 fi

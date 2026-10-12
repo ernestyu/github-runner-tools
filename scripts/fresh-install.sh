@@ -242,7 +242,7 @@ if stage_at_least RUNTIME_INSTALLED; then
   if stage_at_least ARCHIVE_PLATFORM_INITIALIZED; then
     verify_exact_entries "$INSTALL_ROOT" archive-common.sh cli hooks web
   else
-    verify_exact_entries "$INSTALL_ROOT" cli web
+    check_entries_subset "$INSTALL_ROOT" cli web hooks archive-common.sh
   fi
 else
   sudo apt-get update

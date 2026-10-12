@@ -91,7 +91,7 @@ assert_complete_install() {
     systemctl is-enabled --quiet github-runner-tools-executor.service
     systemctl is-enabled --quiet github-runner-tools-web.service
     [[ -S /run/github-runner-tools/executor.sock ]]
-    grep -q '"'"'"event":"operation_exit"'"'"'.*'"'"'"op":"status"'"'"'.*'"'"'"exit_code":0'"'"' /var/log/github-runner-tools/operational.jsonl
+    jq -s -e '"'"'any(.[]; .event == "operation_exit" and .op == "status" and .exit_code == 0)'"'"' /var/log/github-runner-tools/operational.jsonl >/dev/null
   '
   assert_no_runner_mutation "$name"
 }

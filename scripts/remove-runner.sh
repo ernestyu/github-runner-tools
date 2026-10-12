@@ -59,60 +59,9 @@ WEB_MODE=0
 EXECUTOR_MODE=0
 TOKEN_FD=""
 PRIVILEGED_FD=""
-RESULT_FD=""
 CLI_REMOVE_PROOF=""
 REMOVE_STAGE="preflight_failed"
 REMOVE_EXIT="unknown"
-REMOVE_MARKED=0
-remove_result() {
-  local rc="$1" value
-  [[ "$WEB_MODE" == "1" && -n "$RESULT_FD" && "$REMOVE_MARKED" == "0" && "$rc" -ne 0 ]] || return 0
-  REMOVE_MARKED=1
-  case "$REMOVE_STAGE" in
-    preflight_failed|service_state_failed|service_stop_failed|service_uninstall_failed|service_record_reconcile_failed|permission_reconcile_failed|config_remove_failed|local_cleanup_failed|unknown_failed) ;;
-    *) REMOVE_STAGE="unknown_failed" ;;
-  esac
-  value="$REMOVE_EXIT"
-  [[ "$value" =~ ^(0|[1-9][0-9]{0,2})$ ]] || value="unknown"
-  if [[ "$value" != "unknown" ]] && (( value > 255 )); then value="unknown"; fi
-  printf 'GRT_REMOVE_RESULT_V1 stage=%s exit=%s\n' "$REMOVE_STAGE" "$value" >&"$RESULT_FD" 2>/dev/null || true
-}
-# Web Remove external tools are invoked through wrappers that close the
-# private diagnostic write descriptor in the child before executing the tool.
-# Bash builtins and the parent remain able to write the final result.
-web_remove_external() {
-  if [[ "$WEB_MODE" == "1" && -n "$RESULT_FD" ]]; then
-    (exec {RESULT_FD}>&-; command "$@")
-  else
-    command "$@"
-  fi
-}
-python3() { web_remove_external python3 "$@"; }
-cat() { web_remove_external cat "$@"; }
-jq() { web_remove_external jq "$@"; }
-tr() { web_remove_external tr "$@"; }
-sed() { web_remove_external sed "$@"; }
-sha256sum() { web_remove_external sha256sum "$@"; }
-awk() { web_remove_external awk "$@"; }
-cut() { web_remove_external cut "$@"; }
-getent() { web_remove_external getent "$@"; }
-id() { web_remove_external id "$@"; }
-stat() { web_remove_external stat "$@"; }
-systemctl() { web_remove_external systemctl "$@"; }
-find() { web_remove_external find "$@"; }
-flock() { web_remove_external flock "$@"; }
-sudo() { web_remove_external sudo "$@"; }
-install() { web_remove_external install "$@"; }
-touch() { web_remove_external touch "$@"; }
-chown() { web_remove_external chown "$@"; }
-chmod() { web_remove_external chmod "$@"; }
-mkdir() { web_remove_external mkdir "$@"; }
-mv() { web_remove_external mv "$@"; }
-rm() { web_remove_external rm "$@"; }
-sleep() { web_remove_external sleep "$@"; }
-grep() { web_remove_external grep "$@"; }
-sort() { web_remove_external sort "$@"; }
-wc() { web_remove_external wc "$@"; }
 
 # The transport is UTF-8 JSON text followed by one LF. Validate its exact
 # bytes before Bash can discard NUL, normalize newlines, or alter encoding.
@@ -209,7 +158,7 @@ die() {
 }
 require_command() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
 cleanup() { unset TOKEN || true; }
-trap 'rc=$?; grt_log_finish "$rc"; remove_result "$rc"; cleanup' EXIT
+trap 'rc=$?; grt_log_finish "$rc"; cleanup' EXIT
 
 sanitize_component() {
   local value="$1" out
@@ -588,10 +537,8 @@ while [[ $# -gt 0 ]]; do
     --base-dir) [[ $# -ge 2 ]] || die "--base-dir requires a value"; CLI_BASE_DIR="$2"; shift 2 ;;
     --recover-local) RECOVER_LOCAL=1; shift ;;
     --reconcile-incomplete-create) RECONCILE_INCOMPLETE=1; shift ;;
-    --web-worker) WEB_MODE=1; shift ;;
     --executor-mode) WEB_MODE=1; EXECUTOR_MODE=1; shift ;;
     --token-fd) [[ $# -ge 2 ]] || die "--token-fd requires a value"; TOKEN_FD="$2"; shift 2 ;;
-    --result-fd) [[ $# -ge 2 ]] || die "--result-fd requires a value"; RESULT_FD="$2"; shift 2 ;;
     --privileged-fd) [[ $# -ge 2 ]] || die "--privileged-fd requires a value"; PRIVILEGED_FD="$2"; shift 2 ;;
     --lock-already-held) LOCK_ALREADY_HELD=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -604,22 +551,17 @@ set -- "${POSITIONAL[@]}"
 [[ $# -eq 1 ]] || { usage; exit 1; }
 
 if [[ "$WEB_MODE" == "1" ]]; then
-  if [[ "$EXECUTOR_MODE" == "1" ]]; then
-    [[ "${GRT_EXECUTOR_CONTEXT:-0}" == "1" ]] || die "Internal Executor mode requires trusted context."
-    [[ "${GRT_WEB_CONTEXT:-0}" != "1" ]] || die "Mixed Web/Executor modes forbidden."
-  else
-    [[ "${GRT_WEB_CONTEXT:-0}" == "1" ]] || die "Internal Web mode requires Executor context."
-  fi
-  [[ "$PRIVILEGED_FD" =~ ^[0-9]+$ && "$LOCK_ALREADY_HELD" == "1" ]] || die "Incomplete internal Web lifecycle context."
+  [[ "$EXECUTOR_MODE" == "1" && "${GRT_EXECUTOR_CONTEXT:-0}" == "1" ]] ||
+    die "Internal Executor mode requires trusted context."
+  [[ "${GRT_WEB_CONTEXT:-0}" != "1" ]] || die "Historical Web worker context is forbidden."
+  [[ "$PRIVILEGED_FD" =~ ^[0-9]+$ && "$LOCK_ALREADY_HELD" == "1" ]] ||
+    die "Incomplete internal Executor lifecycle context."
   if [[ "$RECOVER_LOCAL" != "1" && "$RECONCILE_INCOMPLETE" != "1" ]]; then
     [[ "$TOKEN_FD" =~ ^[0-9]+$ ]] || die "Normal noninteractive removal requires token FD."
-    if [[ "$EXECUTOR_MODE" != "1" ]]; then
-      [[ "$RESULT_FD" =~ ^[0-9]+$ ]] || die "Web worker removal requires result FD."
-    fi
   fi
   web_context_check
-elif [[ -n "$TOKEN_FD" || -n "$RESULT_FD" || -n "$PRIVILEGED_FD" || "$LOCK_ALREADY_HELD" == "1" ]]; then
-  die "Internal Web options are not available in normal CLI mode."
+elif [[ -n "$TOKEN_FD" || -n "$PRIVILEGED_FD" || "$LOCK_ALREADY_HELD" == "1" ]]; then
+  die "Internal Executor options are not available in normal CLI mode."
 fi
 
 REPO="$1"
@@ -948,29 +890,23 @@ grt_log remote_removal begin
 echo "==> Removing runner registration from GitHub..."
 if [[ "$WEB_MODE" == "1" ]]; then
   REMOVE_STAGE="config_remove_failed"
-  if [[ "$EXECUTOR_MODE" == "1" ]]; then
-    # V2 consumes the one-shot FD through the existing PTY adapter.
-    # Never expose the token in CLI argv, env or persistent state.
-    PTY_ADAPTER="${GRT_PTY_ADAPTER:-/usr/local/lib/github-runner-tools/web/pty_token_adapter.py}"
-    [[ -x "$PTY_ADAPTER" ]] || die "Trusted removal token adapter unavailable."
-    if (
-      # Root privilege FD4 belongs only to the trusted CLI shell. The
-      # external GitHub config and PTY adapter must never inherit it.
-      exec 4>&-
-      python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode remove -- ./config.sh remove >/dev/null 2>&1
-    ); then
-      REMOVE_RC=0
-    else
-      REMOVE_RC=$?
-    fi
-    # The adapter owns the single read; close Bash's inherited copy before
-    # any subsequent privileged file or service operation, on both outcomes.
-    exec {TOKEN_FD}<&-
-  elif ( exec {RESULT_FD}>&-; ./config.sh remove --token "$TOKEN" >/dev/null 2>&1 ); then
+  # The Executor consumes the one-shot FD through the existing PTY adapter.
+  # Never expose the token in CLI argv, env or persistent state.
+  PTY_ADAPTER="${GRT_PTY_ADAPTER:-/usr/local/lib/github-runner-tools/web/pty_token_adapter.py}"
+  [[ -x "$PTY_ADAPTER" ]] || die "Trusted removal token adapter unavailable."
+  if (
+    # Root privilege FD4 belongs only to the trusted CLI shell. The
+    # external GitHub config and PTY adapter must never inherit it.
+    exec 4>&-
+    python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode remove -- ./config.sh remove >/dev/null 2>&1
+  ); then
     REMOVE_RC=0
   else
     REMOVE_RC=$?
   fi
+  # The adapter owns the single read; close Bash's inherited copy before
+  # any subsequent privileged file or service operation, on both outcomes.
+  exec {TOKEN_FD}<&-
   if [[ "$REMOVE_RC" == "0" ]]; then
     grt_log remote_removal ok
     unset TOKEN

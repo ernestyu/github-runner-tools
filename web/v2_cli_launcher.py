@@ -16,6 +16,7 @@ import os
 import pwd
 import sys
 from v2_executor_contract import CLI_ARGV, decode_request, AdmissionError
+from grt_web_common import DEFAULT_CONFIG, load_key_value
 
 PR_SET_NO_NEW_PRIVS = 38
 PR_SET_KEEPCAPS = 8
@@ -83,13 +84,25 @@ def drop_identity(uid: int, gid: int) -> None:
             raise LaunchError("capabilities not cleared")
 
 
-def launch(op: str, repo: str | None, runner_user: str = "actions") -> None:
+def configured_runner_user(config_path: str = DEFAULT_CONFIG) -> str:
+    try:
+        runner_user = load_key_value(config_path)["RUNNER_USER"]
+    except (OSError, KeyError, ValueError) as exc:
+        raise LaunchError("runner configuration unavailable") from exc
+    if not runner_user:
+        raise LaunchError("runner identity unavailable")
+    return runner_user
+
+
+def launch(op: str, repo: str | None, runner_user: str | None = None) -> None:
     argv = resolve_action(op, repo)
-    if runner_user != "actions":
-        raise LaunchError("unsupported runner identity")
     if os.geteuid() != 0:
         raise LaunchError("root launcher required")
+    if runner_user is None:
+        runner_user = configured_runner_user()
     info = pwd.getpwnam(runner_user)
+    if info.pw_uid <= 0 or info.pw_gid <= 0:
+        raise LaunchError("invalid runner identity")
     if op != "status":
         for fd in (3, 4):
             try:
@@ -129,7 +142,7 @@ def main() -> int:
     try:
         launch(op, repo)
     except (LaunchError, OSError, ValueError):
-        print("v2_cli_launcher: restricted launch rejected", file=sys.stderr)
+        print("executor_cli_launcher: restricted launch rejected", file=sys.stderr)
         return 1
     return 0
 

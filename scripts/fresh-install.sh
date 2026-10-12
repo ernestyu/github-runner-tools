@@ -322,6 +322,7 @@ Wants=network-online.target
 Type=simple
 User=root
 Group=root
+Environment=PYTHONDONTWRITEBYTECODE=1
 RuntimeDirectory=github-runner-tools
 RuntimeDirectoryMode=0755
 ExecStart=/usr/bin/python3 $WEB_ROOT/v2_executor.py
@@ -354,6 +355,7 @@ Requires=github-runner-tools-executor.service
 Type=simple
 User=$WEB_USER
 Group=$WEB_USER
+Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/usr/bin/python3 $WEB_ROOT/app.py --config $WEB_CONFIG --auth-config $WEB_AUTH
 Restart=on-failure
 RestartSec=2

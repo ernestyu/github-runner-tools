@@ -95,8 +95,8 @@ write_state() {
   cat >"$tmp" <<EOF
 {"schema":1,"release":"$RELEASE","payload_sha256":"$PAYLOAD_SHA256","attempt_id":"$ATTEMPT_ID","runner_user":"$RUNNER_USER","runner_uid":$RUNNER_UID,"runner_gid":$RUNNER_GID,"runner_home":"$RUNNER_HOME","web_bind_address":"$WEB_BIND_ADDRESS","stage":"$stage"}
 EOF
-  sudo install -o root -g root -m 0600 "$tmp" "$STATE_ROOT/.install-state.json.$$"
-  sudo mv -f "$STATE_ROOT/.install-state.json.$" "$INSTALL_STATE"
+  sudo install -o root -g root -m 0600 "$tmp" "$STATE_ROOT/.install-state.json.${BASHPID}"
+  sudo mv -f "$STATE_ROOT/.install-state.json.${BASHPID}" "$INSTALL_STATE"
   rm -f "$tmp"
   CURRENT_STAGE="$stage"
 }

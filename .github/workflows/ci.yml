@@ -19,9 +19,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Shell syntax
+      - name: Shell syntax and fresh-install contracts
         run: |
           for script in scripts/*.sh; do bash -n "$script"; done
+          bash tests/test-install-lan.sh
+          python3 tests/test-fresh-install-contract.py
       - name: Python syntax and CLI logging
         run: |
           python3 -m compileall -q web scripts/cli-operational-logger.py

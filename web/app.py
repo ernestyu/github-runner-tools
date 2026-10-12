@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import html
 import http.cookies
 import ipaddress
@@ -692,7 +693,12 @@ def main() -> int:
     if app.config.get("WEB_COOKIE_SECURE", "0") not in ("0", "1"):
         raise SystemExit("WEB_COOKIE_SECURE must be 0 or 1")
     Handler.app = app
-    server = ThreadingHTTPServer((bind, port), Handler)
+    try:
+        server = ThreadingHTTPServer((bind, port), Handler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRNOTAVAIL:
+            raise SystemExit("configured WEB_BIND_ADDRESS is not assigned to this host") from exc
+        raise
     server.serve_forever()
     return 0
 

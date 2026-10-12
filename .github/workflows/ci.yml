@@ -60,3 +60,12 @@ jobs:
         run: |
           bash tests/test-pure.sh
           python3 tests/test-web-management.py
+
+  fresh-install-debian:
+    needs: development
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Debian 13 root-isolated fresh-install acceptance
+        run: bash tests/test-fresh-install-debian-fixture.sh

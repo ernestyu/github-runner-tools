@@ -59,7 +59,7 @@ def drop_identity(uid: int, gid: int) -> None:
     # Drop inherited and ambient caps before the UID transition while
     # retaining temporary effective SETUID/SETGID for setgroups/setresuid.
     # Reuse the existing proven Linux capset helper (no second cap library).
-    from lifecycle_worker import clear_capabilities_for_identity_drop
+    from identity_drop import clear_capabilities_for_identity_drop
     try:
         clear_capabilities_for_identity_drop()
     except (OSError, PermissionError) as exc:

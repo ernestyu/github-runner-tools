@@ -121,6 +121,10 @@ class FreshInstallContractTests(unittest.TestCase):
             "scripts/setup-web-management-v2.sh",
             "scripts/web-v2-cutover-rollback.sh",
             "scripts/rollback-web-management-v2.sh",
+            "web/dispatcher.py",
+            "web/lifecycle_worker.py",
+            "docs/implementation/web-management-v2-architecture.md",
+            "docs/specs/20261007-web-management-v1-spec.md",
         )
         for rel in absent:
             self.assertFalse((ROOT / rel).exists(), rel)

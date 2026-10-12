@@ -64,7 +64,6 @@ LOCAL_ARCHIVE_CONFIG="/etc/github-runner-tools/archive.conf"
 MUTATION_LOCK_DIR="/run/lock/github-runner-tools"
 MUTATION_LOCK_FILE="$MUTATION_LOCK_DIR/mutation.lock"
 WEB_MODE=0
-EXECUTOR_MODE=0
 TOKEN_FD=""
 PRIVILEGED_FD=""
 LOCK_ALREADY_HELD=0
@@ -291,9 +290,6 @@ finally:
 if uid != 0:
     raise SystemExit(1)
 PY
-  if [[ "$EXECUTOR_MODE" != "1" ]]; then
-    web_priv_request '{"op":"context_check"}' || die "Web lifecycle context is not authorized by Executor."
-  fi
 }
 
 ensure_mutation_lock() {
@@ -399,7 +395,7 @@ while [[ $# -gt 0 ]]; do
     --labels) [[ $# -ge 2 ]] || die "--labels requires a value"; CLI_LABELS="$2"; shift 2 ;;
     --runner-version) [[ $# -ge 2 ]] || die "--runner-version requires a value"; CLI_RUNNER_VERSION="$2"; shift 2 ;;
     --clean-incomplete) die "--clean-incomplete is disabled: unverified historical Runner directories must be preserved for independent administrator review." ;;
-    --executor-mode) WEB_MODE=1; EXECUTOR_MODE=1; shift ;;
+    --executor-mode) WEB_MODE=1; shift ;;
     --token-fd) [[ $# -ge 2 ]] || die "--token-fd requires a value"; TOKEN_FD="$2"; shift 2 ;;
     --privileged-fd) [[ $# -ge 2 ]] || die "--privileged-fd requires a value"; PRIVILEGED_FD="$2"; shift 2 ;;
     --lock-already-held) LOCK_ALREADY_HELD=1; shift ;;
@@ -413,9 +409,8 @@ set -- "${POSITIONAL[@]}"
 [[ $# -eq 1 ]] || { usage; exit 1; }
 
 if [[ "$WEB_MODE" == "1" ]]; then
-  [[ "$EXECUTOR_MODE" == "1" && "${GRT_EXECUTOR_CONTEXT:-0}" == "1" ]] ||
+  [[ "${GRT_EXECUTOR_CONTEXT:-0}" == "1" ]] ||
     die "Internal Executor mode requires trusted context."
-  [[ "${GRT_WEB_CONTEXT:-0}" != "1" ]] || die "Historical Web worker context is forbidden."
   [[ "$TOKEN_FD" =~ ^[0-9]+$ && "$PRIVILEGED_FD" =~ ^[0-9]+$ && "$LOCK_ALREADY_HELD" == "1" ]] ||
     die "Incomplete internal Executor lifecycle context."
 elif [[ -n "$TOKEN_FD" || -n "$PRIVILEGED_FD" || "$LOCK_ALREADY_HELD" == "1" ]]; then
@@ -576,7 +571,7 @@ if [[ "$WEB_MODE" == "1" ]]; then
     # The untrusted external config.sh and PTY adapter must never inherit
     # Executor's FD4 root privileged socket. Retain FD4 only in the parent
     # CLI shell, for exact root operation requests.
-    if [[ "$EXECUTOR_MODE" == "1" ]]; then exec 4>&-; fi
+    exec 4>&-
     python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode create -- \
       ./config.sh \
         --url "https://github.com/$REPO" \

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only V2 CLI Status execution as the runner owner.
+"""Read-only CLI Status execution as the configured runner owner.
 
 No shell interpretation, no sudo and no state mutation. This module is a
 building block for the future bounded Executor, not a running server.
@@ -13,6 +13,7 @@ import subprocess
 from typing import Any
 
 from v2_executor_contract import CLI_ARGV
+from grt_web_common import DEFAULT_CONFIG, load_key_value
 
 
 class StatusError(RuntimeError):
@@ -20,17 +21,27 @@ class StatusError(RuntimeError):
 
 
 def runner_identity(runner_user: str) -> tuple[int, int, str]:
-    if runner_user != "actions":
-        raise StatusError("unsupported runner user")
     try:
         pw = pwd.getpwnam(runner_user)
     except KeyError as exc:
         raise StatusError("runner user unavailable") from exc
+    if pw.pw_uid <= 0 or pw.pw_gid <= 0 or not pw.pw_dir.startswith("/"):
+        raise StatusError("invalid runner identity")
     return pw.pw_uid, pw.pw_gid, pw.pw_dir
 
 
+def configured_runner_user(config_path: str = DEFAULT_CONFIG) -> str:
+    try:
+        value = load_key_value(config_path)["RUNNER_USER"]
+    except (OSError, KeyError, ValueError) as exc:
+        raise StatusError("runner configuration unavailable") from exc
+    if not value:
+        raise StatusError("runner user unavailable")
+    return value
+
+
 def status_as_runner(
-    runner_user: str = "actions",
+    runner_user: str | None = None,
     *,
     timeout: int = 15,
 ) -> dict[str, Any]:
@@ -43,6 +54,8 @@ def status_as_runner(
         raise StatusError("executor must be root")
     if type(timeout) is not int or not 1 <= timeout <= 60:
         raise StatusError("invalid status timeout")
+    if runner_user is None:
+        runner_user = configured_runner_user()
     uid, gid, home = runner_identity(runner_user)
     from v2_code_provenance import verify_launch, CodeProvenanceError
     try:

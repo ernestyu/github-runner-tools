@@ -218,6 +218,7 @@ else
   ATTEMPT_ID="$(cat /proc/sys/kernel/random/uuid)"
   sudo install -d -o root -g root -m 0700 "$STATE_ROOT"
   write_state ATTEMPT_STARTED
+  fault_after ATTEMPT_STARTED
 fi
 
 # Persisted bind address is authoritative; never rediscover on retry.

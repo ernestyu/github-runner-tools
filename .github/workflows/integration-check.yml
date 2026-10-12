@@ -1,0 +1,40 @@
+name: Integration Check
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  full-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install integration prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq rsync
+      - name: Full integration tests
+        run: bash tests/run-all.sh
+      - name: V2 real CLI and privilege boundary integration
+        run: |
+          bash tests/test-web-v2-real-create-cli.sh
+          bash tests/test-web-v2-real-remove-cli.sh
+          python3 tests/test-web-v2-real-spawn.py
+          python3 tests/test-web-v2-real-private-channel.py
+          python3 tests/test-web-v2-real-pty-cli.py
+          python3 tests/test-web-v2-closeout.py
+          bash tests/test-web-v2-shared-create.sh
+          bash tests/test-web-v2-shared-remove.sh
+          python3 tests/test-web-v2-cli-remove-authority.py
+          python3 tests/test-web-v2-install-manifest.py
+          sudo -n /usr/bin/python3 tests/test-web-v2-real-uid-drop.py
+          sudo -n /usr/bin/python3 tests/test-fresh-runner-bootstrap-e2e.py
+          bash tests/test-install-lan.sh
+          python3 tests/test-fresh-install-contract.py
+          bash tests/test-fresh-install-debian-fixture.sh

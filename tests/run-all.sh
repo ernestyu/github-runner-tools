@@ -20,15 +20,13 @@ while IFS= read -r script; do
   bash -n "$script"
 done < <(find "$ROOT/scripts" "$ROOT/hooks" "$ROOT/tests" "$ROOT/.github/actions" -type f -name '*.sh' -print | sort)
 
-echo "Checking Python syntax..."
-python3 -m py_compile "$ROOT"/web/*.py "$ROOT"/tests/test-web-management.py "$ROOT"/tests/test-web-confirmation-gate-a.py "$ROOT"/tests/test-web-official-remove.py
+echo "Checking Python syntax..."\npython3 -m py_compile "$ROOT"/web/*.py "$ROOT"/tests/test-web-management.py "$ROOT"/tests/test-web-confirmation-gate-a.py "$ROOT"/tests/test-web-service-record.py "$ROOT"/tests/test-runner-version-compatibility.py "$ROOT"/tests/test-runner-lifecycle-authority.py "$ROOT"/tests/test-cli-clean-incomplete-safety.py "$ROOT"/web/runner_lifecycle_authority.py "$ROOT"/scripts/web-service-record.py
 
 tests=(
   tests/test-pure.sh
   tests/test-failure-paths.sh
   tests/test-recover-local-removal.sh
   tests/test-web-contracts.sh
-  tests/test-web-setup-apply.sh
   tests/test-archive-common.sh
   tests/test-register-archive.sh
   tests/test-archive-hook.sh
@@ -51,9 +49,29 @@ echo "RUN: tests/test-web-confirmation-gate-a.py"
 python3 "$ROOT/tests/test-web-confirmation-gate-a.py"
 
 echo
- echo "============================================================"
-echo "RUN: tests/test-web-official-remove.py"
-python3 "$ROOT/tests/test-web-official-remove.py"
+echo "============================================================"
+echo "RUN: tests/test-web-service-record.py"
+python3 "$ROOT/tests/test-web-service-record.py"
+echo "RUN: tests/test-web-runner-cleanup.py"
+python3 "$ROOT/tests/test-web-runner-cleanup.py"
+
+echo "RUN: tests/test-runner-version-compatibility.py"
+python3 "$ROOT/tests/test-runner-version-compatibility.py"
+echo "RUN: tests/test-cli-clean-incomplete-safety.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/test-cli-clean-incomplete-safety.py"
+echo "RUN: tests/test-cli-authority-reason-transport.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/test-cli-authority-reason-transport.py"
+echo "RUN: tests/test-runner-lifecycle-authority.py (root-isolated)"
+if [[ "$(id -u)" == "0" ]]; then
+  PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/test-runner-lifecycle-authority.py"
+else
+  sudo -n env PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/tests/test-runner-lifecycle-authority.py"
+fi
+
+echo "RUN: tests/test-fresh-install-contract.py"
+python3 "$ROOT/tests/test-fresh-install-contract.py"
+echo "RUN: tests/test-install-lan.sh"
+bash "$ROOT/tests/test-install-lan.sh"
 
 for test_script in "${tests[@]}"; do
   echo

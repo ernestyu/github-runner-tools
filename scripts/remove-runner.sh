@@ -1,6 +1,55 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# CLI-native operational events; no Web/Executor business log parsing.
+GRT_LOGGER="/usr/local/lib/github-runner-tools/cli/cli-operational-logger.py"
+GRT_LOG_RUN_ID="$(/usr/bin/python3 -c 'import secrets; print(secrets.token_hex(16))')"
+GRT_LOG_SEQ=0
+GRT_LOG_READY=0
+GRT_LOG_SIDE_EFFECT=0
+GRT_LOG_WARNED=0
+GRT_LOG_REPO="none"
+GRT_LOG_RUNNER="none"
+GRT_LOG_STAGE="none"
+GRT_LOG_EVENT="preflight"
+GRT_LOG_LAST_REASON="none"
+grt_log() {
+  local event="$1" result="$2" reason="${3:-none}" rc="${4:--1}"
+  # An isolated CI source-tree CLI uses the same logger, with a test-only
+  # directory. Installed CLI never accepts caller-controlled log locations.
+  local -a grt_log_args=()
+  if [[ "${GITHUB_ACTIONS:-}" == "true" && "${BASH_SOURCE[0]}" != /usr/local/lib/github-runner-tools/cli/* ]]; then
+    GRT_LOGGER="${BASH_SOURCE[0]%/*}/cli-operational-logger.py"
+    grt_log_args=(--test-root "${RUNNER_TEMP:-/tmp}/grt-native-logging-$(id -u)")
+  fi
+  [[ "$result" == "begin" && "$event" != "operation" ]] && GRT_LOG_EVENT="$event"
+  GRT_LOG_SEQ=$((GRT_LOG_SEQ + 1))
+  if /usr/bin/python3 "$GRT_LOGGER" "${grt_log_args[@]}" --run-id "$GRT_LOG_RUN_ID" --seq "$GRT_LOG_SEQ" --op remove \
+       --event "$event" --stage "$GRT_LOG_STAGE" --result "$result" --reason "$reason" \
+       --exit-code "$rc" --repository "$GRT_LOG_REPO" --runner "$GRT_LOG_RUNNER"; then
+    return 0
+  fi
+  if [[ "$GRT_LOG_SIDE_EFFECT" == "0" && "remove" != "status" ]]; then
+    printf 'ERROR: CLI logging unavailable before side effects.\n' >&2
+    exit 1
+  fi
+  if [[ "$GRT_LOG_WARNED" == "0" ]]; then
+    printf 'WARNING: CLI operational logging unavailable; lifecycle authority remains decisive.\n' >&2
+    GRT_LOG_WARNED=1
+  fi
+  return 0
+}
+grt_log_finish() {
+  local rc="$1" reason="none"
+  if [[ "$GRT_LOG_READY" == "1" ]]; then
+    if [[ "$rc" != 0 ]]; then
+      reason="$GRT_LOG_LAST_REASON"
+      [[ "$reason" != "none" ]] || reason="$(grt_reason_for_event)"
+    fi
+    grt_log operation_exit "$([[ "$rc" == 0 ]] && echo ok || echo failed)" "$reason" "$rc" || :
+  fi
+}
+
 MAX_LOCAL_ID_LENGTH=64
 HASH_LENGTH=8
 TOKEN=""
@@ -9,97 +58,13 @@ MUTATION_LOCK_FILE="$MUTATION_LOCK_DIR/mutation.lock"
 WEB_MODE=0
 TOKEN_FD=""
 PRIVILEGED_FD=""
-RESULT_FD=""
+CLI_REMOVE_PROOF=""
 REMOVE_STAGE="preflight_failed"
 REMOVE_EXIT="unknown"
-REMOVE_MARKED=0
-remove_result() {
-  local rc="$1" value
-  [[ "$WEB_MODE" == "1" && -n "$RESULT_FD" && "$REMOVE_MARKED" == "0" && "$rc" -ne 0 ]] || return 0
-  REMOVE_MARKED=1
-  case "$REMOVE_STAGE" in
-    preflight_failed|service_state_failed|service_stop_failed|service_uninstall_failed|config_remove_failed|local_cleanup_failed|unknown_failed) ;;
-    *) REMOVE_STAGE="unknown_failed" ;;
-  esac
-  value="$REMOVE_EXIT"
-  [[ "$value" =~ ^(0|[1-9][0-9]{0,2})$ ]] || value="unknown"
-  if [[ "$value" != "unknown" ]] && (( value > 255 )); then value="unknown"; fi
-  printf 'GRT_REMOVE_RESULT_V1 stage=%s exit=%s\n' "$REMOVE_STAGE" "$value" >&"$RESULT_FD" 2>/dev/null || true
-}
-# Web Remove external tools are invoked through wrappers that close the
-# private diagnostic write descriptor in the child before executing the tool.
-# Bash builtins and the parent remain able to write the final result.
-web_remove_external() {
-  if [[ "$WEB_MODE" == "1" && -n "$RESULT_FD" ]]; then
-    (exec {RESULT_FD}>&-; command "$@")
-  else
-    command "$@"
-  fi
-}
-python3() { web_remove_external python3 "$@"; }
-cat() { web_remove_external cat "$@"; }
-jq() { web_remove_external jq "$@"; }
-tr() { web_remove_external tr "$@"; }
-sed() { web_remove_external sed "$@"; }
-sha256sum() { web_remove_external sha256sum "$@"; }
-awk() { web_remove_external awk "$@"; }
-cut() { web_remove_external cut "$@"; }
-getent() { web_remove_external getent "$@"; }
-id() { web_remove_external id "$@"; }
-stat() { web_remove_external stat "$@"; }
-systemctl() { web_remove_external systemctl "$@"; }
-find() { web_remove_external find "$@"; }
-flock() { web_remove_external flock "$@"; }
-sudo() { web_remove_external sudo "$@"; }
-install() { web_remove_external install "$@"; }
-touch() { web_remove_external touch "$@"; }
-chown() { web_remove_external chown "$@"; }
-chmod() { web_remove_external chmod "$@"; }
-mkdir() { web_remove_external mkdir "$@"; }
-mv() { web_remove_external mv "$@"; }
-rm() { web_remove_external rm "$@"; }
-sleep() { web_remove_external sleep "$@"; }
-grep() { web_remove_external grep "$@"; }
-sort() { web_remove_external sort "$@"; }
-wc() { web_remove_external wc "$@"; }
 
 # The transport is UTF-8 JSON text followed by one LF. Validate its exact
 # bytes before Bash can discard NUL, normalize newlines, or alter encoding.
 # Never print invalid bytes. This helper receives the FD number, not a token.
-web_token_from_fd() {
-  local value status=0
-  [[ "$TOKEN_FD" =~ ^[0-9]+$ ]] || return 1
-  value="$(python3 - "$TOKEN_FD" <<'PY'
-import os
-import sys
-fd = int(sys.argv[1])
-raw = bytearray()
-while len(raw) <= 4096:
-    chunk = os.read(fd, 4097 - len(raw))
-    if not chunk:
-        break
-    raw.extend(chunk)
-    if b"\n" in chunk:
-        break
-if not raw.endswith(b"\n") or raw.count(b"\n") != 1:
-    raise SystemExit(1)
-payload = bytes(raw[:-1])
-try:
-    value = payload.decode("utf-8", "strict")
-except UnicodeError:
-    raise SystemExit(1)
-if (not value or len(value) > 1024 or
-        any(char in value for char in ("\x00", "\r", "\n"))):
-    raise SystemExit(1)
-sys.stdout.buffer.write(payload)
-PY
-)" || status=$?
-  # Close the original inherited descriptor in the parent immediately,
-  # including validation failure, before any service-related subprocess.
-  exec {TOKEN_FD}<&-
-  [[ "$status" == "0" ]] || return 1
-  TOKEN="$value"
-}
 
 LOCK_ALREADY_HELD=0
 
@@ -108,16 +73,57 @@ usage() {
 Usage:
   remove-runner.sh [--base-dir PATH] OWNER/REPO
   remove-runner.sh [--base-dir PATH] --recover-local OWNER/REPO
+  remove-runner.sh [--base-dir PATH] --reconcile-incomplete-create OWNER/REPO
 
 Environment variable:
   RUNNER_BASE_DIR
 USAGE
 }
 
-die() { echo "ERROR: $*" >&2; exit 1; }
+grt_reason_for_event() {
+  # Fixed enum only; never persist any argument or subprocess output.
+  case "$GRT_LOG_EVENT" in
+    archive_check) echo archive_unavailable ;;
+    release_lookup) echo release_metadata_failed ;;
+    runner_download) echo download_failed ;;
+    digest_check|runner_extract) echo integrity_failed ;;
+    dependency_check) echo dependency_failed ;;
+    lifecycle_checkpoint) echo checkpoint_failed ;;
+    registration_permissions) echo permissions_failed ;;
+    registration_attestation) echo attestation_failed ;;
+    service_install) echo service_install_failed ;;
+    service_start) echo service_start_failed ;;
+    service_health) echo service_health_failed ;;
+    service_stop) echo service_stop_failed ;;
+    service_uninstall) echo service_uninstall_failed ;;
+    local_cleanup) echo local_cleanup_failed ;;
+    inventory) echo inventory_failed ;;
+    remote_registration|remote_removal) echo remote_result_uncertain ;;
+    *) echo unexpected_cli_failure ;;
+  esac
+}
+die() {
+  local safe_reason
+  safe_reason="$GRT_LOG_LAST_REASON"
+  [[ "$safe_reason" != "none" ]] || safe_reason="$(grt_reason_for_event)"
+  if [[ "$GRT_LOG_READY" == 1 ]]; then
+    # A remote outcome may be unknown despite CLI exit 1. Never imply retry.
+    if [[ "$GRT_LOG_EVENT" == "remote_registration" || "$GRT_LOG_EVENT" == "remote_removal" ]]; then
+      grt_log "$GRT_LOG_EVENT" unknown remote_result_uncertain || :
+    else
+    case "$GRT_LOG_STAGE" in
+      REGISTRATION_OUTCOME_UNKNOWN|REMOTE_REMOVE_OUTCOME_UNKNOWN)
+        grt_log "$GRT_LOG_EVENT" unknown remote_result_uncertain || : ;;
+      *) GRT_LOG_LAST_REASON="$safe_reason"; grt_log "$GRT_LOG_EVENT" failed "$safe_reason" || : ;;
+    esac
+    fi
+  fi
+  echo "ERROR: $*" >&2
+  exit 1
+}
 require_command() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
 cleanup() { unset TOKEN || true; }
-trap 'rc=$?; remove_result "$rc"; cleanup' EXIT
+trap 'rc=$?; grt_log_finish "$rc"; cleanup' EXIT
 
 sanitize_component() {
   local value="$1" out
@@ -244,15 +250,56 @@ validate_recovery_identity() {
 web_priv_request() {
   local payload="$1" response
   [[ "$WEB_MODE" == "1" && "$PRIVILEGED_FD" =~ ^[0-9]+$ ]] || die "Invalid Web privileged context."
-  printf '%s\n' "$payload" >&"$PRIVILEGED_FD" || die "Privileged dispatcher channel write failed."
-  IFS= read -r response <&"$PRIVILEGED_FD" || die "Privileged dispatcher channel closed."
+  printf '%s\n' "$payload" >&"$PRIVILEGED_FD" || die "Privileged Executor channel write failed."
+  IFS= read -r response <&"$PRIVILEGED_FD" || die "Privileged Executor channel closed."
   WEB_PRIV_RESPONSE="$response"
   jq -e '.ok == true' <<<"$response" >/dev/null 2>&1
 }
 
+cli_remove_authority() {
+  local stage="$1" authority="/usr/local/lib/github-runner-tools/web/cli_remove_authority.py"
+  [[ "$WEB_MODE" != "1" ]] || die "Interactive Remove root authority forbidden in Web context."
+  [[ -f "$authority" && ! -L "$authority" ]] ||
+    die "Trusted interactive Remove authority unavailable."
+  [[ "$(stat -c '%U:%G:%a' "$authority")" == "root:root:755" ]] ||
+    die "Interactive Remove authority ownership or mode invalid."
+  if [[ "$stage" == "RECONCILE_CONFIRM_REMOTE_REMOVED" ]]; then
+    local output=""
+    if output="$(sudo /usr/bin/python3 "$authority" "$REPO" "$RUNNER_NAME" "$RUNNER_DIR" "$stage")"; then
+      CLI_REMOVE_PROOF="$output"
+      return 0
+    fi
+  elif sudo /usr/bin/python3 "$authority" "$REPO" "$RUNNER_NAME" "$RUNNER_DIR" "$stage"; then
+    return 0
+  fi
+  die "Durable Remove lifecycle checkpoint failed; reconcile before retry."
+}
+
+remove_lifecycle_stage() {
+  local stage="$1"
+  GRT_LOG_STAGE="$stage"
+  grt_log lifecycle_checkpoint begin
+  [[ "$stage" == "BEGIN" ]] && GRT_LOG_SIDE_EFFECT=1
+  if [[ "$WEB_MODE" == "1" ]]; then
+    web_remove_state "$stage" || return $?
+  else
+    cli_remove_authority "$stage" || return $?
+  fi
+  grt_log lifecycle_checkpoint ok
+}
+
+web_remove_state() {
+  local stage="$1" payload
+  [[ "$WEB_MODE" == "1" ]] || return 1
+  payload="$(jq -nc --arg repository "$REPO" --arg runner_dir "$RUNNER_DIR" \
+    --arg runner_name "$RUNNER_NAME" --arg stage "$stage" \
+    '{op:"remove_state",repository:$repository,runner_dir:$runner_dir,runner_name:$runner_name,stage:$stage}')" || return 1
+  web_priv_request "$payload"
+}
+
 web_context_check() {
   [[ "$PRIVILEGED_FD" =~ ^[0-9]+$ ]] || die "Invalid Web privileged context."
-  python3 - "$PRIVILEGED_FD" <<'PY' || die "Web lifecycle privileged channel is not owned by the root dispatcher."
+  python3 - "$PRIVILEGED_FD" <<'PY' || die "Web lifecycle privileged channel is not owned by the root Executor."
 import os
 import socket
 import struct
@@ -268,7 +315,6 @@ finally:
 if uid != 0:
     raise SystemExit(1)
 PY
-  web_priv_request '{"op":"context_check"}' || die "Web lifecycle context is not authorized by dispatcher."
 }
 
 ensure_mutation_lock() {
@@ -311,7 +357,7 @@ ensure_mutation_lock() {
 
 acquire_mutation_lock() {
   if [[ "$WEB_MODE" == "1" ]]; then
-    [[ "$LOCK_ALREADY_HELD" == "1" ]] || die "Web lifecycle requires dispatcher-held mutation lock."
+    [[ "$LOCK_ALREADY_HELD" == "1" ]] || die "Web lifecycle requires Executor-held mutation lock."
     web_context_check
     return 0
   fi
@@ -421,19 +467,40 @@ uninstall_service_safely() {
   esac
 }
 
+remove_local_runner_dir() {
+  # One post-confirmation cleanup path, shared by both modes. The Web
+  # transport receives inode/device proof from the existing root authority;
+  # interactive CLI uses its user-owned scoped directory deletion.
+  [[ -n "$RUNNER_DIR" && "$RUNNER_DIR" != "/" ]] ||
+    die "Cannot delete an empty or root Runner directory."
+  case "$RUNNER_DIR" in
+    "$RUNNER_BASE_DIR"/actions-runner-*) ;;
+    *) die "Unexpected local runner deletion scope." ;;
+  esac
+  if [[ "$WEB_MODE" == "1" ]]; then
+    python3 "${BASH_SOURCE[0]%/*}/web-runner-cleanup.py" \
+      "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$REMOVE_PROOF_DEVICE" "$REMOVE_PROOF_INODE" ||
+      die "Runner local directory cleanup failed; remote unregister was already completed."
+  else
+    rm -rf -- "$RUNNER_DIR"
+    [[ ! -e "$RUNNER_DIR" && ! -L "$RUNNER_DIR" ]] ||
+      die "Runner directory still exists after local cleanup."
+  fi
+}
+
 main() {
 if [[ ${EUID} -eq 0 ]]; then die "Do not run this script as root. Run it as the runner owner."; fi
 for cmd in jq id awk tr sed sha256sum cut find systemctl flock stat python3; do require_command "$cmd"; done
 if [[ "$WEB_MODE" != "1" ]]; then require_command sudo; fi
 
-CLI_BASE_DIR=""; RECOVER_LOCAL=0; POSITIONAL=()
+CLI_BASE_DIR=""; RECOVER_LOCAL=0; RECONCILE_INCOMPLETE=0; POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base-dir) [[ $# -ge 2 ]] || die "--base-dir requires a value"; CLI_BASE_DIR="$2"; shift 2 ;;
     --recover-local) RECOVER_LOCAL=1; shift ;;
-    --web-worker) WEB_MODE=1; shift ;;
+    --reconcile-incomplete-create) RECONCILE_INCOMPLETE=1; shift ;;
+    --executor-mode) WEB_MODE=1; shift ;;
     --token-fd) [[ $# -ge 2 ]] || die "--token-fd requires a value"; TOKEN_FD="$2"; shift 2 ;;
-    --result-fd) [[ $# -ge 2 ]] || die "--result-fd requires a value"; RESULT_FD="$2"; shift 2 ;;
     --privileged-fd) [[ $# -ge 2 ]] || die "--privileged-fd requires a value"; PRIVILEGED_FD="$2"; shift 2 ;;
     --lock-already-held) LOCK_ALREADY_HELD=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -446,18 +513,28 @@ set -- "${POSITIONAL[@]}"
 [[ $# -eq 1 ]] || { usage; exit 1; }
 
 if [[ "$WEB_MODE" == "1" ]]; then
-  [[ "${GRT_WEB_CONTEXT:-0}" == "1" ]] || die "Internal Web mode requires dispatcher context."
-  [[ "$PRIVILEGED_FD" =~ ^[0-9]+$ && "$LOCK_ALREADY_HELD" == "1" ]] || die "Incomplete internal Web lifecycle context."
-  if [[ "$RECOVER_LOCAL" != "1" ]]; then
-    [[ "$TOKEN_FD" =~ ^[0-9]+$ && "$RESULT_FD" =~ ^[0-9]+$ ]] || die "Normal Web removal requires token and result FD."
+  [[ "${GRT_EXECUTOR_CONTEXT:-0}" == "1" ]] ||
+    die "Internal Executor mode requires trusted context."
+  [[ "$PRIVILEGED_FD" =~ ^[0-9]+$ && "$LOCK_ALREADY_HELD" == "1" ]] ||
+    die "Incomplete internal Executor lifecycle context."
+  if [[ "$RECOVER_LOCAL" != "1" && "$RECONCILE_INCOMPLETE" != "1" ]]; then
+    [[ "$TOKEN_FD" =~ ^[0-9]+$ ]] || die "Normal noninteractive removal requires token FD."
   fi
   web_context_check
-elif [[ -n "$TOKEN_FD" || -n "$RESULT_FD" || -n "$PRIVILEGED_FD" || "$LOCK_ALREADY_HELD" == "1" ]]; then
-  die "Internal Web options are not available in normal CLI mode."
+elif [[ -n "$TOKEN_FD" || -n "$PRIVILEGED_FD" || "$LOCK_ALREADY_HELD" == "1" ]]; then
+  die "Internal Executor options are not available in normal CLI mode."
 fi
 
 REPO="$1"
-[[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "Repository must be in OWNER/REPO form."
+GRT_LOG_READY=1
+if [[ ! "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ${#REPO} -gt 201 ]]; then
+  GRT_LOG_REPO="none"
+  grt_log operation failed invalid_input
+  echo "ERROR: Repository must be in OWNER/REPO form." >&2
+  exit 1
+fi
+GRT_LOG_REPO="$REPO"
+grt_log operation begin
 OWNER="${REPO%%/*}"; REPO_NAME="${REPO##*/}"
 SAFE_REPO="$(sanitize_component "$REPO_NAME")" || die "Could not derive safe repository name."
 LOCAL_ID="$(make_local_id "$OWNER" "$REPO_NAME")" || die "Could not derive local identity."
@@ -524,7 +601,11 @@ INFO
     [[ "$CONFIRM" == "RECOVER-REMOVE" ]] || die "Cancelled."
   fi
 
+  # Local-only recovery changes systemd/files without remote registration.
+  # A logger failure must not abort after this existing mutation boundary.
+  GRT_LOG_SIDE_EFFECT=1
   if [[ "$SERVICE_STATE" != "absent" ]]; then
+    grt_log service_stop begin
     echo "==> Stopping service..."
     if [[ "$WEB_MODE" == "1" ]]; then
       web_service_operation service_stop "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME" ||
@@ -599,6 +680,77 @@ fi
 
 [[ -n "$RUNNER_DIR" ]] || die "Runner directory not found for $REPO"
 [[ -f "$RUNNER_DIR/.runner" ]] || die "Configured runner metadata not found: $RUNNER_DIR/.runner"
+
+if [[ "$RECONCILE_INCOMPLETE" == "1" ]]; then
+  [[ "$WEB_MODE" != "1" ]] || die "Incomplete Create reconciliation is interactive CLI-only."
+  [[ "$RECOVER_LOCAL" != "1" ]] || die "Recovery modes cannot be combined."
+  [[ -x "$RUNNER_DIR/config.sh" ]] || die "Runner config.sh is missing or not executable."
+  RUNNER_NAME="$(jq -er '.agentName' "$RUNNER_DIR/.runner")" ||
+    die "Configured Runner name is unavailable."
+  GRT_LOG_RUNNER="$RUNNER_NAME"
+  cat <<INFO
+Repository : $REPO
+Runner dir : $RUNNER_DIR
+Mode       : incomplete Create reconciliation
+Runner     : $RUNNER_NAME
+
+This path is only for an authority-attested REGISTERED_UNIT_INCOMPLETE
+Create with no Unit and no .service. It writes durable Remove intent before
+calling the official GitHub unregister flow. Any uncertain remote result
+preserves all local evidence and stops.
+INFO
+  TOKEN="$(read_tty_line "Paste fresh GitHub removal token: " 1)"
+  [[ -n "$TOKEN" ]] || die "Removal token cannot be empty."
+  CONFIRM="$(read_tty_line "Type RECONCILE-REMOVE to unregister this failed Create: ")"
+  [[ "$CONFIRM" == "RECONCILE-REMOVE" ]] || die "Cancelled."
+
+  GRT_LOG_STAGE="BEGIN"
+  grt_log lifecycle_checkpoint begin
+  cli_remove_authority RECONCILE_BEGIN
+  GRT_LOG_SIDE_EFFECT=1
+  grt_log lifecycle_checkpoint ok
+
+  cd "$RUNNER_DIR"
+  GRT_LOG_STAGE="REMOTE_REMOVE_OUTCOME_UNKNOWN"
+  grt_log remote_removal begin
+  if ./config.sh remove --token "$TOKEN"; then
+    unset TOKEN
+    grt_log remote_removal ok
+  else
+    REMOVE_EXIT=$?
+    unset TOKEN
+    GRT_LOG_LAST_REASON="remote_result_uncertain"
+    grt_log remote_removal unknown remote_result_uncertain
+    die "Runner registration removal failed or remains uncertain."
+  fi
+
+  GRT_LOG_STAGE="CONFIRM_REMOTE_REMOVED"
+  grt_log lifecycle_checkpoint begin
+  cli_remove_authority RECONCILE_CONFIRM_REMOTE_REMOVED
+  RECONCILE_PROOF_DEVICE="$(jq -er '.device | numbers' <<<"$CLI_REMOVE_PROOF")" || die "Reconciliation authority returned invalid target device."
+  RECONCILE_PROOF_INODE="$(jq -er '.inode | numbers' <<<"$CLI_REMOVE_PROOF")" || die "Reconciliation authority returned invalid target inode."
+  grt_log lifecycle_checkpoint ok
+
+  cd "$RUNNER_BASE_DIR"
+  case "$RUNNER_DIR" in
+    "$RUNNER_BASE_DIR"/actions-runner-*) ;;
+    *) die "Safety check failed; refusing to delete unexpected path: $RUNNER_DIR" ;;
+  esac
+  GRT_LOG_STAGE="REGISTERED_REMOVED_LOCAL_CLEANUP_PENDING"
+  grt_log local_cleanup begin
+  python3 "${BASH_SOURCE[0]%/*}/web-runner-cleanup.py" "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RECONCILE_PROOF_DEVICE" "$RECONCILE_PROOF_INODE" || die "Bounded reconciliation cleanup rejected; remote unregister is confirmed and local evidence is preserved."
+  [[ ! -e "$RUNNER_DIR" && ! -L "$RUNNER_DIR" ]] ||
+    die "Runner directory still exists after bounded reconciliation cleanup."
+  grt_log local_cleanup ok
+
+  GRT_LOG_STAGE="CREATE_ABORTED_RECONCILED"
+  grt_log lifecycle_checkpoint begin
+  cli_remove_authority RECONCILE_COMPLETE
+  grt_log lifecycle_checkpoint ok
+  echo "Incomplete Create reconciled and removed successfully."
+  exit 0
+fi
+
 [[ -x "$RUNNER_DIR/config.sh" && -x "$RUNNER_DIR/svc.sh" ]] || die "Runner management scripts are missing from: $RUNNER_DIR"
 
 cat <<INFO
@@ -612,45 +764,119 @@ Before continuing, open:
 Select the runner, choose Remove, and copy the temporary removal token.
 INFO
 
+RUNNER_NAME="$(jq -er '.agentName' "$RUNNER_DIR/.runner")" ||
+  die "Configured Runner name is unavailable."
 if [[ "$WEB_MODE" != "1" ]]; then
   TOKEN="$(read_tty_line "Paste GitHub removal token: " 1)"
   [[ -n "$TOKEN" ]] || die "Removal token cannot be empty."
   CONFIRM="$(read_tty_line "Type REMOVE to unregister and delete this runner: ")"
   [[ "$CONFIRM" == "REMOVE" ]] || die "Cancelled."
+  remove_lifecycle_stage BEGIN
 fi
 
 cd "$RUNNER_DIR"
 if [[ "$WEB_MODE" == "1" ]]; then
-  web_token_from_fd || die "Invalid Web removal token input."
   RUNNER_NAME="$(jq -er '.agentName' "$RUNNER_DIR/.runner")" || die "Configured runner name is unavailable."
-  SERVICE_NAME="$(read_service_name_strict "$RUNNER_DIR/.service")" || die "Configured service identity is unavailable."
+  SERVICE_NAME="actions.runner.${OWNER}-${REPO_NAME}.${RUNNER_NAME}.service"
+  [[ "${#SERVICE_NAME}" -le 150 ]] || die "Unsupported service identity."
+  REMOVE_STAGE="preflight_failed"
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" identity "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
+    die "Configured runner identity cannot be verified."
+  if [[ ! -e "$RUNNER_DIR/.service" && ! -L "$RUNNER_DIR/.service" ]]; then
+    REMOVE_STAGE="unknown_failed"
+    die "Runner service record missing; previous remote outcome requires manual review."
+  fi
+  if compgen -G "$RUNNER_DIR/.grt-service-reconcile-*" >/dev/null; then
+    REMOVE_STAGE="unknown_failed"
+    die "Previous service record quarantine requires manual review."
+  fi
+  REMOVE_STAGE="permission_reconcile_failed"
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" registration_check "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
+    die "Runner registration file permissions require trusted administrator review."
+  REMOVE_STAGE="service_record_reconcile_failed"
+  [[ -f "$RUNNER_DIR/.service" && ! -L "$RUNNER_DIR/.service" ]] ||
+    die "Runner service record unsafe; manual inspection required."
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" check "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" ||
+    die "Configured service identity is unavailable or incompatible."
+  REMOVE_STAGE="preflight_failed"
+  remove_lifecycle_stage BEGIN || die "Cannot persist removal attempt identity; no service mutation started."
   REMOVE_STAGE="service_state_failed"
   SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
     die "Could not validate privileged systemd service state."
   if [[ "$SERVICE_STATE" != "absent" ]]; then
     REMOVE_STAGE="service_stop_failed"
+    grt_log service_stop begin
     web_service_operation service_stop "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME" ||
       die "Privileged service stop failed."
+    grt_log service_stop ok
     REMOVE_STAGE="service_uninstall_failed"
+    grt_log service_uninstall begin
     web_service_operation service_uninstall "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME" ||
       die "Privileged service uninstall failed."
+    grt_log service_uninstall ok
   fi
+  REMOVE_STAGE="service_uninstall_failed"
+  FINAL_SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
+    die "Cannot verify final service state before record reconciliation."
+  [[ "$FINAL_SERVICE_STATE" == "absent" ]] ||
+    die "Systemd unit still exists; preserving service record."
+  REMOVE_STAGE="service_record_reconcile_failed"
+  RECORD_PROOF="$(python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" quarantine "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME")" ||
+    die "Local service record reconciliation failed."
+  REMOVE_STAGE="service_uninstall_failed"
+  FINAL_SERVICE_STATE="$(web_service_state "$REPO" "$RUNNER_DIR" "$RUNNER_NAME" "$SERVICE_NAME")" ||
+    die "Cannot verify final service state after record reconciliation."
+  [[ "$FINAL_SERVICE_STATE" == "absent" ]] ||
+    die "Systemd service state changed after reconciliation."
+  REMOVE_STAGE="service_record_reconcile_failed"
+  python3 "${BASH_SOURCE[0]%/*}/web-service-record.py" verify "$RUNNER_BASE_DIR" "$RUNNER_DIR" "$REPO" "$RUNNER_NAME" "$SERVICE_NAME" "$RECORD_PROOF" ||
+    die "Local service record identity changed after reconciliation."
 else
+  grt_log service_stop begin
   echo "==> Stopping service..."
   if ! sudo ./svc.sh stop; then
     echo "WARNING: Service stop failed; continuing to service uninstall in case it is already stopped." >&2
   fi
+  grt_log service_stop ok
+  grt_log service_uninstall begin
   echo "==> Uninstalling service..."
   uninstall_service_safely
+  grt_log service_uninstall ok
 fi
 
+grt_log remote_removal begin
 echo "==> Removing runner registration from GitHub..."
 if [[ "$WEB_MODE" == "1" ]]; then
   REMOVE_STAGE="config_remove_failed"
-  if ( exec {RESULT_FD}>&-; ./config.sh remove --token "$TOKEN" >/dev/null 2>&1 ); then
-    unset TOKEN
+  # The Executor consumes the one-shot FD through the existing PTY adapter.
+  # Never expose the token in CLI argv, env or persistent state.
+  PTY_ADAPTER="${GRT_PTY_ADAPTER:-/usr/local/lib/github-runner-tools/web/pty_token_adapter.py}"
+  [[ -x "$PTY_ADAPTER" ]] || die "Trusted removal token adapter unavailable."
+  if (
+    # Root privilege FD4 belongs only to the trusted CLI shell. The
+    # external GitHub config and PTY adapter must never inherit it.
+    exec 4>&-
+    python3 "$PTY_ADAPTER" --token-fd "$TOKEN_FD" --mode remove -- ./config.sh remove >/dev/null 2>&1
+  ); then
+    REMOVE_RC=0
   else
-    REMOVE_EXIT="$?"
+    REMOVE_RC=$?
+  fi
+  # The adapter owns the single read; close Bash's inherited copy before
+  # any subsequent privileged file or service operation, on both outcomes.
+  exec {TOKEN_FD}<&-
+  if [[ "$REMOVE_RC" == "0" ]]; then
+    grt_log remote_removal ok
+    unset TOKEN
+    REMOVE_STAGE="local_cleanup_failed"
+    remove_lifecycle_stage CONFIRM_REMOTE_REMOVED ||
+      die "Official unregister succeeded but durable local cleanup authorization failed."
+    REMOVE_PROOF_DEVICE="$(jq -er '.device | numbers' <<<"$WEB_PRIV_RESPONSE")" ||
+      die "Cleanup authority returned invalid target device."
+    REMOVE_PROOF_INODE="$(jq -er '.inode | numbers' <<<"$WEB_PRIV_RESPONSE")" ||
+      die "Cleanup authority returned invalid target inode."
+  else
+    REMOVE_EXIT="$REMOVE_RC"
     # Bash's 128+signal convention cannot distinguish a killed child from
     # a normal program deliberately exiting with the same numeric status.
     # All such ambiguous statuses are conservatively unknown.
@@ -659,19 +885,26 @@ if [[ "$WEB_MODE" == "1" ]]; then
       REMOVE_EXIT="unknown"
     fi
     unset TOKEN
+    grt_log remote_removal unknown remote_result_uncertain
     die "Runner registration removal failed or remains uncertain."
   fi
 else
   ./config.sh remove --token "$TOKEN"
   unset TOKEN
+  grt_log remote_removal ok
+  remove_lifecycle_stage CONFIRM_REMOTE_REMOVED
 fi
 
 REMOVE_STAGE="local_cleanup_failed"
 cd "$RUNNER_BASE_DIR"
 case "$RUNNER_DIR" in "$RUNNER_BASE_DIR"/actions-runner-*) ;; *) die "Safety check failed; refusing to delete unexpected path: $RUNNER_DIR" ;; esac
 
+grt_log local_cleanup begin
 echo "==> Deleting local runner directory..."
-rm -rf -- "$RUNNER_DIR"
+remove_local_runner_dir
+grt_log local_cleanup ok
+remove_lifecycle_stage COMPLETE ||
+  die "Runner directory deletion completed but durable Remove closeout failed."
 
 echo
 cat <<DONE

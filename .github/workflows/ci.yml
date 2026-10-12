@@ -1,22 +1,82 @@
-name: CI
+name: Development Check
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: dev-check-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  tests:
+  development:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Install test prerequisites
+      - name: Shell syntax and fresh-install contracts
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq rsync
-      - name: Run test suite
-        run: bash tests/run-all.sh
+          for script in scripts/*.sh; do bash -n "$script"; done
+          bash -n tests/test-fresh-install-debian-fixture.sh
+          bash -n tests/fixtures/fresh-install-systemctl.sh
+          bash -n tests/fixtures/fresh-install-ps.sh
+          bash -n tests/fixtures/fresh-install-apt-get.sh
+          bash tests/test-install-lan.sh
+          python3 tests/test-fresh-install-contract.py
+      - name: Python syntax and CLI logging
+        run: |
+          python3 -m compileall -q web scripts/cli-operational-logger.py
+          python3 tests/test-cli-operational-logging.py
+          python3 tests/test-cli-operational-faults.py
+          python3 tests/test-cli-operational-end-to-end.py
+          python3 tests/test-cli-authority-reason-transport.py
+          python3 tests/test-cli-operational-v2-updater.py
+          python3 tests/test-cli-operational-updater-faults.py
+      - name: V2 fast validation
+        run: |
+          python3 tests/test-web-v2-executor-contract.py
+          python3 tests/test-web-v2-status.py
+          python3 tests/test-web-v2-token-fd.py
+          python3 tests/test-web-v2-executor-transport.py
+          python3 tests/test-web-v2-cli-executor-flags.py
+          python3 tests/test-web-v2-cli-launcher.py
+          python3 tests/test-web-v2-executor-daemon.py
+          python3 tests/test-web-v2-privileged.py
+          python3 tests/test-web-v2-cli-spawn.py
+          python3 tests/test-web-v2-mutation.py
+          python3 tests/test-web-v2-remove-guard.py
+          python3 tests/test-web-v2-binding.py
+          python3 tests/test-web-v2-event-loop.py
+          python3 tests/test-web-v2-unit-installer.py
+          python3 tests/test-web-v2-failure.py
+          python3 tests/test-web-v2-code-provenance.py
+          python3 tests/test-web-v2-cli-remove-authority.py
+      - name: Existing pure and Web compatibility regression
+        run: |
+          bash tests/test-pure.sh
+          python3 tests/test-web-management.py
+
+  fresh-install-debian:
+    needs: development
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Debian 13 root-isolated fresh-install acceptance
+        run: bash tests/test-fresh-install-debian-fixture.sh
+
+  fresh-install-ubuntu:
+    needs: development
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ubuntu 24.04 root-isolated fresh-install acceptance
+        env:
+          GRT_FIXTURE_BASE_IMAGE: ubuntu:24.04
+        run: bash tests/test-fresh-install-debian-fixture.sh

@@ -25,8 +25,6 @@ sys.path.insert(0, str(WEB))
 
 import grt_web_common as common
 import app as web_app
-import dispatcher
-import lifecycle_worker
 
 
 class CommonTests(unittest.TestCase):
@@ -70,9 +68,12 @@ class SessionAndBrowserTests(unittest.TestCase):
 
     def test_cookie_and_cache_security_are_present(self):
         source = (WEB / "app.py").read_text(encoding="utf-8")
-        self.assertIn("Secure; HttpOnly; SameSite=Strict", source)
+        self.assertIn("HttpOnly; SameSite=Strict", source)
+        self.assertIn('WEB_COOKIE_SECURE', source)
         self.assertIn('Cache-Control", "no-store"', source)
-        self.assertIn('bind != "127.0.0.1"', source)
+        self.assertIn("RFC1918", source)
+        self.assertNotIn("V2_EXECUTOR_MODE", source)
+        self.assertNotIn("web-dispatch.sock", source)
 
 
 class TokenAdapterTests(unittest.TestCase):
@@ -129,201 +130,6 @@ class TokenAdapterTests(unittest.TestCase):
             self.assertTrue(result["token_ok"])
             self.assertFalse(result["argv_has"])
             self.assertFalse(result["env_has"])
-
-
-class WorkerProtocolTests(unittest.TestCase):
-    def test_worker_reads_dispatch_request_from_pipe(self):
-        read_fd, write_fd = os.pipe()
-        try:
-            os.write(write_fd, b'{"op":"list"}\n')
-            os.close(write_fd)
-            write_fd = -1
-            self.assertEqual(lifecycle_worker.read_request(read_fd), {"op": "list"})
-        finally:
-            os.close(read_fd)
-            if write_fd >= 0:
-                os.close(write_fd)
-
-
-class DispatcherAuthorityTests(unittest.TestCase):
-    def runtime(self):
-        rt = object.__new__(dispatcher.Runtime)
-        rt.runner_user = "actions"
-        rt.runner_home = "/home/actions"
-        return rt
-
-    @staticmethod
-    def regular_root_stat():
-        obj = mock.Mock()
-        obj.st_mode = stat.S_IFREG | 0o644
-        obj.st_uid = 0
-        return obj
-
-    def base_props(self):
-        return {
-            "LoadState": "loaded",
-            "FragmentPath": "/etc/systemd/system/actions.runner.owner-repo.runner.service",
-            "DropInPaths": "",
-            "User": "actions",
-            "WorkingDirectory": "/home/actions/actions-runner-owner--repo",
-            "ExecStart": "{ path=/home/actions/actions-runner-owner--repo/runsvc.sh ; argv[]=/home/actions/actions-runner-owner--repo/runsvc.sh ; }",
-            "ExecStartPre": "",
-            "ExecStartPost": "",
-            "ExecStop": "",
-            "ExecStopPost": "",
-            "ExecReload": "",
-        }
-
-    def validate_with(self, props):
-        rt = self.runtime()
-        rt.runner_group = "actions"
-        rt._systemctl_show = mock.Mock(return_value=props)
-        service = "actions.runner.owner-repo.runner.service"
-        unit = (
-            "[Service]\n"
-            "User=actions\n"
-            "WorkingDirectory=/home/actions/actions-runner-owner--repo\n"
-            "ExecStart=/home/actions/actions-runner-owner--repo/runsvc.sh\n"
-        )
-        with mock.patch("dispatcher.os.path.realpath", side_effect=lambda p: p), \
-             mock.patch("dispatcher.os.path.islink", return_value=False), \
-             mock.patch("dispatcher.os.stat", return_value=self.regular_root_stat()), \
-             mock.patch("builtins.open", mock.mock_open(read_data=unit)):
-            return rt.validate_unit(
-                "owner/repo",
-                "/home/actions/actions-runner-owner--repo",
-                "runner",
-                service,
-            )
-
-    def test_canonical_unit_passes(self):
-        state, _ = self.validate_with(self.base_props())
-        self.assertEqual(state, "present")
-
-    def test_dropin_fails_closed(self):
-        props = self.base_props()
-        props["DropInPaths"] = "/etc/systemd/system/x.d/evil.conf"
-        with self.assertRaises(dispatcher.DispatchError):
-            self.validate_with(props)
-
-    def test_extra_exec_fails_closed(self):
-        props = self.base_props()
-        props["ExecStartPre"] = "{ path=/bin/sh ; argv[]=/bin/sh -c evil ; }"
-        with self.assertRaises(dispatcher.DispatchError):
-            self.validate_with(props)
-
-    def test_wrong_user_fails_closed(self):
-        props = self.base_props()
-        props["User"] = "root"
-        with self.assertRaises(dispatcher.DispatchError):
-            self.validate_with(props)
-
-    def test_wrong_fragment_fails_closed(self):
-        props = self.base_props()
-        props["FragmentPath"] = "/tmp/unmanaged.service"
-        with self.assertRaises(dispatcher.DispatchError):
-            self.validate_with(props)
-
-    def test_wrong_working_directory_fails_closed(self):
-        props = self.base_props()
-        props["WorkingDirectory"] = "/home/actions/actions-runner-other--repo"
-        with self.assertRaises(dispatcher.DispatchError):
-            self.validate_with(props)
-
-    def test_wrong_execstart_fails_closed(self):
-        props = self.base_props()
-        props["ExecStart"] = "{ path=/tmp/evil ; argv[]=/tmp/evil ; }"
-        with self.assertRaises(dispatcher.DispatchError):
-            self.validate_with(props)
-
-    def test_privileged_schema_rejects_unknown_extra_malformed_and_injection(self):
-        rt = self.runtime()
-        rt.runner_group = "actions"
-        self.assertEqual(
-            rt.privileged({"op": "unknown"}),
-            {"ok": False, "error": "unknown_privileged_operation"},
-        )
-        self.assertEqual(
-            rt.privileged({"op": "context_check", "extra": "x"}),
-            {"ok": False, "error": "invalid_privileged_fields"},
-        )
-        for repository in ("bad", "owner/repo;rm", "../owner/repo"):
-            result = rt.privileged(
-                {
-                    "op": "service_state",
-                    "repository": repository,
-                    "runner_dir": "/home/actions/actions-runner-owner--repo",
-                    "runner_name": "runner",
-                    "service": "actions.runner.owner-repo.runner.service",
-                }
-            )
-            self.assertEqual(result, {"ok": False, "error": "privileged_validation_failed"})
-
-    def test_dispatcher_never_reflects_submitted_token(self):
-        token = "SECRET_DISPATCH_TOKEN"
-        sent = []
-        fake_request = mock.Mock()
-        fake_request.sendall.side_effect = sent.append
-        runtime = SimpleNamespace(web_pw=SimpleNamespace(pw_uid=4242))
-        server = SimpleNamespace(
-            runtime=runtime,
-            execute=mock.Mock(return_value={"ok": False, "error": token}),
-        )
-        handler = object.__new__(dispatcher.DispatchHandler)
-        handler.request = fake_request
-        handler.server = server
-        with mock.patch("dispatcher.unix_peer_uid", return_value=4242), \
-             mock.patch(
-                 "dispatcher.recv_json_line",
-                 return_value={"op": "create", "repository": "owner/repo", "token": token},
-             ):
-            handler.handle()
-        response = b"".join(sent).decode("utf-8")
-        self.assertNotIn(token, response)
-        self.assertEqual(
-            json.loads(response.strip()),
-            {"ok": False, "error": "internal_error"},
-        )
-
-    def test_public_dispatch_rejects_unknown_fields_before_execute(self):
-        sent = []
-        fake_request = mock.Mock()
-        fake_request.sendall.side_effect = sent.append
-        runtime = SimpleNamespace(web_pw=SimpleNamespace(pw_uid=4242))
-        server = SimpleNamespace(runtime=runtime, execute=mock.Mock())
-        handler = object.__new__(dispatcher.DispatchHandler)
-        handler.request = fake_request
-        handler.server = server
-        with mock.patch("dispatcher.unix_peer_uid", return_value=4242), \
-             mock.patch(
-                 "dispatcher.recv_json_line",
-                 return_value={"op": "create", "repository": "owner/repo", "token": "x", "command": "id"},
-             ):
-            handler.handle()
-        self.assertFalse(server.execute.called)
-        reply = json.loads(sent[0].decode("utf-8").strip())
-        self.assertEqual(reply, {"ok": False, "error": "invalid_request_fields"})
-
-    def test_repository_directory_binding_fails_closed(self):
-        rt = self.runtime()
-        with mock.patch("dispatcher.os.path.realpath", side_effect=lambda p: p), \
-             mock.patch("dispatcher.os.path.islink", return_value=False):
-            with self.assertRaises(dispatcher.DispatchError):
-                rt.validate_runner_dir(
-                    "owner/repo",
-                    "/home/actions/actions-runner-someone--else",
-                )
-
-    def test_public_schema_has_no_command_path_fields(self):
-        forbidden = {"exec", "shell", "command", "path", "script", "argv", "uid", "gid", "service_name", "systemd_unit"}
-        for fields in dispatcher.ALLOWED_PUBLIC.values():
-            self.assertTrue(forbidden.isdisjoint(fields))
-
-    def test_worker_hardens_same_uid_fd_boundary(self):
-        source = (WEB / "lifecycle_worker.py").read_text(encoding="utf-8")
-        self.assertIn("PR_SET_DUMPABLE", source)
-        self.assertIn("disable_ptrace_dumpability()", source)
-
 
 
 class FrozenSessionContractTests(unittest.TestCase):
@@ -436,9 +242,9 @@ class WebHTTPContractTests(unittest.TestCase):
         config = base / "web.conf"
         auth = base / "web-auth.conf"
         config.write_text(
-            "WEB_BIND_ADDRESS=127.0.0.1\n"
+            "WEB_BIND_ADDRESS=192.168.1.10\n"
             "WEB_PORT=0\n"
-            "DISPATCH_SOCKET=/nonexistent/web-dispatch.sock\n"
+            "WEB_COOKIE_SECURE=0\n"
             "MUTATION_TIMEOUT_SECONDS=1\n",
             encoding="utf-8",
         )
@@ -525,6 +331,9 @@ class WebHTTPContractTests(unittest.TestCase):
             "runners": [
                 {
                     "repository": "owner/repo",
+                    "runner_name": "local-ci-owner--repo",
+                    "runner_id": 123,
+                    "instance": "0123456789abcdef0123456789abcdef",
                     "can_remove": True,
                     "can_recover_local": True,
                 }
@@ -576,7 +385,7 @@ class WebHTTPContractTests(unittest.TestCase):
         )
         self.assertEqual(status, 403)
 
-        with mock.patch("app.dispatch", return_value={"ok": True}):
+        with mock.patch("app.dispatch", side_effect=[eligible, {"ok": True}]):
             status, _headers, _body = self.request(
                 "POST",
                 "/remove/confirm",
@@ -598,7 +407,9 @@ class WebHTTPContractTests(unittest.TestCase):
         eligible = {
             "ok": True,
             "runners": [
-                {"repository": "owner/repo", "can_remove": True, "can_recover_local": False}
+                {"repository": "owner/repo", "runner_name": "local-ci-owner--repo",
+                 "runner_id": 123, "instance": "0123456789abcdef0123456789abcdef",
+                 "can_remove": True, "can_recover_local": False}
             ],
         }
         with mock.patch("app.dispatch", return_value=eligible):
@@ -696,19 +507,30 @@ class WebHTTPContractTests(unittest.TestCase):
         self.assertNotIn(token, json.dumps(sess))
 
 
-    def test_valid_login_establishes_opaque_secure_cookie(self):
+    def test_valid_login_establishes_opaque_http_cookie(self):
         status, headers, _body = self.request(
             "POST", "/login", {"password": "correct-password"}
         )
         self.assertEqual(status, 303)
         cookie = headers.get("Set-Cookie", "")
         self.assertIn(f"{web_app.COOKIE_NAME}=", cookie)
-        self.assertIn("Secure", cookie)
+        self.assertNotIn("Secure", cookie)
         self.assertIn("HttpOnly", cookie)
         self.assertIn("SameSite=Strict", cookie)
         sid = cookie.split(";", 1)[0].split("=", 1)[1]
         self.assertIn(sid, web_app.SESSIONS)
         self.assertNotIn("authenticated", sid)
+
+    def test_https_cookie_mode_can_explicitly_add_secure(self):
+        self.app.config["WEB_COOKIE_SECURE"] = "1"
+        status, headers, _body = self.request(
+            "POST", "/login", {"password": "correct-password"}
+        )
+        self.assertEqual(status, 303)
+        cookie = headers.get("Set-Cookie", "")
+        self.assertIn("; Secure;", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
 
     def test_create_validation_and_typed_dispatch(self):
         cookie, sess = self.new_cookie_session()
@@ -887,327 +709,6 @@ class WebHTTPContractTests(unittest.TestCase):
         self.assertIn(nonce, sess_a["confirm"])
 
 
-class DispatcherAndWorkerAuthorityTests(unittest.TestCase):
-    def test_same_uid_fake_socketpair_cannot_authorize_web_context(self):
-        if os.geteuid() == 0:
-            self.skipTest("negative same-UID test requires non-root test runner")
-        left, right = socketpair = __import__("socket").socketpair()
-        try:
-            # A fake actions-side peer has the current non-root uid.
-            self.assertEqual(lifecycle_worker.privileged_peer_uid(left.fileno()), os.geteuid())
-            with self.assertRaises(RuntimeError):
-                lifecycle_worker.privileged_context_check(left.fileno())
-        finally:
-            left.close()
-            right.close()
-
-    def test_worker_identity_requires_exact_uid_gid_no_groups_no_caps_path(self):
-        uid, gid = 1234, 2345
-        with mock.patch("lifecycle_worker.os.geteuid", return_value=uid), \
-             mock.patch("lifecycle_worker.os.getegid", return_value=gid), \
-             mock.patch("lifecycle_worker.os.getresuid", return_value=(uid, uid, uid)), \
-             mock.patch("lifecycle_worker.os.getresgid", return_value=(gid, gid, gid)), \
-             mock.patch("lifecycle_worker.os.getgroups", return_value=[]), \
-             mock.patch("builtins.open", mock.mock_open(read_data=(
-                 "CapInh:\t0000000000000000\n"
-                 "CapPrm:\t0000000000000000\n"
-                 "CapEff:\t0000000000000000\n"
-                 "CapAmb:\t0000000000000000\n"
-             ))):
-            self.assertTrue(lifecycle_worker.verify_unprivileged_identity(uid, gid))
-
-        with mock.patch("lifecycle_worker.os.geteuid", return_value=uid), \
-             mock.patch("lifecycle_worker.os.getegid", return_value=gid), \
-             mock.patch("lifecycle_worker.os.getresuid", return_value=(uid, uid, uid)), \
-             mock.patch("lifecycle_worker.os.getresgid", return_value=(gid, gid, gid)), \
-             mock.patch("lifecycle_worker.os.getgroups", return_value=[999]):
-            self.assertFalse(lifecycle_worker.verify_unprivileged_identity(uid, gid))
-
-    def test_worker_drops_capabilities_groups_gid_uid_in_security_order(self):
-        calls = []
-        uid, gid = 1234, 2345
-        with mock.patch("lifecycle_worker.os.geteuid", return_value=0), \
-             mock.patch(
-                 "lifecycle_worker.clear_capabilities_for_identity_drop",
-                 side_effect=lambda: calls.append(("caps", None)),
-             ), \
-             mock.patch("lifecycle_worker.os.setgroups", side_effect=lambda v: calls.append(("groups", v))), \
-             mock.patch("lifecycle_worker.os.setresgid", side_effect=lambda a, b, c: calls.append(("gid", (a, b, c)))), \
-             mock.patch("lifecycle_worker.os.setresuid", side_effect=lambda a, b, c: calls.append(("uid", (a, b, c)))), \
-             mock.patch("lifecycle_worker.verify_unprivileged_identity", return_value=True):
-            lifecycle_worker.drop_to_runner_identity(uid, gid)
-        self.assertEqual(
-            calls,
-            [
-                ("caps", None),
-                ("groups", []),
-                ("gid", (gid, gid, gid)),
-                ("uid", (uid, uid, uid)),
-            ],
-        )
-
-    def test_worker_drop_failure_is_fatal_and_staged(self):
-        cases = [
-            (
-                "capability_clear_failed",
-                "lifecycle_worker.clear_capabilities_for_identity_drop",
-                OSError(1, "SECRET capability failure"),
-            ),
-            (
-                "setgroups_failed",
-                "lifecycle_worker.os.setgroups",
-                OSError(1, "SECRET setgroups failure"),
-            ),
-            (
-                "setgid_failed",
-                "lifecycle_worker.os.setresgid",
-                OSError(1, "SECRET setgid failure"),
-            ),
-            (
-                "setuid_failed",
-                "lifecycle_worker.os.setresuid",
-                OSError(1, "SECRET setuid failure"),
-            ),
-        ]
-        for expected_stage, target, side_effect in cases:
-            with self.subTest(stage=expected_stage), \
-                 mock.patch("lifecycle_worker.os.geteuid", return_value=0), \
-                 mock.patch("lifecycle_worker.clear_capabilities_for_identity_drop"), \
-                 mock.patch("lifecycle_worker.os.setgroups"), \
-                 mock.patch("lifecycle_worker.os.setresgid"), \
-                 mock.patch("lifecycle_worker.os.setresuid"), \
-                 mock.patch("lifecycle_worker.verify_unprivileged_identity", return_value=True), \
-                 mock.patch(target, side_effect=side_effect):
-                with self.assertRaises(lifecycle_worker.IdentityDropError) as cm:
-                    lifecycle_worker.drop_to_runner_identity(1234, 2345)
-                self.assertEqual(cm.exception.stage, expected_stage)
-
-        with mock.patch("lifecycle_worker.os.geteuid", return_value=0), \
-             mock.patch("lifecycle_worker.clear_capabilities_for_identity_drop"), \
-             mock.patch("lifecycle_worker.os.setgroups"), \
-             mock.patch("lifecycle_worker.os.setresgid"), \
-             mock.patch("lifecycle_worker.os.setresuid"), \
-             mock.patch("lifecycle_worker.verify_unprivileged_identity", return_value=False):
-            with self.assertRaises(lifecycle_worker.IdentityDropError) as cm:
-                lifecycle_worker.drop_to_runner_identity(1234, 2345)
-            self.assertEqual(cm.exception.stage, "identity_verification_failed")
-
-    def test_worker_identity_diagnostic_is_bounded_and_secret_free(self):
-        secret = "DO_NOT_LOG_WORKER_SECRET"
-        exc = lifecycle_worker.IdentityDropError(
-            "capability_clear_failed", OSError(1, secret)
-        )
-        out = io.StringIO()
-        with contextlib.redirect_stderr(out):
-            lifecycle_worker.worker_diagnostic(exc.stage, exc)
-        logged = out.getvalue()
-        self.assertIn("worker_diag stage=capability_clear_failed", logged)
-        self.assertIn("exc=PermissionError", logged)
-        self.assertIn("errno=1", logged)
-        self.assertNotIn(secret, logged)
-
-    def test_dispatcher_diagnostic_is_bounded_and_does_not_log_exception_text(self):
-        secret = "DO_NOT_LOG_THIS_SECRET"
-        out = io.StringIO()
-        exc = OSError(13, secret)
-        with contextlib.redirect_stderr(out):
-            dispatcher.diagnostic("worker_spawn", exc, returncode=7, ignored=secret)
-        logged = out.getvalue()
-        self.assertIn("stage=worker_spawn", logged)
-        self.assertIn("exc=PermissionError", logged)
-        self.assertIn("errno=13", logged)
-        self.assertIn("returncode=7", logged)
-        self.assertNotIn(secret, logged)
-        self.assertNotIn("ignored=", logged)
-
-    def test_dispatcher_forwards_only_fixed_worker_diagnostics(self):
-        secret = "DO_NOT_FORWARD_SECRET"
-        incoming = (
-            "worker_diag stage=capability_clear_failed exc=PermissionError errno=1\n"
-            f"{secret}\n"
-            f"worker_diag stage=capability_clear_failed exc={secret}\n"
-        )
-        out = io.StringIO()
-        with contextlib.redirect_stderr(out):
-            dispatcher.forward_worker_diagnostics(incoming)
-        logged = out.getvalue()
-        self.assertIn(
-            "worker_diag stage=capability_clear_failed exc=PermissionError errno=1",
-            logged,
-        )
-        self.assertNotIn(secret, logged)
-
-    def test_dispatcher_requires_setuid_and_setgid_in_permitted_and_effective_sets(self):
-        full = "CapPrm:\t00000000000000c0\nCapEff:\t00000000000000c0\n"
-        missing_setuid = "CapPrm:\t0000000000000040\nCapEff:\t0000000000000040\n"
-        missing_effective = "CapPrm:\t00000000000000c0\nCapEff:\t0000000000000040\n"
-
-        with mock.patch("builtins.open", mock.mock_open(read_data=full)):
-            self.assertTrue(dispatcher.dispatcher_identity_capabilities_ready())
-        with mock.patch("builtins.open", mock.mock_open(read_data=missing_setuid)):
-            self.assertFalse(dispatcher.dispatcher_identity_capabilities_ready())
-        with mock.patch("builtins.open", mock.mock_open(read_data=missing_effective)):
-            self.assertFalse(dispatcher.dispatcher_identity_capabilities_ready())
-
-    def test_dispatcher_peer_uid_helper_uses_unix_peer_credentials(self):
-        import socket
-        left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            self.assertEqual(dispatcher.unix_peer_uid(left), os.geteuid())
-        finally:
-            left.close()
-            right.close()
-
-    def test_dispatch_handler_rejects_wrong_peer_uid_before_request_parse(self):
-        sent = []
-        fake_request = mock.Mock()
-        fake_request.sendall.side_effect = sent.append
-        runtime = SimpleNamespace(web_pw=SimpleNamespace(pw_uid=4242))
-        handler = object.__new__(dispatcher.DispatchHandler)
-        handler.request = fake_request
-        handler.server = SimpleNamespace(runtime=runtime)
-        with mock.patch("dispatcher.unix_peer_uid", return_value=31337):
-            handler.handle()
-        self.assertTrue(sent)
-        reply = json.loads(sent[0].decode("utf-8").strip())
-        self.assertEqual(reply, {"ok": False, "error": "peer_not_authorized"})
-
-    def test_dispatcher_launches_fixed_worker_without_popen_credential_mutation(self):
-        class FakeProc:
-            returncode = 0
-            pid = 999999
-
-            def communicate(self, timeout=None):
-                return ('{"ok":true}', "")
-
-        with tempfile.TemporaryDirectory() as td:
-            lock_path = pathlib.Path(td) / "mutation.lock"
-            lock_path.touch()
-            runtime = SimpleNamespace(
-                lock_file=str(lock_path),
-                timeout=5,
-                runner_user="actions",
-                runner_home="/home/actions",
-                worker_path="/root-owned/lifecycle_worker.py",
-                cli_dir="/usr/local/lib/github-runner-tools/web/cli",
-                pty_adapter="/usr/local/lib/github-runner-tools/web/pty_token_adapter.py",
-                runner_pw=SimpleNamespace(pw_uid=1234, pw_gid=2345),
-                validate_fixed_worker=mock.Mock(),
-                privileged=mock.Mock(return_value={"ok": True, "context": "dispatcher"}),
-            )
-            server = object.__new__(dispatcher.DispatchServer)
-            server.runtime = runtime
-            captured = {}
-
-            def fake_popen(args, **kwargs):
-                captured["args"] = args
-                captured["kwargs"] = kwargs
-                return FakeProc()
-
-            with mock.patch("dispatcher.subprocess.Popen", side_effect=fake_popen):
-                result = dispatcher.DispatchServer.execute(server, {"op": "list"})
-
-            self.assertEqual(result, {"ok": True})
-            self.assertEqual(captured["args"], ["/usr/bin/python3", runtime.worker_path])
-            self.assertNotIn("user", captured["kwargs"])
-            self.assertNotIn("group", captured["kwargs"])
-            self.assertNotIn("extra_groups", captured["kwargs"])
-            self.assertTrue(captured["kwargs"]["start_new_session"])
-
-    def test_web_dispatcher_held_lock_blocks_cli_register_and_remove(self):
-        class BlockingProc:
-            returncode = 0
-            pid = 999998
-
-            def __init__(self, entered, release):
-                self.entered = entered
-                self.release = release
-
-            def communicate(self, timeout=None):
-                self.entered.set()
-                if not self.release.wait(timeout=5):
-                    raise subprocess.TimeoutExpired("worker", timeout)
-                return ('{"ok":true}', "")
-
-            def wait(self, timeout=None):
-                if not self.release.wait(timeout=timeout or 5):
-                    raise subprocess.TimeoutExpired("worker", timeout)
-                return self.returncode
-
-        with tempfile.TemporaryDirectory() as td:
-            lock_path = pathlib.Path(td) / "mutation.lock"
-            lock_path.touch()
-            entered = threading.Event()
-            release = threading.Event()
-            runtime = SimpleNamespace(
-                lock_file=str(lock_path),
-                timeout=5,
-                runner_user="actions",
-                runner_home="/home/actions",
-                worker_path="/root-owned/lifecycle_worker.py",
-                cli_dir="/usr/local/lib/github-runner-tools/web/cli",
-                pty_adapter="/usr/local/lib/github-runner-tools/web/pty_token_adapter.py",
-                runner_pw=SimpleNamespace(pw_uid=os.geteuid(), pw_gid=os.getegid()),
-                validate_fixed_worker=mock.Mock(),
-                privileged=mock.Mock(return_value={"ok": True, "context": "dispatcher"}),
-            )
-            server = object.__new__(dispatcher.DispatchServer)
-            server.runtime = runtime
-            result_box = {}
-
-            def run_web():
-                result_box["result"] = dispatcher.DispatchServer.execute(
-                    server, {"op": "create", "repository": "owner/repo", "token": "temporary"}
-                )
-
-            real_popen = subprocess.Popen
-            with mock.patch(
-                "dispatcher.subprocess.Popen",
-                side_effect=lambda *a, **kw: BlockingProc(entered, release),
-            ):
-                thread = threading.Thread(target=run_web)
-                thread.start()
-                self.assertTrue(entered.wait(timeout=2))
-                for script in ("register-runner.sh", "remove-runner.sh"):
-                    command = (
-                        f'export GRT_TEST_MODE=1; export GRT_TEST_LOCK_DIR="{td}"; '
-                        f'RUNNER_TOOLS_LIB_ONLY=1 source "{ROOT}/scripts/{script}"; '
-                        "acquire_mutation_lock"
-                    )
-                    proc = real_popen(
-                        ["bash", "-c", command],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                    )
-                    _stdout, _stderr = proc.communicate(timeout=5)
-                    self.assertNotEqual(proc.returncode, 0, script)
-                release.set()
-                thread.join(timeout=5)
-            self.assertEqual(result_box.get("result"), {"ok": True})
-
-    def test_cli_held_lock_makes_web_dispatcher_return_busy_before_worker_launch(self):
-        import fcntl
-        from types import SimpleNamespace
-
-        with tempfile.TemporaryDirectory() as td:
-            lock_path = pathlib.Path(td) / "mutation.lock"
-            lock_path.touch()
-            holder = open(lock_path, "r+", encoding="utf-8")
-            fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            try:
-                server = object.__new__(dispatcher.DispatchServer)
-                server.runtime = SimpleNamespace(lock_file=str(lock_path), timeout=10)
-                result = dispatcher.DispatchServer.execute(
-                    server,
-                    {"op": "create", "repository": "owner/repo", "token": "temporary"},
-                )
-                self.assertEqual(result, {"ok": False, "error": "operation_in_progress"})
-            finally:
-                fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
-                holder.close()
-
-
 class FinalConsumerTokenTests(unittest.TestCase):
     def _run_config_fixture(self, mode: str):
         token = "TEMPORARY_SECRET_TOKEN_987654"
@@ -1277,42 +778,6 @@ class FinalConsumerTokenTests(unittest.TestCase):
         self._run_config_fixture("remove")
 
 
-class OfficialRemoveDiagnosticsTests(unittest.TestCase):
-    def test_strict_marker_parser(self):
-        good = b"GRT_REMOVE_RESULT_V1 stage=config_remove_failed exit=9\n"
-        expected = {"ok": False, "error": "lifecycle_failed", "stage": "config_remove_failed", "exit_code": 9}
-        self.assertEqual(lifecycle_worker.parse_remove_marker(good, 1), expected)
-        fallback = {"ok": False, "error": "lifecycle_failed", "stage": "unknown_failed", "exit_code": None}
-        for raw in (b"", good * 2, b"noise" + good, good + b"noise", good[:-1],
-                    good.replace(b"9", b"999"), good.replace(b"9", b"-1"),
-                    good.replace(b"config_remove_failed", b"arbitrary"),
-                    b"GRT_REMOVE_RESULT_V1 stage=preflight_failed exit=0\n", b"X" * 129):
-            with self.subTest(raw=raw[:70]):
-                self.assertEqual(lifecycle_worker.parse_remove_marker(raw, 1), fallback)
-        self.assertEqual(lifecycle_worker.parse_remove_marker(good, -9), fallback)
-        self.assertEqual(lifecycle_worker.parse_remove_marker(good, 0), fallback)
-
-    def test_remove_unknown_dispatcher_outcomes_are_explicit(self):
-        expected = web_app.REMOVE_FAILURE_TEXT["unknown_failed"]
-        for error in ("operation_timed_out", "internal_error",
-                      "invalid_worker_result", "worker_error"):
-            with self.subTest(error=error):
-                self.assertEqual(web_app.remove_failure_message({"ok": False, "error": error}), expected)
-
-    def test_web_static_failure_mapping_is_not_injectable(self):
-        item = {"ok": False, "error": "lifecycle_failed", "stage": "service_uninstall_failed", "exit_code": 3}
-        self.assertEqual(web_app.remove_failure_message(item),
-                         "Runner service uninstall failed; check systemd state before retrying. Exit code: 3.")
-        for stage, code in (("<script>alert(1)</script>", 1), ("config_remove_failed", "SECRET_TOKEN"),
-                            ("config_remove_failed", True), ("config_remove_failed", 400)):
-            self.assertEqual(web_app.remove_failure_message(
-                {"error": "lifecycle_failed", "stage": stage, "exit_code": code}), "Runner operation failed.")
-
-    def test_official_remove_source_contract(self):
-        source = (ROOT / "scripts" / "remove-runner.sh").read_text()
-        self.assertIn('./config.sh remove --token "$TOKEN"', source)
-        self.assertIn('exec {RESULT_FD}>&-', source)
-        self.assertNotIn('--mode remove -- ./config.sh remove', source)
 
 
 if __name__ == "__main__":

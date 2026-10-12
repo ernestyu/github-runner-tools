@@ -55,7 +55,11 @@ run_installer() {
   local name="$1" user="$2" release="$3" sha="$4" fault="${5:-}"
   local -a extra_env=()
   if [[ -n "$fault" ]]; then
-    extra_env+=(GRT_TEST_ALLOW_FAULTS=1 "GRT_TEST_FAULT_STAGE=$fault")
+    if [[ "$fault" == inside:* ]]; then
+      extra_env+=(GRT_TEST_ALLOW_FAULTS=1 "GRT_TEST_FAULT_INSIDE=${fault#inside:}")
+    else
+      extra_env+=(GRT_TEST_ALLOW_FAULTS=1 "GRT_TEST_FAULT_STAGE=$fault")
+    fi
   fi
   printf '%s\n' "$PASSWORD" |
     docker exec -i -u "$user" "$name" env \
@@ -236,6 +240,63 @@ for stage in "${stages[@]}"; do
     containers=("${containers[@]/$name}")
   fi
 done
+
+# Stage-internal fault injection and exact-object resume.
+for scenario in RUNTIME_COPY_PARTIAL ARCHIVE_INIT_PARTIAL EXECUTOR_UNIT_PARTIAL WEB_CONFIG_PARTIAL ADMIN_PASSWORD_PARTIAL ADMIN_HASH_PUBLISHED WEB_UNIT_PARTIAL; do
+  CURRENT_CASE="internal:$scenario"
+  name="grt-internal-${scenario,,}-$"
+  new_container "$name"
+  out="$(run_expect_failure "$name" runner "$RELEASE" "$SHA" "inside:$scenario")"
+  [[ "$out" == *injected_inside_fault* ]] || fail "$scenario did not reach internal injection"
+  case "$scenario" in
+    ADMIN_HASH_PUBLISHED|WEB_UNIT_PARTIAL)
+      out="$(run_expect_failure "$name" runner "$RELEASE" "$SHA")"
+      [[ "$out" == *unproven_partial_administrator_secret* ]] ||
+        fail "$scenario incorrectly adopted unproven administrator hash"
+      ;;
+    *)
+      run_expect_success "$name" runner "$RELEASE" "$SHA" >/dev/null
+      assert_complete_install "$name"
+      ;;
+  esac
+  assert_no_runner_mutation "$name"
+  docker rm -f "$name" >/dev/null
+  containers=("${containers[@]/$name}")
+done
+
+# Reject malformed, duplicate, unknown, wrongly typed, and altered persisted state.
+CURRENT_CASE="strict-state"
+name="grt-strict-state-$"
+new_container "$name"
+out="$(run_expect_failure "$name" runner "$RELEASE" "$SHA" ATTEMPT_STARTED)"
+[[ "$out" == *injected_fault* ]] || fail "cannot seed state validation fixture"
+for mode in malformed duplicate unknown type corrupt; do
+  CURRENT_CASE="strict-state:$mode"
+  file=/var/lib/github-runner-tools/install-state.json
+  docker exec "$name" cp "$file" "$file.save"
+  docker exec "$name" python3 - "$mode" "$file" <<'PY'
+import json, sys
+from pathlib import Path
+mode, filename = sys.argv[1:]
+p = Path(filename)
+raw = p.read_text()
+if mode == "malformed":
+    p.write_text(raw[:-3])
+elif mode == "duplicate":
+    p.write_text(raw.replace('"schema":1', '"schema":1,"schema":1'))
+elif mode == "unknown":
+    p.write_text(raw.replace('"schema":1', '"schema":1,"unknown":true'))
+elif mode == "type":
+    p.write_text(raw.replace('"runner_uid":', '"runner_uid":false,"old_uid":'))
+elif mode == "corrupt":
+    p.write_bytes(b'\\xff\\x00truncated')
+PY
+  out="$(run_expect_failure "$name" runner "$RELEASE" "$SHA")"
+  [[ "$out" == *invalid_install_state* ]] || fail "$mode install-state was accepted"
+  docker exec "$name" mv "$file.save" "$file"
+done
+docker rm -f "$name" >/dev/null
+containers=("${containers[@]/$name}")
 
 # Real LAN HTTP check on one completed fixture.
 CURRENT_CASE="lan-http"

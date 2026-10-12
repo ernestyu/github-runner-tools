@@ -65,8 +65,8 @@ class Logger:
         if not stat.S_ISDIR(st.st_mode):
             raise LoggingUnavailable("unsafe_directory")
         if self.root == ROOT:
-            actions = pwd.getpwnam("actions")
-            if st.st_uid != 0 or st.st_gid != actions.pw_gid or stat.S_IMODE(st.st_mode) != 0o2770:
+            runner = pwd.getpwuid(self.uid)
+            if st.st_uid != 0 or st.st_gid != runner.pw_gid or stat.S_IMODE(st.st_mode) != 0o2770:
                 raise LoggingUnavailable("unsafe_directory")
         try:
             self.df = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -74,8 +74,8 @@ class Logger:
             if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
                 raise LoggingUnavailable("directory_changed")
             if self.root == ROOT:
-                actions = pwd.getpwnam("actions")
-                if (opened.st_uid != 0 or opened.st_gid != actions.pw_gid
+                runner = pwd.getpwuid(self.uid)
+                if (opened.st_uid != 0 or opened.st_gid != runner.pw_gid
                         or stat.S_IMODE(opened.st_mode) != 0o2770):
                     raise LoggingUnavailable("unsafe_directory")
                 for xattr in ("system.posix_acl_access", "system.posix_acl_default"):

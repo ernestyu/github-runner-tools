@@ -447,7 +447,7 @@ SMOKE_VERIFIED
 INSTALL_COMPLETE
 ```
 
-The implementation may combine adjacent internal steps only if fault-injection tests still prove deterministic retry for every required failure point in §13.7.
+The implementation may combine adjacent internal steps only if fault-injection tests still prove deterministic retry for every required failure point in §13.6.
 
 ### 12.2 Same-release partial-install re-entry
 

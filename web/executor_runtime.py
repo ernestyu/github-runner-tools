@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Root dispatcher for Web Management V1.
+"""Root-only lifecycle/systemd authority used by the bounded Executor.
 
-The dispatcher authenticates the grt-web Unix peer, owns the shared mutation
-lock, launches one fixed worker after UID/GID drop, and services only the
-narrow root-controlled systemd operations defined by the frozen SPEC.
+No public socket server or historical Web dispatch path is implemented here.
 """
 from __future__ import annotations
 
@@ -46,7 +44,7 @@ PRIV_FIELDS = {
 }
 
 
-class DispatchError(RuntimeError):
+class ExecutorRuntimeError(RuntimeError):
     pass
 
 
@@ -107,14 +105,14 @@ class Runtime:
         self.web_pw = pwd.getpwnam(self.web_user)
         if not executor_identity_capabilities_ready():
             diagnostic("executor_identity_caps_missing")
-            raise RuntimeError("dispatcher identity-transition capabilities unavailable")
+            raise RuntimeError("executor identity-transition capabilities unavailable")
 
     def ensure_lock_infrastructure(self) -> None:
         lock_path = Path(self.lock_file)
         lock_dir = lock_path.parent
 
         if lock_dir.is_symlink():
-            raise DispatchError("lock_directory_symlink")
+            raise ExecutorRuntimeError("lock_directory_symlink")
         if lock_dir.exists():
             st = os.stat(lock_dir, follow_symlinks=False)
             if (
@@ -123,14 +121,14 @@ class Runtime:
                 or st.st_gid != 0
                 or stat.S_IMODE(st.st_mode) != 0o755
             ):
-                raise DispatchError("lock_directory_invalid")
+                raise ExecutorRuntimeError("lock_directory_invalid")
         else:
             lock_dir.mkdir(mode=0o755, parents=True, exist_ok=False)
             os.chown(lock_dir, 0, 0)
             os.chmod(lock_dir, 0o755)
 
         if lock_path.is_symlink():
-            raise DispatchError("lock_file_symlink")
+            raise ExecutorRuntimeError("lock_file_symlink")
         if not lock_path.exists():
             fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o660)
             try:
@@ -146,7 +144,7 @@ class Runtime:
             or st.st_gid != self.runner_gr.gr_gid
             or stat.S_IMODE(st.st_mode) != 0o660
         ):
-            raise DispatchError("lock_file_invalid")
+            raise ExecutorRuntimeError("lock_file_invalid")
 
     def validate_runner_dir(self, repository: str, path: str) -> str:
         repository = validate_repository(repository)
@@ -156,7 +154,7 @@ class Runtime:
             os.path.join(self.runner_home, "actions-runner-" + make_local_id(owner, repo))
         )
         if real != expected or os.path.islink(path):
-            raise DispatchError("invalid_runner_dir")
+            raise ExecutorRuntimeError("invalid_runner_dir")
         return real
 
     @staticmethod
@@ -165,7 +163,7 @@ class Runtime:
             return None
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise DispatchError("operation_deadline_exceeded")
+            raise ExecutorRuntimeError("operation_deadline_exceeded")
         return remaining
 
     def _run(
@@ -204,7 +202,7 @@ class Runtime:
             cmd += ["-p", prop]
         proc = self._run(cmd, deadline=deadline, text=True, capture_output=True, check=False)
         if proc.returncode != 0:
-            raise DispatchError("systemd_query_failed")
+            raise ExecutorRuntimeError("systemd_query_failed")
         out: dict[str, str] = {}
         for line in proc.stdout.splitlines():
             if "=" in line:
@@ -237,13 +235,13 @@ class Runtime:
 
         expected_exec = os.path.join(runner_dir, "runsvc.sh")
         if service.get("User") != [self.runner_user]:
-            raise DispatchError("unit_file_user_mismatch")
+            raise ExecutorRuntimeError("unit_file_user_mismatch")
         if service.get("WorkingDirectory") != [runner_dir]:
-            raise DispatchError("unit_file_workdir_mismatch")
+            raise ExecutorRuntimeError("unit_file_workdir_mismatch")
         if service.get("ExecStart") != [expected_exec]:
-            raise DispatchError("unit_file_execstart_mismatch")
+            raise ExecutorRuntimeError("unit_file_execstart_mismatch")
         if "Group" in service and service["Group"] != [self.runner_group]:
-            raise DispatchError("unit_file_group_mismatch")
+            raise ExecutorRuntimeError("unit_file_group_mismatch")
         for key in (
             "ExecStartPre",
             "ExecStartPost",
@@ -252,7 +250,7 @@ class Runtime:
             "ExecReload",
         ):
             if service.get(key):
-                raise DispatchError("unit_file_exec_surface_mismatch")
+                raise ExecutorRuntimeError("unit_file_exec_surface_mismatch")
 
     def validate_unit(
         self,
@@ -267,42 +265,42 @@ class Runtime:
         runner_dir = self.validate_runner_dir(repository, runner_dir)
         expected = canonical_service_name(repository, runner_name)
         if service != expected:
-            raise DispatchError("service_identity_mismatch")
+            raise ExecutorRuntimeError("service_identity_mismatch")
 
         props = self._systemctl_show(service, deadline=deadline)
         if props["LoadState"] == "not-found":
             if allow_absent:
                 unit_path = f"/etc/systemd/system/{service}"
                 if os.path.lexists(unit_path):
-                    raise DispatchError("service_absent_but_unit_present")
+                    raise ExecutorRuntimeError("service_absent_but_unit_present")
                 return "absent", props
-            raise DispatchError("service_absent")
+            raise ExecutorRuntimeError("service_absent")
 
         fragment = os.path.realpath(props["FragmentPath"])
         expected_fragment = f"/etc/systemd/system/{service}"
         if fragment != expected_fragment or os.path.islink(expected_fragment):
-            raise DispatchError("unit_provenance_mismatch")
+            raise ExecutorRuntimeError("unit_provenance_mismatch")
 
         st = os.stat(expected_fragment, follow_symlinks=False)
         if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
-            raise DispatchError("unit_permissions_invalid")
+            raise ExecutorRuntimeError("unit_permissions_invalid")
         self._validate_unit_file_schema(expected_fragment, runner_dir)
         if props["DropInPaths"].strip():
-            raise DispatchError("unit_dropin_forbidden")
+            raise ExecutorRuntimeError("unit_dropin_forbidden")
         if props["User"] != self.runner_user:
-            raise DispatchError("unit_user_mismatch")
+            raise ExecutorRuntimeError("unit_user_mismatch")
         if os.path.realpath(props["WorkingDirectory"]) != runner_dir:
-            raise DispatchError("unit_workdir_mismatch")
+            raise ExecutorRuntimeError("unit_workdir_mismatch")
 
         expected_exec = os.path.join(runner_dir, "runsvc.sh")
         exec_start = props["ExecStart"]
         path_marker = f"path={expected_exec}"
         argv_marker = f"argv[]={expected_exec}"
         if path_marker not in exec_start or argv_marker not in exec_start:
-            raise DispatchError("unit_execstart_mismatch")
+            raise ExecutorRuntimeError("unit_execstart_mismatch")
         # Exactly one systemd start command is permitted.
         if exec_start.count("path=") != 1 or exec_start.count("argv[]=") != 1:
-            raise DispatchError("unit_execstart_mismatch")
+            raise ExecutorRuntimeError("unit_execstart_mismatch")
         for key in (
             "ExecStartPre",
             "ExecStartPost",
@@ -311,7 +309,7 @@ class Runtime:
             "ExecReload",
         ):
             if not self._exec_field_empty(props[key]):
-                raise DispatchError("unit_exec_surface_mismatch")
+                raise ExecutorRuntimeError("unit_exec_surface_mismatch")
         return "present", props
 
     def install_service(self, request: dict[str, Any], deadline: float | None = None) -> dict[str, Any]:
@@ -342,7 +340,7 @@ class Runtime:
         if set(request) != expected_fields:
             return stable_error("invalid_privileged_fields")
         if op == "context_check":
-            return {"ok": True, "context": "dispatcher"}
+            return {"ok": True, "context": "executor"}
 
         try:
             repository = validate_repository(str(request["repository"]))
@@ -369,7 +367,7 @@ class Runtime:
                         repository, runner_dir, runner_name, canonical,
                         allow_absent=True, deadline=deadline)
                     if current != "absent":
-                        raise DispatchError("cannot finalize cleanup while Unit exists")
+                        raise ExecutorRuntimeError("cannot finalize cleanup while Unit exists")
                 result = remove_stage(repository, runner_name, runner_dir,
                                       self.runner_user, stage)
                 return {"ok": True, **result}
@@ -416,7 +414,7 @@ class Runtime:
                     repository, runner_dir, runner_name, service, allow_absent=True, deadline=deadline
                 )
                 if final_state != "absent":
-                    raise DispatchError("service_uninstall_not_final")
+                    raise ExecutorRuntimeError("service_uninstall_not_final")
             else:
                 return stable_error("unknown_privileged_operation")
             return {"ok": True}
@@ -426,7 +424,7 @@ class Runtime:
             OSError,
             subprocess.CalledProcessError,
             subprocess.TimeoutExpired,
-            DispatchError,
+            ExecutorRuntimeError,
             AuthorityError,
             UnitInstallError,
         ):

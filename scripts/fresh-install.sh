@@ -33,7 +33,7 @@ if [[ "${EUID}" -eq 0 ]]; then
   exit 1
 fi
 
-for cmd in bash sudo id getent ps xargs ip install stat grep sed awk mktemp flock sha256sum tar; do need "$cmd"; done
+for cmd in bash sudo id getent ps xargs ip install stat grep sed awk mktemp flock sha256sum tar python3; do need "$cmd"; done
 [[ "$RELEASE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "invalid_release_binding"
 [[ "$PAYLOAD_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "invalid_payload_binding"
 [[ -f "$ROOT/web/app.py" && -f "$ROOT/scripts/register-runner.sh" ]] || die "incomplete_verified_payload"
@@ -80,13 +80,13 @@ managed_object_exists_without_state() {
   return 1
 }
 
-state_value() {
-  local key="$1"
-  sudo sed -n "s/.*\"${key}\":\"\([^\"]*\)\".*/\1/p" "$INSTALL_STATE" | head -n1
-}
-state_number() {
-  local key="$1"
-  sudo sed -n "s/.*\"${key}\":\([0-9][0-9]*\).*/\1/p" "$INSTALL_STATE" | head -n1
+# Strict state validation is performed before accepting any persisted binding.
+read_install_state() {
+  local fields
+  fields="$(sudo /usr/bin/python3 "$ROOT/scripts/install-state-validator.py" "$STATE_ROOT" install-state.json)" ||
+    die "invalid_install_state"
+  mapfile -t INSTALL_FIELDS <<<"$fields"
+  [[ "${#INSTALL_FIELDS[@]}" == 10 ]] || die "invalid_install_state"
 }
 
 write_state() {
@@ -96,7 +96,7 @@ write_state() {
 {"schema":1,"release":"$RELEASE","payload_sha256":"$PAYLOAD_SHA256","attempt_id":"$ATTEMPT_ID","runner_user":"$RUNNER_USER","runner_uid":$RUNNER_UID,"runner_gid":$RUNNER_GID,"runner_home":"$RUNNER_HOME","web_bind_address":"$WEB_BIND_ADDRESS","stage":"$stage"}
 EOF
   sudo install -o root -g root -m 0600 "$tmp" "$STATE_ROOT/.install-state.json.$$"
-  sudo mv -f "$STATE_ROOT/.install-state.json.$$" "$INSTALL_STATE"
+  sudo mv -f "$STATE_ROOT/.install-state.json.$" "$INSTALL_STATE"
   rm -f "$tmp"
   CURRENT_STAGE="$stage"
 }
@@ -131,12 +131,13 @@ fault_after() {
 verify_file() {
   local src="$1" dst="$2" mode="$3"
   sudo test -f "$dst" && ! sudo test -L "$dst" || die "managed_file_missing"
-  [[ "$(sudo stat -c '%U:%G:%a:%F' "$dst")" == "root:root:$mode:regular file" ]] || die "managed_file_metadata_mismatch"
+  [[ "$(sudo stat -c '%U:%G:%a' "$dst")" == "root:root:$mode" ]] || die "managed_file_metadata_mismatch"
   sudo cmp -s "$src" "$dst" || die "managed_file_content_mismatch"
 }
 
 verify_directory() {
   local path="$1" owner="$2" group="$3" mode="$4"
+  sudo test -d "$path" && ! sudo test -L "$path" || die "managed_directory_metadata_mismatch"
   [[ "$(sudo stat -c '%U:%G:%a:%F' "$path")" == "$owner:$group:$mode:directory" ]] ||
     die "managed_directory_metadata_mismatch"
 }
@@ -164,22 +165,17 @@ CURRENT_STAGE="PREFLIGHT"
 ACTIVE_STAGE="PREFLIGHT"
 
 if sudo test -e "$INSTALL_STATE" || sudo test -L "$INSTALL_STATE"; then
-  [[ "$(sudo stat -c '%U:%G:%a:%F' "$INSTALL_STATE")" == "root:root:600:regular file" ]] ||
-    die "unsafe_install_state"
-  [[ "$(sudo stat -c '%U:%G:%a:%F' "$STATE_ROOT")" == "root:root:700:directory" ]] ||
-    die "unsafe_state_root"
-  [[ "$(state_number schema)" == 1 ]] || die "invalid_install_state_schema"
-  [[ "$(state_value release)" == "$RELEASE" ]] || die "partial_release_mismatch"
-  [[ "$(state_value payload_sha256)" == "$PAYLOAD_SHA256" ]] || die "partial_payload_mismatch"
-  [[ "$(state_value runner_user)" == "$RUNNER_USER" ]] || die "partial_runner_user_mismatch"
-  [[ "$(state_number runner_uid)" == "$RUNNER_UID" ]] || die "partial_runner_uid_mismatch"
-  [[ "$(state_number runner_gid)" == "$RUNNER_GID" ]] || die "partial_runner_gid_mismatch"
-  [[ "$(state_value runner_home)" == "$RUNNER_HOME" ]] || die "partial_runner_home_mismatch"
-  ATTEMPT_ID="$(state_value attempt_id)"
-  WEB_BIND_ADDRESS="$(state_value web_bind_address)"
-  CURRENT_STAGE="$(state_value stage)"
-  [[ "$ATTEMPT_ID" =~ ^[0-9a-fA-F-]{16,64}$ ]] || die "invalid_attempt_identity"
-  stage_rank "$CURRENT_STAGE" >/dev/null || die "unknown_install_stage"
+  read_install_state
+  [[ "${INSTALL_FIELDS[0]}" == 1 ]] || die "invalid_install_state_schema"
+  [[ "${INSTALL_FIELDS[1]}" == "$RELEASE" ]] || die "partial_release_mismatch"
+  [[ "${INSTALL_FIELDS[2]}" == "$PAYLOAD_SHA256" ]] || die "partial_payload_mismatch"
+  ATTEMPT_ID="${INSTALL_FIELDS[3]}"
+  [[ "${INSTALL_FIELDS[4]}" == "$RUNNER_USER" ]] || die "partial_runner_user_mismatch"
+  [[ "${INSTALL_FIELDS[5]}" == "$RUNNER_UID" ]] || die "partial_runner_uid_mismatch"
+  [[ "${INSTALL_FIELDS[6]}" == "$RUNNER_GID" ]] || die "partial_runner_gid_mismatch"
+  [[ "${INSTALL_FIELDS[7]}" == "$RUNNER_HOME" ]] || die "partial_runner_home_mismatch"
+  WEB_BIND_ADDRESS="${INSTALL_FIELDS[8]}"
+  CURRENT_STAGE="${INSTALL_FIELDS[9]}"
   [[ "$CURRENT_STAGE" != INSTALL_COMPLETE ]] || die "installation_already_complete"
   verify_exact_entries "$STATE_ROOT" install-state.json
   verify_no_runner_lifecycle_state
@@ -429,11 +425,15 @@ else
   IFS= read -r -s confirm </dev/tty; printf '\n' >/dev/tty
   [[ -n "$password" && "$password" == "$confirm" ]] || { password= confirm=; die "administrator_password_mismatch"; }
   auth_tmp="$(mktemp)"
-  PYTHONPATH="$ROOT/web" /usr/bin/python3 - "$password" >"$auth_tmp" <<'PY'
+  # Password travels only through a private pipe to stdin: never argv or env.
+  printf '%s' "$password" | PYTHONPATH="$ROOT/web" /usr/bin/python3 -c '
 import sys
 from grt_web_common import password_hash
-print("PASSWORD_HASH=" + password_hash(sys.argv[1]))
-PY
+secret = sys.stdin.buffer.read(4097)
+if not secret or len(secret) > 4096 or b"\\x00" in secret:
+    sys.exit(1)
+print("PASSWORD_HASH=" + password_hash(secret.decode("utf-8", "strict")))
+' >"$auth_tmp" || { password= confirm=; rm -f "$auth_tmp"; die "administrator_password_hash_failed"; }
   password= confirm=
   sudo install -o root -g "$WEB_USER" -m 0640 "$auth_tmp" "$WEB_AUTH"; rm -f "$auth_tmp"
   unit_tmp="$(mktemp)"; make_web_unit >"$unit_tmp"

@@ -91,8 +91,9 @@ class BaselineHTTPGateA(unittest.TestCase):
         self.assertEqual(status, 303)
         self.assertEqual(headers["Location"], "/")
         policy = headers["Set-Cookie"]
-        for attr in ("Path=/", "Secure", "HttpOnly", "SameSite=Strict"):
+        for attr in ("Path=/", "HttpOnly", "SameSite=Strict"):
             self.assertIn(attr, policy)
+        self.assertNotIn("Secure", policy)
         return policy.split(";", 1)[0]
 
     def prepare(self, cookie):

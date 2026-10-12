@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""No-host tests of the V2 status CLI execution boundary."""
+"""No-host tests of the configured Runner Status execution boundary."""
 import json
 import pathlib
 import subprocess
@@ -18,14 +18,23 @@ class StatusBoundaryTests(unittest.TestCase):
             with self.assertRaisesRegex(v2_status.StatusError, "executor must be root"):
                 v2_status.status_as_runner()
 
-    def test_only_actions_user_allowed(self):
-        with self.assertRaisesRegex(v2_status.StatusError, "unsupported"):
-            v2_status.runner_identity("root")
+    def test_root_identity_is_rejected_but_arbitrary_nonroot_owner_is_supported(self):
+        with patch.object(v2_status.pwd, "getpwnam",
+                          return_value=SimpleNamespace(pw_uid=0, pw_gid=0, pw_dir="/root")):
+            with self.assertRaisesRegex(v2_status.StatusError, "invalid runner identity"):
+                v2_status.runner_identity("root")
+        with patch.object(v2_status.pwd, "getpwnam",
+                          return_value=SimpleNamespace(pw_uid=1234, pw_gid=1234,
+                                                       pw_dir="/srv/runner-user")):
+            self.assertEqual(
+                v2_status.runner_identity("runner-user"),
+                (1234, 1234, "/srv/runner-user"))
 
     def test_status_uses_cli_without_shell_or_token(self):
         result = subprocess.CompletedProcess([], 0, stdout=b'{"runners":[]}', stderr=b"")
         with patch.object(v2_status.os, "geteuid", return_value=0), \
-             patch.object(v2_status, "runner_identity", return_value=(1000, 1000, "/home/actions")), \
+             patch.object(v2_status, "configured_runner_user", return_value="runner-user"), \
+             patch.object(v2_status, "runner_identity", return_value=(1000, 1000, "/home/runner-user")), \
              patch("v2_code_provenance.verify_launch") as verify, \
              patch.object(v2_status.subprocess, "run", return_value=result) as run:
             self.assertEqual(v2_status.status_as_runner()["data"], {"runners": []})
@@ -34,6 +43,7 @@ class StatusBoundaryTests(unittest.TestCase):
         self.assertEqual(kwargs["user"], 1000)
         self.assertEqual(kwargs["group"], 1000)
         self.assertEqual(kwargs["extra_groups"], [])
+        self.assertEqual(kwargs["env"]["USER"], "runner-user")
         self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
         self.assertNotIn("shell", kwargs)
         self.assertNotIn("token", json.dumps(kwargs))
@@ -47,7 +57,8 @@ class StatusBoundaryTests(unittest.TestCase):
         ):
             with self.subTest(code=result.returncode, size=len(result.stdout)), \
                  patch.object(v2_status.os, "geteuid", return_value=0), \
-                 patch.object(v2_status, "runner_identity", return_value=(1000, 1000, "/home/actions")), \
+                 patch.object(v2_status, "configured_runner_user", return_value="runner-user"), \
+                 patch.object(v2_status, "runner_identity", return_value=(1000, 1000, "/home/runner-user")), \
                  patch("v2_code_provenance.verify_launch"), \
                  patch.object(v2_status.subprocess, "run", return_value=result), \
                  self.assertRaises(v2_status.StatusError) as caught:

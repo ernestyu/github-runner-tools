@@ -239,7 +239,8 @@ if stage_at_least AUTHORITY_STATE_INITIALIZED; then
   [[ "$(getent group "$WEB_USER" | cut -d: -f3)" == "$web_gid" ]] || die "web_group_identity_mismatch"
   [[ "$(sudo stat -c '%U:%G:%a:%F' "$STATE_ROOT")" == "root:root:700:directory" ]] || die "state_root_mismatch"
   [[ "$(sudo stat -c '%U:%G:%a:%F' "$LOCK_ROOT")" == "root:root:755:directory" ]] || die "lock_root_mismatch"
-  [[ "$(sudo stat -c '%u:%g:%a:%F' "$LOCK_FILE")" == "0:$RUNNER_GID:660:regular file" ]] || die "lock_file_mismatch"
+  sudo test -f "$LOCK_FILE" && ! sudo test -L "$LOCK_FILE" || die "lock_file_mismatch"
+  [[ "$(sudo stat -c '%u:%g:%a' "$LOCK_FILE")" == "0:$RUNNER_GID:660" ]] || die "lock_file_mismatch"
   [[ "$(sudo stat -c '%U:%G:%a:%F' "$LOG_ROOT")" == "root:$RUNNER_GROUP:2770:directory" ]] || die "log_root_mismatch"
   verify_exact_entries "$LOCK_ROOT" mutation.lock
   verify_exact_entries "$LOG_ROOT" operational.jsonl operational.lock

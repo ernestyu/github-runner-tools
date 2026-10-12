@@ -188,6 +188,8 @@ for stage in "${stages[@]}"; do
   docker commit "$name" "$corrupt_image" >/dev/null
   corrupt_name="${name}-corrupt"
   new_container "$corrupt_name" "$corrupt_image"
+  recorded_bind="$(docker exec "$corrupt_name" jq -r .web_bind_address /var/lib/github-runner-tools/install-state.json)"
+  docker exec "$corrupt_name" ip addr add "$recorded_bind/32" dev lo
   docker exec "$corrupt_name" bash -c 'printf "\n# fixture corruption\n" >> /usr/local/lib/github-runner-tools/cli/status-runners.sh'
   out="$(run_expect_failure "$corrupt_name" runner "$RELEASE" "$SHA")"
   [[ "$out" == *managed_file_content_mismatch* ]] || {

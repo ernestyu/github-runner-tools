@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Minimal Tailscale-only Web frontend for github-runner-tools."""
+"""Authenticated LAN Web frontend for github-runner-tools."""
 from __future__ import annotations
 
 import argparse
 import html
 import http.cookies
+import ipaddress
 import json
 import os
-import socket
 import time
 import urllib.parse
 from http import HTTPStatus
@@ -20,9 +20,7 @@ from grt_web_common import (
     MAX_REQUEST_BYTES,
     MAX_REPOSITORY_LEN,
     MAX_TOKEN_LEN,
-    encode_json_line,
     load_key_value,
-    recv_json_line,
     secure_random_token,
     validate_repository,
     validate_temporary_token,
@@ -173,43 +171,24 @@ def v2_failure_text(result: dict[str, Any], operation: str) -> str:
 
 
 def dispatch(config: dict[str, str], request: dict[str, Any]) -> dict[str, Any]:
-    if config.get("V2_EXECUTOR_MODE") == "1":
-        # No V1 Dispatcher fallback in V2 mode. All operations use fixed
-        # Executor request formats; secrets are in separate socket frames.
-        operation = request.get("op")
-        try:
-            from v2_executor_client import web_list, create_runner, remove_runner
-            if operation == "list":
-                return web_list()
-            if operation == "create":
-                return create_runner(request.get("repository", ""),
-                                     request.get("token", ""))
-            if operation == "remove":
-                return remove_runner(request.get("repository", ""),
-                                     request.get("runner_name", ""),
-                                     request.get("runner_id"),
-                                     request.get("instance", ""),
-                                     request.get("token", ""))
-            return {"ok": False, "error": "not_implemented"}
-        except Exception:
-            return {"ok": False, "error": "executor_unavailable"}
-    path = config.get("DISPATCH_SOCKET", "/run/github-runner-tools/web-dispatch.sock")
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    timeout = 20
-    if request.get("op") != "list":
-        timeout = int(config.get("MUTATION_TIMEOUT_SECONDS", "900")) + 30
-    sock.settimeout(timeout)
+    """All Web lifecycle operations use the fixed bounded Executor."""
+    operation = request.get("op")
     try:
-        sock.connect(path)
-        sock.sendall(encode_json_line(request))
-        response = recv_json_line(sock)
-        if not isinstance(response, dict):
-            return {"ok": False, "error": "dispatcher_invalid_response"}
-        return response
-    except (OSError, ValueError):
-        return {"ok": False, "error": "dispatcher_unavailable"}
-    finally:
-        sock.close()
+        from v2_executor_client import web_list, create_runner, remove_runner
+        if operation == "list":
+            return web_list()
+        if operation == "create":
+            return create_runner(request.get("repository", ""),
+                                 request.get("token", ""))
+        if operation == "remove":
+            return remove_runner(request.get("repository", ""),
+                                 request.get("runner_name", ""),
+                                 request.get("runner_id"),
+                                 request.get("instance", ""),
+                                 request.get("token", ""))
+        return {"ok": False, "error": "not_implemented"}
+    except Exception:
+        return {"ok": False, "error": "executor_unavailable"}
 
 
 def page(title: str, body: str) -> bytes:
@@ -287,6 +266,10 @@ class App:
             if not LOGIN_ATTEMPTS[source]:
                 LOGIN_ATTEMPTS.pop(source, None)
 
+    def cookie_suffix(self) -> str:
+        secure = "; Secure" if self.config.get("WEB_COOKIE_SECURE", "0") == "1" else ""
+        return f"; Path=/${secure}; HttpOnly; SameSite=Strict"
+
     def new_session(self) -> tuple[str, dict[str, Any]]:
         sid = secure_random_token(32)
         sess = {
@@ -348,8 +331,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _source(self) -> str:
-        # The backend is loopback-only. Do not trust forwarding headers for
-        # rate-limit identity because a local process can spoof them.
+        # Do not trust forwarding headers for rate-limit identity.
         return self.client_address[0]
 
     def _send(self, status: int, body: bytes, *, cookie: str | None = None) -> None:
@@ -450,8 +432,6 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _v2_remove_target(self, repository: str) -> dict[str, Any] | None:
-        if self.app.config.get("V2_EXECUTOR_MODE") != "1":
-            return None
         response = dispatch(self.app.config, {"op": "list"})
         if not response.get("ok") or not isinstance(response.get("runners"), list):
             return None
@@ -519,7 +499,7 @@ class Handler(BaseHTTPRequestHandler):
 <div><label>Repository (OWNER/REPO)</label><input name="repository" maxlength="200" placeholder="owner/repository" required></div>
 <div><label>Temporary registration token</label><input type="password" name="token" value="" maxlength="1024" autocomplete="new-password" placeholder="Paste temporary registration token" required></div>
 <div><button type="submit">Create runner</button></div>
-</form><p class="muted">Use only with trusted workflows. Public/untrusted workflows are outside the Web V1 security model.</p></div>
+</form><p class="muted">Use only on a trusted LAN. Default HTTP transport is not encrypted.</p></div>
 <h2>Current runners</h2>{runner_list}
 <form method="post" action="/logout"><input type="hidden" name="csrf" value="{sess['csrf']}"><button type="submit">Log out</button></form>""",
             )
@@ -546,7 +526,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             LOGIN_ATTEMPTS.pop(source, None)
             sid, _ = self.app.new_session()
-            cookie = f"{COOKIE_NAME}={sid}; Path=/; Secure; HttpOnly; SameSite=Strict"
+            cookie = f"{COOKIE_NAME}={sid}{self.app.cookie_suffix()}"
             self.send_response(303)
             self.send_header("Location", "/")
             self.send_header("Set-Cookie", cookie)
@@ -566,7 +546,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/logout":
             SESSIONS.pop(sid, None)
-            cookie = f"{COOKIE_NAME}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict"
+            cookie = f"{COOKIE_NAME}=; Max-Age=0{self.app.cookie_suffix()}"
             self.send_response(303)
             self.send_header("Location", "/login")
             self.send_header("Set-Cookie", cookie)
@@ -594,9 +574,7 @@ class Handler(BaseHTTPRequestHandler):
             elif result.get("error") == "operation_in_progress":
                 self._send(409, page("Busy", "<h1>Another lifecycle operation is already in progress.</h1>"))
             else:
-                message = (v2_failure_text(result, "Create")
-                           if self.app.config.get("V2_EXECUTOR_MODE") == "1"
-                           else "Runner creation failed.")
+                message = v2_failure_text(result, "Create")
                 self._send(500, page("Create failed", f"<h1>{html.escape(message)}</h1>"))
             return
 
@@ -612,7 +590,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(409, page("State changed", "<h1>This runner is not currently eligible for that operation.</h1>"))
                 return
             v2_target = None
-            if operation == "remove" and self.app.config.get("V2_EXECUTOR_MODE") == "1":
+            if operation == "remove":
                 v2_target = self._v2_remove_target(repo)
                 if v2_target is None:
                     self._send(409, page("State changed", "<h1>Remove identity is no longer eligible.</h1>"))
@@ -668,17 +646,16 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, page("Invalid token", "<h1>Invalid removal token</h1>"))
                     return
                 request["token"] = token
-                if self.app.config.get("V2_EXECUTOR_MODE") == "1":
-                    current_target = self._v2_remove_target(repo)
-                    if current_target is None or any(
-                        current_target.get(key) != pending.get(key)
-                        for key in ("runner_name", "runner_id", "instance")
-                    ):
-                        self._send(409, page("State changed", "<h1>Runner identity changed. Remove rejected.</h1>"))
-                        return
-                    request.update(runner_name=pending["runner_name"],
-                                   runner_id=pending["runner_id"],
-                                   instance=pending["instance"])
+                current_target = self._v2_remove_target(repo)
+                if current_target is None or any(
+                    current_target.get(key) != pending.get(key)
+                    for key in ("runner_name", "runner_id", "instance")
+                ):
+                    self._send(409, page("State changed", "<h1>Runner identity changed. Remove rejected.</h1>"))
+                    return
+                request.update(runner_name=pending["runner_name"],
+                               runner_id=pending["runner_id"],
+                               instance=pending["instance"])
             if expected_op == "remove":
                 diagnostic_event("dispatch_invoked")
             result = dispatch(self.app.config, request)
@@ -689,9 +666,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(409, page("Busy", "<h1>Another lifecycle operation is already in progress.</h1>"))
             else:
                 message = (v2_failure_text(result, "Remove")
-                           if expected_op == "remove"
-                           and self.app.config.get("V2_EXECUTOR_MODE") == "1"
-                           else remove_failure_message(result)
                            if expected_op == "remove" else "Runner operation failed.")
                 self._send(500, page("Operation failed", f"<h1>{html.escape(message)}</h1>"))
             return
@@ -705,10 +679,18 @@ def main() -> int:
     parser.add_argument("--auth-config", default=DEFAULT_AUTH_CONFIG)
     args = parser.parse_args()
     app = App(args.config, args.auth_config)
-    bind = app.config.get("WEB_BIND_ADDRESS", "127.0.0.1")
+    bind = app.config.get("WEB_BIND_ADDRESS", "")
     port = int(app.config.get("WEB_PORT", "8765"))
-    if bind != "127.0.0.1":
-        raise SystemExit("Web V1 must bind only to 127.0.0.1")
+    try:
+        address = ipaddress.ip_address(bind)
+    except ValueError as exc:
+        raise SystemExit("WEB_BIND_ADDRESS must be a concrete private IPv4 address") from exc
+    if (address.version != 4 or not address.is_private or address.is_loopback
+            or address.is_link_local or address.is_multicast
+            or address.is_unspecified):
+        raise SystemExit("WEB_BIND_ADDRESS must be a concrete RFC1918/private IPv4 address")
+    if app.config.get("WEB_COOKIE_SECURE", "0") not in ("0", "1"):
+        raise SystemExit("WEB_COOKIE_SECURE must be 0 or 1")
     Handler.app = app
     server = ThreadingHTTPServer((bind, port), Handler)
     server.serve_forever()
